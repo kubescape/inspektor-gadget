@@ -30,6 +30,7 @@ package uprobetracer
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -56,12 +57,30 @@ var redundantAttachCounter, _ = metrics.Int64Counter("ig_uprobetracer_redundant_
 	metric.WithDescription("Number of times Phase-1 attach I/O ran for an exe path already resident in the container's recent-set, per uprobe program -- signals the exeLRUCap bound may be too small"),
 )
 
+// progNameAttrsCache memoizes progNameAttrs' built attribute.Set per distinct
+// progName (code-review follow-up): progName cardinality is small and fixed
+// per process (a handful of uprobe programs, e.g. gotls's four separate
+// Tracer instances), but without memoization attribute.NewSet allocates and
+// sorts a brand new Set on EVERY call -- and these three
+// recordReattachDuration/recordAttachTimeout/recordRedundantAttach helpers
+// are called from the exec-driven reattach hot path this whole PR exists to
+// protect the latency budget of. A sync.Map (rather than a mutex-guarded plain
+// map) is used because these can be called concurrently from multiple
+// goroutines/programs and reads vastly outnumber the handful of first-time
+// writes (one per distinct progName, ever).
+var progNameAttrsCache sync.Map // map[string]attribute.Set
+
 // progNameAttrs is the shared attribute set for all three counters/histogram
 // above: progName distinguishes the (small, fixed) set of uprobe programs one
 // process runs (e.g. gotls's four separate Tracer instances) without any
 // unbounded/high-cardinality label such as a pid or exe path.
 func progNameAttrs(progName string) attribute.Set {
-	return attribute.NewSet(attribute.KeyValue{Key: "prog_name", Value: attribute.StringValue(progName)})
+	if v, ok := progNameAttrsCache.Load(progName); ok {
+		return v.(attribute.Set)
+	}
+	set := attribute.NewSet(attribute.KeyValue{Key: "prog_name", Value: attribute.StringValue(progName)})
+	actual, _ := progNameAttrsCache.LoadOrStore(progName, set)
+	return actual.(attribute.Set)
 }
 
 func recordReattachDuration(progName string, d time.Duration) {

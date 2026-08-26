@@ -16,7 +16,9 @@ package uprobetracer
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -250,4 +252,54 @@ func TestRedundantAttachCounterFiresOnConcurrentRace(t *testing.T) {
 	if got := counterValue(t, reader, "ig_uprobetracer_redundant_attach_total", tr.progName); got != 1 {
 		t.Errorf("ig_uprobetracer_redundant_attach_total = %d after an ordinary (non-racing) miss, want unchanged at 1", got)
 	}
+}
+
+// TestProgNameAttrsIsMemoizedPerProgName is the code-review follow-up
+// regression test for progNameAttrs' memoization: attribute.NewSet allocates
+// and sorts a brand new Set on every call, which is wasteful on the
+// exec-driven reattach hot path these helpers are called from when progName
+// cardinality is small and fixed. Repeated calls for the SAME progName must
+// return equivalent (here: literally the same, cached) Sets.
+func TestProgNameAttrsIsMemoizedPerProgName(t *testing.T) {
+	const progName = "test-prog-memoized"
+
+	first := progNameAttrs(progName)
+	second := progNameAttrs(progName)
+
+	if !first.Equals(&second) {
+		t.Errorf("progNameAttrs(%q) returned non-equivalent Sets across repeated calls: %v vs %v", progName, first, second)
+	}
+	if first.Equivalent() != second.Equivalent() {
+		t.Errorf("progNameAttrs(%q) returned Sets with different Distinct identity across repeated calls -- want the literal cached value both times", progName)
+	}
+
+	// A different progName must still produce its own, distinct attribute
+	// value -- memoization must not collapse different keys onto each other.
+	other := progNameAttrs("test-prog-memoized-other")
+	if first.Equals(&other) {
+		t.Error("progNameAttrs returned equal Sets for two different progName values, want distinct")
+	}
+}
+
+// TestProgNameAttrsConcurrentDistinctNamesNoRace proves progNameAttrs'
+// memoization (a sync.Map, since these helpers are called from multiple
+// goroutines/uprobe programs) does not panic or race when many distinct
+// progName values are first-resolved concurrently. Run with -race.
+func TestProgNameAttrsConcurrentDistinctNamesNoRace(t *testing.T) {
+	const goroutines = 50
+	const distinctNames = 8
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			name := fmt.Sprintf("race-prog-%d", i%distinctNames)
+			set := progNameAttrs(name)
+			if v, ok := set.Value(attribute.Key("prog_name")); !ok || v.AsString() != name {
+				t.Errorf("progNameAttrs(%q) produced a Set without the matching prog_name attribute: %v", name, set)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

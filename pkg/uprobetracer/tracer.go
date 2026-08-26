@@ -1145,12 +1145,29 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	// permanently short-circuited.
 	//
 	// Correctness invariant: a miss here — whether this path was never seen
-	// before, or WAS seen before but has since aged out of the cap-N set —
-	// always falls through to the full Phase-1 resolve+attach below, exactly
-	// like a first-time exec. Eviction only ever costs extra I/O for the
-	// evicted binary; it can never cause a stale/incorrect exe path to be used
-	// for a live execPid. See exeLRUCache's doc comment in execache.go for the
-	// same invariant from the cache's side.
+	// before, WAS seen before but has since aged out of the cap-N set, or WAS
+	// seen before but has aged out on TIME (exceeded exeLRUTTL) — always falls
+	// through to the full Phase-1 resolve+attach below, exactly like a
+	// first-time exec. Eviction only ever costs extra I/O for the evicted
+	// binary; it can never cause a stale/incorrect exe path to be used for a
+	// live execPid. See exeLRUCache's doc comment in execache.go for the same
+	// invariant from the cache's side.
+	//
+	// TTL backstop (code-review follow-up): this cache is keyed by resolved
+	// PATH only, so it has no way to notice that the file CONTENT at a cached
+	// path changed underneath it (e.g. a container hot-reloads/self-updates a
+	// binary in place at the same path) -- a limitation pre-existing in the
+	// single-slot cache this replaced, but one whose practical impact this
+	// bounded LRU widens (see exeLRUTTL's doc comment in execache.go for the
+	// full reasoning). contains() below therefore also enforces exeLRUTTL: an
+	// otherwise-resident entry older than that is reported as a miss rather
+	// than as a hit, giving a concrete, bounded worst-case staleness guarantee
+	// instead of relying on incidental cache-size-dependent turnover. This is
+	// a cheap backstop (one time.Now() comparison, no new I/O), not a full fix
+	// -- a full fix would mean verifying the file's current inode through the
+	// same secure per-container-mount-namespace open machinery the real
+	// Phase-1 attach already uses, which costs nearly as much as just doing
+	// the real attach.
 	exeLink := filepath.Join(host.HostProcFs, fmt.Sprint(execPid), "exe")
 	exeTarget, _ := os.Readlink(exeLink)
 	if exeTarget != "" {
@@ -1231,15 +1248,20 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 		}
 		// ig_uprobetracer_redundant_attach_total: the Phase-1 I/O above just ran
 		// (the fast-path check earlier in this call missed) for a path that is,
-		// right here at commit time, ALREADY resident in the cache -- almost
-		// always because a concurrent exec of this same not-yet-cached binary
-		// raced this call and committed first while this call was still doing
-		// its own Phase-1 I/O, and occasionally because the entry aged out of
-		// the cap-N set and got re-added by that same race window. Either way
-		// this call's Phase-1 work was pure overhead; a rising rate here is the
-		// signal that exeLRUCap needs retuning.
-		redundant := cache.contains(exeTarget)
-		cache.add(exeTarget)
+		// right here at commit time, ALREADY resident (and not TTL-expired) in
+		// the cache -- almost always because a concurrent exec of this same
+		// not-yet-cached binary raced this call and committed first while this
+		// call was still doing its own Phase-1 I/O, and occasionally because
+		// the entry aged out of the cap-N set (or past exeLRUTTL) and got
+		// re-added by that same race window. Either way this call's Phase-1
+		// work was pure overhead; a rising rate here is the signal that
+		// exeLRUCap needs retuning.
+		//
+		// touchAndReport combines the add() this commit always needs with the
+		// "was it already there" check the metric needs, in one pass -- avoids
+		// the two separate map lookups (and up to two list.MoveToFront calls)
+		// a plain contains()-then-add() sequence would cost here.
+		redundant := cache.touchAndReport(exeTarget)
 		if redundant {
 			recordRedundantAttach(progName)
 		}
