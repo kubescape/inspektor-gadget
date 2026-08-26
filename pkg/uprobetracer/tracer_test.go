@@ -213,8 +213,8 @@ func TestDetachAfterReattachNoLeak(t *testing.T) {
 	if _, ok := tr.containerPid2Inodes[fakePid]; ok {
 		t.Errorf("containerPid2Inodes still has pid after detach")
 	}
-	if _, ok := tr.containerPid2ExeTarget[fakePid]; ok {
-		t.Errorf("containerPid2ExeTarget still has pid after detach")
+	if _, ok := tr.containerPid2ExeTargets[fakePid]; ok {
+		t.Errorf("containerPid2ExeTargets still has pid after detach")
 	}
 }
 
@@ -364,7 +364,7 @@ func TestReattachAfterCloseErrors(t *testing.T) {
 }
 
 // TestReattachOpenFailureDoesNotLatchExeTarget asserts that a Phase-1 open failure
-// (e.g. a transient overlayfs-mount race) does NOT record containerPid2ExeTarget, so
+// (e.g. a transient overlayfs-mount race) does NOT record containerPid2ExeTargets, so
 // the next exec retries instead of being permanently short-circuited. Splitting open
 // from attach moved the open error into the new openFailed flag; this guards that the
 // exe-target latch still gates on it, preserving the pre-split semantics.
@@ -380,8 +380,8 @@ func TestReattachOpenFailureDoesNotLatchExeTarget(t *testing.T) {
 	if err := tr.ReattachContainerPid(self); err != nil {
 		t.Fatalf("ReattachContainerPid: %v", err)
 	}
-	if _, ok := tr.containerPid2ExeTarget[self]; ok {
-		t.Errorf("containerPid2ExeTarget latched despite open failure (would wrongly short-circuit retries)")
+	if cache := tr.containerPid2ExeTargets[self]; cache != nil {
+		t.Errorf("containerPid2ExeTargets latched despite open failure (would wrongly short-circuit retries)")
 	}
 	if st.attachCount != 0 {
 		t.Errorf("attachCount = %d, want 0 (every open failed)", st.attachCount)
@@ -981,7 +981,7 @@ func TestReattachAfterSettledAttachIdempotent(t *testing.T) {
 }
 
 // TestDetachContainerClearsSettled pins that DetachContainer removes the
-// settled bookkeeping alongside containerPid2OciConfig/containerPid2ExeTarget,
+// settled bookkeeping alongside containerPid2OciConfig/containerPid2ExeTargets,
 // so a container ID reused later by an unrelated, unsettled container cannot
 // inherit a stale "settled" flag from this tracer's own map.
 func TestDetachContainerClearsSettled(t *testing.T) {
@@ -1019,8 +1019,9 @@ func TestReattachContainerExecPidResolvesSettledPathFromExecPid(t *testing.T) {
 		t.Fatalf("ReattachContainerExecPid: %v", err)
 	}
 
-	if got := tr.containerPid2ExeTarget[fakePid]; got != wantExe {
-		t.Errorf("containerPid2ExeTarget[trackedPid] = %q, want %q (must resolve from execPid, since trackedPid's own /proc/exe never changes for a forked child)", got, wantExe)
+	cache := tr.containerPid2ExeTargets[fakePid]
+	if cache == nil || !cache.contains(wantExe) {
+		t.Errorf("containerPid2ExeTargets[trackedPid] does not contain %q (must resolve from execPid, since trackedPid's own /proc/exe never changes for a forked child)", wantExe)
 	}
 }
 
@@ -1071,8 +1072,8 @@ func TestReattachContainerExecPidNoBookkeepingForExecPid(t *testing.T) {
 	if _, ok := tr.containerPid2Inodes[self]; ok {
 		t.Errorf("containerPid2Inodes gained an entry keyed by execPid %d (would leak once per forked exec)", self)
 	}
-	if _, ok := tr.containerPid2ExeTarget[self]; ok {
-		t.Errorf("containerPid2ExeTarget gained an entry keyed by execPid %d (would leak once per forked exec)", self)
+	if _, ok := tr.containerPid2ExeTargets[self]; ok {
+		t.Errorf("containerPid2ExeTargets gained an entry keyed by execPid %d (would leak once per forked exec)", self)
 	}
 	if got := tr.containerPid2Inodes[trackedPid]; len(got) != 1 || got[0] != 700 {
 		t.Errorf("containerPid2Inodes[trackedPid] = %v, want [700] (attach must be credited to trackedPid)", got)

@@ -150,10 +150,21 @@ type Tracer[Event any] struct {
 	// attachContainerWork.
 	containerPidSettled map[uint32]bool
 
-	// keeps the last /proc/<pid>/exe symlink target re-resolved for each PID by
-	// ReattachContainerPid. Used as a cheap guard so an exec storm that does not
-	// change the settled executable short-circuits before the open/inode work.
-	containerPid2ExeTarget map[uint32]string
+	// keeps a bounded, true-LRU set of the last exeLRUCap distinct
+	// /proc/<pid>/exe symlink targets successfully re-resolved for each
+	// containerPid by ReattachContainerExecPid. Used as a cheap guard so an
+	// exec storm that keeps re-execing a small rotating set of already-seen
+	// binaries short-circuits before the open/inode work, instead of only
+	// remembering the single most recently attached binary (which, under
+	// concurrent exec of several different short-lived binaries, thrashes and
+	// defeats the fast path for all of them -- see armosec/private-node-agent#541).
+	//
+	// Still keyed by containerPid, never execPid: see ReattachContainerExecPid's
+	// doc comment for why an execPid-keyed cache would have a structurally 0%
+	// hit rate. Entries are created lazily (on first successful attach for a
+	// pid) and never resized; see exeLRUCap for the capacity rationale and
+	// execache.go for the eviction contract.
+	containerPid2ExeTargets map[uint32]*exeLRUCache
 
 	// mappedLibAttached marks the PIDs for which reattachMappedLibraries has
 	// credited at least one inode via the map_files path. It is the stop signal
@@ -319,19 +330,19 @@ type attachJob struct {
 
 func NewTracer[Event any](logger logger.Logger) (*Tracer[Event], error) {
 	t := &Tracer[Event]{
-		containerPid2Inodes:    make(map[uint32][]uint64),
-		inodeRefCount:          make(map[uint64]*inodeKeeper),
-		pendingContainerPids:   make(map[uint32]bool),
-		containerPid2OciConfig: make(map[uint32]string),
-		containerPidSettled:    make(map[uint32]bool),
-		containerPid2ExeTarget: make(map[uint32]string),
-		mappedLibAttached:      make(map[uint32]bool),
-		openInContainer:        secureopen.OpenInContainer,
-		readRealInode:          kfilefields.ReadRealInodeFromFd,
-		openMapFileFunc:        openMapFile,
-		attachSem:              globalAttachSem,
-		logger:                 logger,
-		closed:                 false,
+		containerPid2Inodes:     make(map[uint32][]uint64),
+		inodeRefCount:           make(map[uint64]*inodeKeeper),
+		pendingContainerPids:    make(map[uint32]bool),
+		containerPid2OciConfig:  make(map[uint32]string),
+		containerPidSettled:     make(map[uint32]bool),
+		containerPid2ExeTargets: make(map[uint32]*exeLRUCache),
+		mappedLibAttached:       make(map[uint32]bool),
+		openInContainer:         secureopen.OpenInContainer,
+		readRealInode:           kfilefields.ReadRealInodeFromFd,
+		openMapFileFunc:         openMapFile,
+		attachSem:               globalAttachSem,
+		logger:                  logger,
+		closed:                  false,
 	}
 	t.attachToFile = t.attachUprobe
 	return t, nil
@@ -1050,7 +1061,7 @@ func (t *Tracer[Event]) ReattachContainerPid(containerPid uint32) error {
 //
 // containerPid is the container's ORIGINAL tracked pid, as recorded by
 // AttachContainer — this is what all bookkeeping (containerPid2Inodes,
-// containerPid2ExeTarget, ...) stays keyed to, and it is also whose mount
+// containerPid2ExeTargets, ...) stays keyed to, and it is also whose mount
 // namespace resolveLibraryPaths/openTargets use to open the settled
 // executable. execPid is the pid that ACTUALLY execve'd, per
 // PubSubEvent.ExecPid: for an in-place wrapper exec (e.g. node:20-slim's
@@ -1112,23 +1123,44 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	}
 	attachFilePath := t.attachFilePath
 	ociConfig := t.containerPid2OciConfig[containerPid]
-	lastExeTarget, haveLastExeTarget := t.containerPid2ExeTarget[containerPid]
+	progName := t.progName // snapshot for the metrics labels below; read-only after AttachProg
 	t.mu.Unlock()
 
 	// Phase 1 (NO lock): resolve + open the I/O-heavy attach targets.
 	//
-	// exe-inode-change guard: if /proc/<execPid>/exe still points at the target
-	// we last *successfully* re-attached for this container, there is nothing
-	// new to attach. Comparing by resolved PATH (not by pid) is what makes this
-	// work across repeated fork+exec of the same binary — execPid is a fresh
-	// pid every loop iteration, but the path it resolves to is unchanged. The
-	// target is recorded only after a clean pass below, so a transient failure
-	// (e.g. racing an overlayfs mount) is retried on the next exec instead of
-	// being permanently short-circuited.
+	// exe-already-seen guard: if /proc/<execPid>/exe resolves to a path we
+	// last *successfully* re-attached for this container and that is still
+	// resident in its bounded recent-set (containerPid2ExeTargets), there is
+	// nothing new to attach. Comparing by resolved PATH (not by pid) is what
+	// makes this work across repeated fork+exec of the same binary — execPid
+	// is a fresh pid every loop iteration, but the path it resolves to is
+	// unchanged. Unlike a single-slot cache, this set remembers up to
+	// exeLRUCap DISTINCT recent targets with true LRU eviction, so several
+	// different short-lived binaries execing concurrently under one container
+	// (e.g. bash, docker, top within seconds of each other) all keep hitting
+	// this fast path instead of overwriting each other's single cache slot —
+	// see armosec/private-node-agent#541. A path is recorded (cache.add) only
+	// after a clean pass below, so a transient failure (e.g. racing an
+	// overlayfs mount) is retried on the next exec instead of being
+	// permanently short-circuited.
+	//
+	// Correctness invariant: a miss here — whether this path was never seen
+	// before, or WAS seen before but has since aged out of the cap-N set —
+	// always falls through to the full Phase-1 resolve+attach below, exactly
+	// like a first-time exec. Eviction only ever costs extra I/O for the
+	// evicted binary; it can never cause a stale/incorrect exe path to be used
+	// for a live execPid. See exeLRUCache's doc comment in execache.go for the
+	// same invariant from the cache's side.
 	exeLink := filepath.Join(host.HostProcFs, fmt.Sprint(execPid), "exe")
 	exeTarget, _ := os.Readlink(exeLink)
-	if exeTarget != "" && haveLastExeTarget && lastExeTarget == exeTarget {
-		return nil
+	if exeTarget != "" {
+		t.mu.Lock()
+		cache := t.containerPid2ExeTargets[containerPid]
+		hit := cache != nil && cache.contains(exeTarget)
+		t.mu.Unlock()
+		if hit {
+			return nil
+		}
 	}
 
 	// This call is reached from the single goroutine that drains the kernel
@@ -1154,6 +1186,12 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	if exe, ok := t.settledExecutablePath(execPid); ok {
 		unsecuredAttachFilePaths = append(unsecuredAttachFilePaths, exe)
 	}
+
+	// ig_uprobetracer_reattach_duration_seconds / ig_uprobetracer_attach_timeout_total:
+	// bracket exactly the Phase-1 I/O (resolveLibraryPaths + openTargets), the
+	// part attachIOTimeout bounds -- not settledExecutablePath's single cheap
+	// readlink above, and not the Phase-2 commit below (which never touches ctx).
+	phase1Start := time.Now()
 	libPaths, err := t.resolveLibraryPaths(ctx, containerPid, attachFilePath, ociConfig)
 	if err != nil {
 		t.logger.Debugf("re-attaching to container %d (exec pid %d): %s", containerPid, execPid, err.Error())
@@ -1161,6 +1199,10 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	unsecuredAttachFilePaths = dedupPaths(append(unsecuredAttachFilePaths, libPaths...))
 
 	opened, openFailed := t.openTargets(ctx, containerPid, unsecuredAttachFilePaths)
+	recordReattachDuration(progName, time.Since(phase1Start))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		recordAttachTimeout(progName)
+	}
 
 	// Phase 2 (lock): re-validate the pid is still tracked — it may have been
 	// detached during the lock-free window, and committing then would leak a uprobe
@@ -1182,7 +1224,25 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	// failure) so the guard above does not permanently skip a pid whose attach
 	// failed transiently.
 	if exeTarget != "" && !openFailed && !attachFailed {
-		t.containerPid2ExeTarget[containerPid] = exeTarget
+		cache := t.containerPid2ExeTargets[containerPid]
+		if cache == nil {
+			cache = newExeLRUCache(exeLRUCap)
+			t.containerPid2ExeTargets[containerPid] = cache
+		}
+		// ig_uprobetracer_redundant_attach_total: the Phase-1 I/O above just ran
+		// (the fast-path check earlier in this call missed) for a path that is,
+		// right here at commit time, ALREADY resident in the cache -- almost
+		// always because a concurrent exec of this same not-yet-cached binary
+		// raced this call and committed first while this call was still doing
+		// its own Phase-1 I/O, and occasionally because the entry aged out of
+		// the cap-N set and got re-added by that same race window. Either way
+		// this call's Phase-1 work was pure overhead; a rising rate here is the
+		// signal that exeLRUCap needs retuning.
+		redundant := cache.contains(exeTarget)
+		cache.add(exeTarget)
+		if redundant {
+			recordRedundantAttach(progName)
+		}
 	}
 	return nil
 }
@@ -1573,7 +1633,7 @@ func (t *Tracer[Event]) DetachContainer(container *containercollection.Container
 	pid := container.ContainerPid()
 	delete(t.containerPid2OciConfig, pid)
 	delete(t.containerPidSettled, pid)
-	delete(t.containerPid2ExeTarget, pid)
+	delete(t.containerPid2ExeTargets, pid)
 	delete(t.mappedLibAttached, pid)
 	if t.prog == nil {
 		// remove from pending list
@@ -1630,6 +1690,6 @@ func (t *Tracer[Event]) Close() {
 	}
 	t.containerPid2Inodes = nil
 	t.inodeRefCount = nil
-	t.containerPid2ExeTarget = nil
+	t.containerPid2ExeTargets = nil
 	t.mappedLibAttached = nil
 }
