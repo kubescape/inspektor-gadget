@@ -157,22 +157,18 @@ func (c *exeLRUCache) contains(path string) bool {
 // an attach -- callers only skip work on an actual contains() hit (which
 // itself never fires for a TTL-expired entry -- see exeLRUTTL), never
 // because add() had to evict to make room.
+//
+// Implemented as a thin wrapper around touchAndReport (discarding its
+// alreadyPresent return) -- code-review follow-up: add and touchAndReport
+// used to duplicate the identical insert+evict logic verbatim, but add is
+// only ever called from tests (production code only calls touchAndReport
+// directly, see ReattachContainerExecPid), so a future change to the
+// eviction/capacity logic applied to only one copy would silently leave the
+// other behind its own test coverage. Routing through touchAndReport keeps
+// exactly one copy of that logic and lets add's existing tests validate the
+// same code path production actually uses.
 func (c *exeLRUCache) add(path string) {
-	if e, ok := c.elems[path]; ok {
-		e.Value.(*exeLRUEntry).lastTouched = c.now()
-		c.order.MoveToFront(e)
-		return
-	}
-	entry := &exeLRUEntry{path: path, lastTouched: c.now()}
-	e := c.order.PushFront(entry)
-	c.elems[path] = e
-	if c.order.Len() > c.cap {
-		oldest := c.order.Back()
-		if oldest != nil {
-			c.order.Remove(oldest)
-			delete(c.elems, oldest.Value.(*exeLRUEntry).path)
-		}
-	}
+	c.touchAndReport(path)
 }
 
 // touchAndReport is the single-lookup combination of a contains() check
