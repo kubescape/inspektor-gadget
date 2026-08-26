@@ -49,28 +49,52 @@ var attachTimeoutCounter, _ = metrics.Int64Counter("ig_uprobetracer_attach_timeo
 	metric.WithDescription("Number of times ReattachContainerExecPid's Phase-1 I/O hit attachIOTimeout instead of completing, per uprobe program"),
 )
 
-// redundantAttachCounter is the production signal for whether exeLRUCap needs
-// retuning: see the "redundant" computation next to cache.add in
-// ReattachContainerExecPid for exactly what counts as redundant and why.
+// redundantAttachCounter signals CONCURRENT-RACE redundancy only: Phase-1 I/O
+// ran for a path that, by the time this call reached its own commit, was
+// already resident in the cache WITH THE SAME exeIdentity -- see
+// exeLRUCache.touchAndReport's "current" return for exactly what counts.
+// This does NOT signal that exeLRUCap is too small: an entry that aged out of
+// the cap-N set is (by definition) no longer resident when re-added, so it can
+// never look "already present" here. For genuine capacity pressure, see
+// exeCacheEvictionCounter below -- that is the counter exeLRUCap's own
+// retuning guidance now points at (see exeLRUCap's doc comment in
+// execache.go).
 var redundantAttachCounter, _ = metrics.Int64Counter("ig_uprobetracer_redundant_attach_total",
 	metric.WithUnit("{attach}"),
-	metric.WithDescription("Number of times Phase-1 attach I/O ran for an exe path already resident in the container's recent-set, per uprobe program -- signals the exeLRUCap bound may be too small"),
+	metric.WithDescription("Number of times Phase-1 attach I/O ran for an exe path already resident (with the same content identity) in the container's recent-set, per uprobe program -- signals concurrent-race redundancy, NOT capacity pressure; see ig_uprobetracer_exe_cache_miss_total for that"),
+)
+
+// exeCacheEvictionCounter is the production signal for whether exeLRUCap
+// itself needs retuning (code-review follow-up: matthyx's non-blocker review
+// comment on this PR noted redundantAttachCounter above cannot serve this
+// purpose, since a capacity-driven eviction miss is never "already present" by
+// definition). It increments exactly when exeLRUCache's single insert+evict
+// implementation (touchAndReport, see execache.go) evicts an existing entry to
+// make room for a new one -- i.e. the cache was genuinely at capacity, as
+// opposed to touchIfCurrent/touchAndReport reporting a plain first-time miss
+// for a cache that still had room. A rising rate here, unlike
+// redundantAttachCounter, is a direct measurement of "more than exeLRUCap
+// distinct binaries are staying hot concurrently under one container than the
+// cap can hold."
+var exeCacheEvictionCounter, _ = metrics.Int64Counter("ig_uprobetracer_exe_cache_miss_total",
+	metric.WithUnit("{miss}"),
+	metric.WithDescription("Number of times the exec-reattach exe cache evicted an entry to make room for a new one, per uprobe program -- the production signal for whether exeLRUCap needs retuning"),
 )
 
 // progNameAttrsCache memoizes progNameAttrs' built attribute.Set per distinct
 // progName (code-review follow-up): progName cardinality is small and fixed
 // per process (a handful of uprobe programs, e.g. gotls's four separate
 // Tracer instances), but without memoization attribute.NewSet allocates and
-// sorts a brand new Set on EVERY call -- and these three
-// recordReattachDuration/recordAttachTimeout/recordRedundantAttach helpers
-// are called from the exec-driven reattach hot path this whole PR exists to
-// protect the latency budget of. A sync.Map (rather than a mutex-guarded plain
-// map) is used because these can be called concurrently from multiple
-// goroutines/programs and reads vastly outnumber the handful of first-time
-// writes (one per distinct progName, ever).
+// sorts a brand new Set on EVERY call -- and these four
+// recordReattachDuration/recordAttachTimeout/recordRedundantAttach/
+// recordExeCacheEviction helpers are called from the exec-driven reattach hot
+// path this whole PR exists to protect the latency budget of. A sync.Map
+// (rather than a mutex-guarded plain map) is used because these can be called
+// concurrently from multiple goroutines/programs and reads vastly outnumber
+// the handful of first-time writes (one per distinct progName, ever).
 var progNameAttrsCache sync.Map // map[string]attribute.Set
 
-// progNameAttrs is the shared attribute set for all three counters/histogram
+// progNameAttrs is the shared attribute set for all four counters/histogram
 // above: progName distinguishes the (small, fixed) set of uprobe programs one
 // process runs (e.g. gotls's four separate Tracer instances) without any
 // unbounded/high-cardinality label such as a pid or exe path.
@@ -95,7 +119,11 @@ func recordRedundantAttach(progName string) {
 	redundantAttachCounter.Add(context.Background(), 1, metric.WithAttributeSet(progNameAttrs(progName)))
 }
 
-// A 4th signal was requested by armosec/private-node-agent#541: a
+func recordExeCacheEviction(progName string) {
+	exeCacheEvictionCounter.Add(context.Background(), 1, metric.WithAttributeSet(progNameAttrs(progName)))
+}
+
+// A 5th signal was requested by armosec/private-node-agent#541: a
 // ringbuf-backlog/drop gauge or counter for the kernel exec-event source, so
 // an operator can see when the SINGLE goroutine draining it (watchExecEvents,
 // see ReattachContainerExecPid's doc comment on attachIOTimeout) is falling
@@ -132,7 +160,7 @@ func recordRedundantAttach(progName string) {
 //     with, the explicitly out-of-scope Publish/PublishExec change this task
 //     was told not to make.
 //
-// If exeLRUCap retuning (via ig_uprobetracer_redundant_attach_total above)
+// If exeLRUCap retuning (via ig_uprobetracer_exe_cache_miss_total above)
 // turns out not to explain a throughput regression, this Remaining field is
 // where the next investigation should start -- in pkg/container-hook/tracer.go,
 // as its own change.

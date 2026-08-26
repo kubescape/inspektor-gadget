@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -222,15 +223,22 @@ func TestRedundantAttachCounterFiresOnConcurrentRace(t *testing.T) {
 	go func() { done <- tr.ReattachContainerExecPid(trackedPid, execPid) }()
 	<-calledOnce
 
-	// Simulate a concurrent racer that committed this exact exe path for this
-	// container while the call above is still doing its own Phase-1 I/O.
+	// Simulate a concurrent racer that committed this exact exe path (with the
+	// exact identity the in-flight call itself already observed at its own
+	// Phase 0 -- st.statExeIdentity memoizes per target, so this returns the
+	// SAME value) for this container while the call above is still doing its
+	// own Phase-1 I/O.
+	ident, ok := st.statExeIdentity(filepath.Join(procRoot, fmt.Sprint(execPid), "exe"))
+	if !ok {
+		t.Fatal("statExeIdentity failed for the racer's simulated commit")
+	}
 	tr.mu.Lock()
 	cache := tr.containerPid2ExeTargets[trackedPid]
 	if cache == nil {
 		cache = newExeLRUCache(exeLRUCap)
 		tr.containerPid2ExeTargets[trackedPid] = cache
 	}
-	cache.add(target)
+	cache.add(target, ident)
 	tr.mu.Unlock()
 
 	close(release)
@@ -251,6 +259,62 @@ func TestRedundantAttachCounterFiresOnConcurrentRace(t *testing.T) {
 	}
 	if got := counterValue(t, reader, "ig_uprobetracer_redundant_attach_total", tr.progName); got != 1 {
 		t.Errorf("ig_uprobetracer_redundant_attach_total = %d after an ordinary (non-racing) miss, want unchanged at 1", got)
+	}
+}
+
+// TestExeCacheMissCounterFiresOnlyOnCapacityEviction proves
+// ig_uprobetracer_exe_cache_miss_total fires for the specific, documented
+// reason: committing a NEW exe path required evicting an existing one purely
+// for capacity reasons -- the genuine "exeLRUCap is too small" signal, as
+// distinct from ig_uprobetracer_redundant_attach_total's concurrent-race
+// signal (see matthyx's non-blocker review comment on this PR:
+// armosec/private-node-agent#541 -- redundantAttachCounter cannot, by
+// construction, ever fire for an aged-out/evicted entry, since it is no
+// longer resident when re-added).
+func TestExeCacheMissCounterFiresOnlyOnCapacityEviction(t *testing.T) {
+	reader := withTestMeterProvider(t)
+	procRoot := withFakeProcRoot(t)
+	tr, st := newTestTracer(t)
+	const trackedPid = fakePid
+	tr.containerPid2Inodes[trackedPid] = nil
+
+	// Fill the cache to exactly exeLRUCap distinct binaries: none of these
+	// commits evict anything (the cache still has room for each), so the
+	// counter must stay at 0 throughout.
+	for i := 0; i < exeLRUCap; i++ {
+		execPid := fakePid + 1 + uint32(i)
+		fakeExeProc(t, procRoot, execPid, fmt.Sprintf("/opt/fill-%d/bin", i))
+		st.currentInode = uint64(1000 + i)
+		if err := tr.ReattachContainerExecPid(trackedPid, execPid); err != nil {
+			t.Fatalf("fill exec #%d: %v", i, err)
+		}
+	}
+	if got := counterValue(t, reader, "ig_uprobetracer_exe_cache_miss_total", tr.progName); got != 0 {
+		t.Fatalf("ig_uprobetracer_exe_cache_miss_total = %d after filling to exactly exeLRUCap (no eviction should have been needed yet), want 0", got)
+	}
+
+	// One more DISTINCT binary: the cache is now genuinely full, so this
+	// commit must evict the least-recently-used filler and bump the counter
+	// by exactly 1.
+	overflowExecPid := fakePid + 1 + uint32(exeLRUCap)
+	fakeExeProc(t, procRoot, overflowExecPid, "/opt/overflow/bin")
+	st.currentInode = 9999
+	if err := tr.ReattachContainerExecPid(trackedPid, overflowExecPid); err != nil {
+		t.Fatalf("overflow exec: %v", err)
+	}
+	if got := counterValue(t, reader, "ig_uprobetracer_exe_cache_miss_total", tr.progName); got != 1 {
+		t.Errorf("ig_uprobetracer_exe_cache_miss_total = %d after one capacity-forced eviction, want 1", got)
+	}
+
+	// A subsequent cache HIT (re-exec of a still-resident binary) must NOT
+	// bump the counter -- only a genuine capacity eviction does.
+	hitExecPid := fakePid + 1000
+	fakeExeProc(t, procRoot, hitExecPid, "/opt/overflow/bin")
+	if err := tr.ReattachContainerExecPid(trackedPid, hitExecPid); err != nil {
+		t.Fatalf("hit exec: %v", err)
+	}
+	if got := counterValue(t, reader, "ig_uprobetracer_exe_cache_miss_total", tr.progName); got != 1 {
+		t.Errorf("ig_uprobetracer_exe_cache_miss_total = %d after a plain cache hit, want unchanged at 1", got)
 	}
 }
 

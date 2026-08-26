@@ -179,6 +179,15 @@ type Tracer[Event any] struct {
 	// implementations in NewTracer and are only overridden in tests.
 	openInContainer func(ctx context.Context, containerPid uint32, filePath string) (*os.File, error)
 	readRealInode   func(fd int) (uint64, error)
+	// statExeIdentity is the seam for identity-stat'ing a process's magic
+	// /proc/<execPid>/exe symlink -- the fast-path guard in
+	// ReattachContainerExecPid uses it to detect a binary replaced in place at
+	// an already-cached path (see defaultStatExeIdentity for why this is cheap
+	// and host-namespace-safe). Defaults to defaultStatExeIdentity in
+	// NewTracer; tests override it to simulate a controlled exeIdentity
+	// without a real, resolvable target on disk (fakeExeProc's symlink target
+	// need not exist).
+	statExeIdentity func(exeLink string) (exeIdentity, bool)
 	// attachToFile attaches to an already-open candidate, returning one link per
 	// bound probe site. offsets are the file offsets resolved during the
 	// lock-free open phase, or empty to attach by symbol name.
@@ -339,6 +348,7 @@ func NewTracer[Event any](logger logger.Logger) (*Tracer[Event], error) {
 		mappedLibAttached:       make(map[uint32]bool),
 		openInContainer:         secureopen.OpenInContainer,
 		readRealInode:           kfilefields.ReadRealInodeFromFd,
+		statExeIdentity:         defaultStatExeIdentity,
 		openMapFileFunc:         openMapFile,
 		attachSem:               globalAttachSem,
 		logger:                  logger,
@@ -346,6 +356,45 @@ func NewTracer[Event any](logger logger.Logger) (*Tracer[Event], error) {
 	}
 	t.attachToFile = t.attachUprobe
 	return t, nil
+}
+
+// defaultStatExeIdentity is statExeIdentity's real, production implementation:
+// stat(2) the magic /proc/<execPid>/exe symlink itself, FOLLOWING it (not
+// os.Lstat, which would stat the symlink and report ITS OWN identity, not the
+// target's). The Linux kernel serves this stat entirely from that pid's
+// mm_struct->exe_file reference -- the process's actual, currently-mapped
+// executable -- with no need to enter that pid's mount namespace, regardless
+// of which mount namespace the CALLING (host) process itself is in. This is
+// the same host-side procfs access os.Readlink(exeLink) already performs a
+// few lines above every call site; the only new cost is one extra cheap
+// stat(2) syscall on the same magic symlink -- see matthyx's BLOCKER review
+// comment on this PR (armosec/private-node-agent#541) for the full reasoning
+// on why this is safe and cheap, correcting an earlier (wrong) assumption in
+// this file that a full content check would require crossing into the
+// container's mount namespace.
+//
+// Contrast with attachOneOpenFile's readRealInode
+// (kfilefields.ReadRealInodeFromFd): that reads the kernel's f_inode pointer
+// off an ALREADY-OPEN fd (opened in-container via openInContainer)
+// specifically to see through an overlayfs mount to the real underlying
+// layer's inode -- needed there because the file is opened FROM INSIDE the
+// container's mount namespace, where overlayfs merges layers, and dedup must
+// recognize the same real file regardless of which layer's view it was opened
+// through. Here, by contrast, the host is stat'ing its OWN /proc/<pid>/exe
+// symlink, which the kernel already resolves to the one real backing file
+// regardless of container mount-namespace layering, so a plain host-side
+// stat(2) (dev, ino, mtime of the target) is sufficient identity -- no eBPF,
+// no fd, no overlay traversal needed. The two are deliberately different
+// mechanisms answering different questions: "is this fd's file the SAME as
+// some other fd's file, seen through overlayfs" (readRealInode) vs. "did the
+// file this exact /proc/<pid>/exe currently points to change since we last
+// looked" (statExeIdentity) -- a difference in KIND, not an inconsistency.
+func defaultStatExeIdentity(exeLink string) (exeIdentity, bool) {
+	var st unix.Stat_t
+	if err := unix.Stat(exeLink, &st); err != nil {
+		return exeIdentity{}, false
+	}
+	return exeIdentity{dev: uint64(st.Dev), ino: st.Ino, mtimeNano: st.Mtim.Nano()}, true
 }
 
 // SetAttachSemaphore replaces the process-wide attach budget this tracer draws
@@ -1129,51 +1178,66 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	// Phase 1 (NO lock): resolve + open the I/O-heavy attach targets.
 	//
 	// exe-already-seen guard: if /proc/<execPid>/exe resolves to a path we
-	// last *successfully* re-attached for this container and that is still
-	// resident in its bounded recent-set (containerPid2ExeTargets), there is
-	// nothing new to attach. Comparing by resolved PATH (not by pid) is what
-	// makes this work across repeated fork+exec of the same binary — execPid
-	// is a fresh pid every loop iteration, but the path it resolves to is
-	// unchanged. Unlike a single-slot cache, this set remembers up to
+	// last *successfully* re-attached for this container, that path is still
+	// resident in its bounded recent-set (containerPid2ExeTargets), AND the
+	// CONTENT currently backing that path (its exeIdentity: dev+ino+mtime, see
+	// execache.go) still matches what was recorded at that last attach, there
+	// is nothing new to attach. Comparing by resolved PATH (not by pid) is
+	// what makes this work across repeated fork+exec of the same binary —
+	// execPid is a fresh pid every loop iteration, but the path it resolves to
+	// is unchanged. Unlike a single-slot cache, this set remembers up to
 	// exeLRUCap DISTINCT recent targets with true LRU eviction, so several
 	// different short-lived binaries execing concurrently under one container
 	// (e.g. bash, docker, top within seconds of each other) all keep hitting
 	// this fast path instead of overwriting each other's single cache slot —
-	// see armosec/private-node-agent#541. A path is recorded (cache.add) only
-	// after a clean pass below, so a transient failure (e.g. racing an
-	// overlayfs mount) is retried on the next exec instead of being
+	// see armosec/private-node-agent#541. A path+identity pair is recorded
+	// (cache.add) only after a clean pass below, so a transient failure (e.g.
+	// racing an overlayfs mount) is retried on the next exec instead of being
 	// permanently short-circuited.
 	//
 	// Correctness invariant: a miss here — whether this path was never seen
 	// before, WAS seen before but has since aged out of the cap-N set, or WAS
-	// seen before but has aged out on TIME (exceeded exeLRUTTL) — always falls
-	// through to the full Phase-1 resolve+attach below, exactly like a
-	// first-time exec. Eviction only ever costs extra I/O for the evicted
-	// binary; it can never cause a stale/incorrect exe path to be used for a
-	// live execPid. See exeLRUCache's doc comment in execache.go for the same
-	// invariant from the cache's side.
+	// seen before at this path but the CONTENT there has since changed (a
+	// different exeIdentity: e.g. the binary was replaced in place via
+	// rename, or an overlayfs copy-up produced a new real file at the same
+	// virtual path) — always falls through to the full Phase-1 resolve+attach
+	// below, exactly like a first-time exec. Eviction only ever costs extra
+	// I/O for the evicted binary; a content change is detected and re-attached
+	// immediately, on the very next exec, not just eventually. Neither case
+	// can ever cause a stale/incorrect exe path (or stale content at a live
+	// one) to be used for a live execPid. See exeLRUCache's doc comment in
+	// execache.go for the same invariant from the cache's side.
 	//
-	// TTL backstop (code-review follow-up): this cache is keyed by resolved
-	// PATH only, so it has no way to notice that the file CONTENT at a cached
-	// path changed underneath it (e.g. a container hot-reloads/self-updates a
-	// binary in place at the same path) -- a limitation pre-existing in the
-	// single-slot cache this replaced, but one whose practical impact this
-	// bounded LRU widens (see exeLRUTTL's doc comment in execache.go for the
-	// full reasoning). contains() below therefore also enforces exeLRUTTL: an
-	// otherwise-resident entry older than that is reported as a miss rather
-	// than as a hit, giving a concrete, bounded worst-case staleness guarantee
-	// instead of relying on incidental cache-size-dependent turnover. This is
-	// a cheap backstop (one time.Now() comparison, no new I/O), not a full fix
-	// -- a full fix would mean verifying the file's current inode through the
-	// same secure per-container-mount-namespace open machinery the real
-	// Phase-1 attach already uses, which costs nearly as much as just doing
-	// the real attach.
+	// This closes the gap matthyx's review of this PR found (BLOCKER,
+	// armosec/private-node-agent#541): the PREVIOUS version of this guard
+	// keyed purely on the resolved path string, so once the bounded LRU (as
+	// opposed to the single-slot cache it replaced) let a path stay resident
+	// indefinitely, a binary replaced in place at that same path was served a
+	// stale hit that silently, permanently skipped re-attaching to the new
+	// content. A TTL backstop was added as an interim mitigation but has since
+	// been REMOVED (see exeIdentity's doc comment in execache.go for why it is
+	// now redundant): the dev+ino+mtime identity check below is strictly
+	// stronger and has no staleness window at all, so keeping both would only
+	// leave two overlapping correctness mechanisms to reason about.
+	//
+	// The identity stat below (t.statExeIdentity, exeLink itself, following
+	// the symlink) is cheap and safe to do from the host without entering the
+	// container's mount namespace, unlike resolving/opening exeTarget (the
+	// resolved path STRING) would be -- see defaultStatExeIdentity's doc
+	// comment for the full reasoning.
 	exeLink := filepath.Join(host.HostProcFs, fmt.Sprint(execPid), "exe")
 	exeTarget, _ := os.Readlink(exeLink)
+	var (
+		exeIdent   exeIdentity
+		exeIdentOK bool
+	)
 	if exeTarget != "" {
+		exeIdent, exeIdentOK = t.statExeIdentity(exeLink)
+	}
+	if exeTarget != "" && exeIdentOK {
 		t.mu.Lock()
 		cache := t.containerPid2ExeTargets[containerPid]
-		hit := cache != nil && cache.contains(exeTarget)
+		hit := cache != nil && cache.touchIfCurrent(exeTarget, exeIdent)
 		t.mu.Unlock()
 		if hit {
 			return nil
@@ -1225,46 +1289,73 @@ func (t *Tracer[Event]) ReattachContainerExecPid(containerPid, execPid uint32) e
 	// detached during the lock-free window, and committing then would leak a uprobe
 	// link with no DetachContainer to release it — then commit the dedup/attach
 	// bookkeeping under the lock.
+	//
+	// Lock held explicitly (not via defer) so the metrics calls below --
+	// recordRedundantAttach / recordExeCacheEviction -- run AFTER t.mu.Unlock()
+	// (code-review follow-up): metrics.int64Counter.Add takes
+	// Proxy.mu.RLock() internally, which is contention on the exact mutex this
+	// PR's own Phase-1/Phase-2 split argues must stay short (see the doc
+	// comment above Phase 1 about not starving AttachContainer on the
+	// fanotify path). Not a deadlock either way -- lock order stays
+	// t.mu -> Proxy.mu -- but there is no reason to pay that extra hold time
+	// while still holding t.mu when deferring the metrics call past the
+	// unlock costs nothing.
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.closed {
+		t.mu.Unlock()
 		closeOpened(opened)
 		return nil
 	}
 	if _, tracked := t.containerPid2Inodes[containerPid]; !tracked {
+		t.mu.Unlock()
 		closeOpened(opened)
 		return nil
 	}
 	attachFailed := t.commitOpenedTargets(containerPid, opened)
 
-	// Record the settled exe target only after a clean pass (no open or attach
-	// failure) so the guard above does not permanently skip a pid whose attach
-	// failed transiently.
-	if exeTarget != "" && !openFailed && !attachFailed {
+	// Record the settled exe path+identity only after a clean pass (no open or
+	// attach failure) so the guard above does not permanently skip a pid whose
+	// attach failed transiently. redundant/evicted are captured here (under
+	// the lock, where the cache itself is touched) and only turned into
+	// metrics calls after t.mu.Unlock() below.
+	var redundant, evicted bool
+	if exeTarget != "" && exeIdentOK && !openFailed && !attachFailed {
 		cache := t.containerPid2ExeTargets[containerPid]
 		if cache == nil {
 			cache = newExeLRUCache(exeLRUCap)
 			t.containerPid2ExeTargets[containerPid] = cache
 		}
 		// ig_uprobetracer_redundant_attach_total: the Phase-1 I/O above just ran
-		// (the fast-path check earlier in this call missed) for a path that is,
-		// right here at commit time, ALREADY resident (and not TTL-expired) in
+		// (the fast-path check earlier in this call missed) for a path+identity
+		// that is, right here at commit time, ALREADY resident and current in
 		// the cache -- almost always because a concurrent exec of this same
 		// not-yet-cached binary raced this call and committed first while this
 		// call was still doing its own Phase-1 I/O, and occasionally because
-		// the entry aged out of the cap-N set (or past exeLRUTTL) and got
-		// re-added by that same race window. Either way this call's Phase-1
-		// work was pure overhead; a rising rate here is the signal that
-		// exeLRUCap needs retuning.
+		// the entry aged out of the cap-N set and got re-added by that same
+		// race window. Either way this call's Phase-1 work was pure overhead;
+		// a rising rate here signals genuine concurrent-race redundancy.
 		//
-		// touchAndReport combines the add() this commit always needs with the
-		// "was it already there" check the metric needs, in one pass -- avoids
-		// the two separate map lookups (and up to two list.MoveToFront calls)
-		// a plain contains()-then-add() sequence would cost here.
-		redundant := cache.touchAndReport(exeTarget)
-		if redundant {
-			recordRedundantAttach(progName)
-		}
+		// ig_uprobetracer_exe_cache_miss_total (recorded via evicted below):
+		// signals the OTHER, distinct condition -- committing this path
+		// required evicting some other, unrelated path purely for capacity
+		// reasons. This -- not redundantAttachCounter, which structurally
+		// cannot fire for an aged-out entry -- is the production signal for
+		// whether exeLRUCap itself needs retuning (see exeLRUCap's doc
+		// comment in execache.go, and matthyx's non-blocker review comment).
+		//
+		// touchAndReport combines the add() this commit always needs with both
+		// checks the metrics need, in one pass -- avoids the extra map lookups
+		// (and up to two list.MoveToFront calls) a plain
+		// touchIfCurrent()-then-add() sequence would cost here.
+		redundant, evicted = cache.touchAndReport(exeTarget, exeIdent)
+	}
+	t.mu.Unlock()
+
+	if redundant {
+		recordRedundantAttach(progName)
+	}
+	if evicted {
+		recordExeCacheEviction(progName)
 	}
 	return nil
 }

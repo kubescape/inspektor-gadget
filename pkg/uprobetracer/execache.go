@@ -14,88 +14,82 @@
 
 package uprobetracer
 
-import (
-	"container/list"
-	"time"
-)
+import "container/list"
 
 // exeLRUCap bounds how many distinct, successfully-attached exe paths are
 // remembered per containerPid. It is a placeholder default -- 8 is generous
 // enough for the reported bug (a handful of short-lived binaries execing
 // within seconds of each other under one container) without keeping every
-// binary a container has ever run pinned in memory forever. Retune using the
-// ig_uprobetracer_redundant_attach_total counter (see metrics.go) once real
-// production churn patterns are observed.
+// binary a container has ever run pinned in memory forever.
+//
+// Retuning guidance (two DISTINCT signals, see metrics.go):
+//   - ig_uprobetracer_redundant_attach_total fires on a CONCURRENT-RACE
+//     redundancy -- Phase-1 I/O ran for a path that, by commit time, was
+//     already resident and current. This signals wasted work from racing
+//     execs of the same not-yet-cached binary; it does NOT signal that the
+//     cap itself is too small (an entry that ages out of the cap-N set is, by
+//     definition, no longer resident, so re-adding it can never look
+//     "already present").
+//   - ig_uprobetracer_exe_cache_miss_total fires when add/touchAndReport
+//     evicts an entry to make room for a new one -- i.e. the cache was
+//     genuinely at capacity. THIS is the signal that exeLRUCap needs
+//     retuning: a rising eviction rate means more than exeLRUCap distinct
+//     binaries are staying "hot" (repeatedly re-exec'd) concurrently under
+//     one container than the cap can hold without thrashing.
 const exeLRUCap = 8
 
-// exeLRUTTL bounds how long a cache entry may satisfy the fast-path hit check
-// before it must be reverified via a full Phase-1 resolve+attach, regardless
-// of how much (or how little) LRU churn happens around it.
+// exeIdentity is the (device, inode, mtime) triple identifying the CONTENT
+// currently backing a resolved exe path, as observed by stat'ing the process's
+// magic /proc/<execPid>/exe symlink (see tracer.go's defaultStatExeIdentity).
 //
-// Why this exists (code-review follow-up on the exeLRUCache PR): exeLRUCache
-// is keyed by resolved PATH ONLY -- it has no way to detect that the file
-// CONTENT at a cached path changed underneath it (e.g. a container hot-reloads
-// or self-updates a binary in place at the same path). This limitation is
-// pre-existing in the original single-slot cache this replaced (it also only
-// ever compared resolved-path strings, never inode/mtime), but the bounded-LRU
-// cache widens its practical impact: the old single-slot cache accidentally
-// self-healed the moment ANY other distinct binary was exec'd (which
-// overwrote the single slot), giving it an unpredictable but often-short
-// staleness window. This cache can instead keep a stale-but-unchanged-path
-// entry resident far longer -- up to exeLRUCap OTHER distinct paths being
-// seen -- which for the exact workload this fix targets (a small, stable,
-// repeatedly-exec'd set of binaries) could mean effectively indefinitely.
+// dev+ino is the primary identity, per matthyx's review of this PR
+// (armosec/private-node-agent#541): it is what catches the common case of a
+// binary being replaced AT THE SAME PATH via rename or an overlayfs copy-up --
+// the new file gets a new inode (and often a new device, across overlay
+// layers), even though the path string a container execs is unchanged. Device
+// is included alongside inode, not inode alone, to avoid a false MATCH from
+// inode-number reuse across different filesystems/overlayfs layers.
 //
-// A full fix -- actually verifying the file's current inode on every hit --
-// is deliberately NOT done here: exeTarget (from
-// os.Readlink("/proc/<execPid>/exe")) is a path resolved INSIDE the
-// container's mount namespace, so it cannot be safely os.Stat'd directly from
-// the host process (that would stat the HOST's own filesystem at that path
-// string -- a different, unrelated, and dangerous operation). Properly
-// verifying the file would require going through the same secure
-// per-container-mount-namespace open machinery (openInContainer /
-// t.openTargets) that the full Phase-1 attach path already uses, which costs
-// nearly as much as just doing the real attach -- defeating the entire point
-// of this fast path being fast.
+// mtimeNano closes one further, narrower gap dev+ino alone cannot: a binary
+// overwritten IN PLACE through the SAME already-existing inode (a non-atomic
+// write to a file that is not currently mapped for execution, as opposed to
+// the much more common unlink+rename replacement pattern deployment tooling
+// uses specifically to avoid ETXTBSY). dev+ino would not change here, but
+// mtime does. It is included at zero extra I/O cost -- stat(2) already
+// returns it alongside dev+ino in the exact same syscall.
 //
-// Instead, this TTL is a cheap, bounded backstop: one time.Now() comparison
-// against a stored timestamp, no new I/O on the fast path. 5 minutes was
-// chosen to be generous enough that a binary re-exec'd more often than that
-// (the "small, stable, repeatedly-exec'd set of binaries" this whole cache
-// exists to serve -- see exeLRUCache's doc comment) never ages out purely on
-// time, since every hit (contains) and every commit (add/touchAndReport)
-// refreshes the timestamp -- preserving nearly all of the throughput win for
-// genuinely hot binaries. At the same time it gives a concrete, testable,
-// worst-case staleness guarantee (at most exeLRUTTL, full stop) instead of
-// the prior open-ended "until exeLRUCap other distinct binaries are seen",
-// which could be effectively unbounded for a stable binary set.
-const exeLRUTTL = 5 * time.Minute
+// This combination is what makes the exeLRUTTL backstop (introduced in an
+// earlier code-review round, since removed) redundant: that TTL only ever
+// bounded the worst-case staleness window to a fixed 5 minutes for exactly the
+// gap dev+ino+mtime now closes immediately, on the very next exec, with no
+// window at all. Two overlapping correctness mechanisms for the same gap make
+// the code harder to reason about for no remaining benefit, so the weaker,
+// time-bounded one was removed in favor of the immediate one.
+type exeIdentity struct {
+	dev       uint64
+	ino       uint64
+	mtimeNano int64
+}
 
-// exeLRUEntry is one exeLRUCache slot: the resolved exe path plus the last
-// time it was successfully touched (inserted or re-confirmed), used to
-// enforce exeLRUTTL.
+// exeLRUEntry is one exeLRUCache slot: the resolved exe path plus the
+// exeIdentity last recorded for it (either at initial attach, or refreshed by
+// a later touchIfCurrent hit / touchAndReport commit).
 type exeLRUEntry struct {
-	path        string
-	lastTouched time.Time
+	path  string
+	ident exeIdentity
 }
 
 // exeLRUCache is a bounded, true LEAST-RECENTLY-USED set of distinct exe
-// paths successfully attached for one containerPid, with a TTL backstop (see
-// exeLRUTTL) bounding how long any one entry may serve as a fast-path hit.
-// "Used" means checked as a cache hit via contains, not merely inserted --
-// see contains' doc comment for why that distinction is load-bearing.
+// paths successfully attached for one containerPid, each paired with the
+// exeIdentity it was last confirmed to have. "Used" means checked as a cache
+// hit via touchIfCurrent, not merely inserted -- see touchIfCurrent's doc
+// comment for why that distinction is load-bearing.
 //
 // Zero value is not usable; construct with newExeLRUCache. Not safe for
 // concurrent use: callers serialize access via Tracer.mu, exactly like the
 // map it replaces.
 type exeLRUCache struct {
 	cap int
-	ttl time.Duration
-	// now is the injectable clock used for TTL bookkeeping, defaulting to
-	// time.Now. Tests in this package may overwrite it directly (this field
-	// is unexported, but tests live in the same package) to fast-forward
-	// time deterministically instead of sleeping in real time.
-	now func() time.Time
 	// order lists entries from most- to least-recently-used, front to back.
 	// Each element's Value is a *exeLRUEntry.
 	order *list.List
@@ -105,96 +99,128 @@ type exeLRUCache struct {
 func newExeLRUCache(capacity int) *exeLRUCache {
 	return &exeLRUCache{
 		cap:   capacity,
-		ttl:   exeLRUTTL,
-		now:   time.Now,
 		order: list.New(),
 		elems: make(map[string]*list.Element),
 	}
 }
 
-// contains reports whether path is currently resident in the cache AND has
-// been touched within the last ttl -- an entry older than that is treated as
-// a miss (see exeLRUTTL's doc comment for why). A hit counts as a USE and
-// moves path to the most-recently-used end -- this is what makes eviction
-// true LRU rather than FIFO: two binaries that keep getting re-exec'd
-// (repeatedly hitting this check) stay resident no matter how much cold,
-// one-off exec churn is interleaved between them, because each hit refreshes
-// their recency. Under FIFO (insertion-order eviction, recency of use never
-// consulted) that same interleaving would eventually evict both, reproducing
-// the exact flip-flop bug this cache exists to fix.
+// peek reports whether path is currently resident in the cache, WITHOUT
+// consulting or comparing exeIdentity and WITHOUT touching LRU recency. It is
+// the genuinely read-only counterpart to touchIfCurrent/touchAndReport --
+// added per a code-review nit on this PR's earlier contains() (a mutating
+// predicate whose name read as a pure one, a data-race hazard for any future
+// caller -- e.g. one holding only an RLock, or a debug/observation path --
+// that assumed read-only). Use this when you only want to know whether a path
+// is a resident key at all (e.g. tests observing cache shape); use
+// touchIfCurrent when the check is meant to also count as a genuine use.
 //
-// A TTL-expired entry is deliberately NOT moved to front and NOT refreshed
-// here: it must be reported as a plain miss so the caller falls through to
-// the full Phase-1 resolve+attach, which will correctly re-verify the target
-// and re-stamp the entry's timestamp on its next successful add/touchAndReport.
-func (c *exeLRUCache) contains(path string) bool {
+// Still requires the same external synchronization as every other method
+// here -- exeLRUCache itself is not internally synchronized.
+func (c *exeLRUCache) peek(path string) bool {
+	_, ok := c.elems[path]
+	return ok
+}
+
+// touchIfCurrent reports whether path is currently resident in the cache AND
+// its recorded exeIdentity equals ident -- the fast-path hit check
+// (ReattachContainerExecPid). A hit counts as a USE and moves path to the
+// most-recently-used end -- this is what makes eviction here true LRU rather
+// than FIFO: two binaries that keep getting re-exec'd (repeatedly hitting this
+// check) stay resident no matter how much cold, one-off exec churn is
+// interleaved between them, because each hit refreshes their recency. Under
+// FIFO (insertion-order eviction, recency of use never consulted) that same
+// interleaving would eventually evict both, reproducing the exact flip-flop
+// bug this cache exists to fix (armosec/private-node-agent#541).
+//
+// path present but ident DIFFERENT from what was recorded is a MISS, not a
+// hit -- and, unlike a plain unseen-path miss, it is deliberately NOT
+// refreshed/replaced here: the caller must fall through to a real Phase-1
+// resolve+attach for the (now-different) content, and only a clean pass
+// there commits the new identity via touchAndReport. This is the fix for
+// matthyx's BLOCKER review comment: the pre-inode-check version of this
+// method (then named contains) keyed purely on the path string, so a binary
+// replaced in place at an already-cached path was silently served a stale hit
+// that skipped re-attaching to the new content entirely.
+func (c *exeLRUCache) touchIfCurrent(path string, ident exeIdentity) bool {
 	e, ok := c.elems[path]
 	if !ok {
 		return false
 	}
 	entry := e.Value.(*exeLRUEntry)
-	if c.now().Sub(entry.lastTouched) > c.ttl {
+	if entry.ident != ident {
 		return false
 	}
 	c.order.MoveToFront(e)
 	return true
 }
 
-// add records path as the most-recently-used entry with a fresh timestamp,
-// evicting the least recently used entry if doing so would exceed the
-// cache's capacity. It is a no-op reordering (move-to-front, timestamp
-// refresh) if path is already present, TTL-expired or not.
+// add records path as the most-recently-used entry with ident, evicting the
+// least recently used entry if doing so would exceed the cache's capacity. It
+// is a no-op reordering (move-to-front, identity refresh) if path is already
+// present.
 //
 // Correctness invariant (do not weaken): eviction here only ever affects
-// PERFORMANCE, never correctness. add is called (see
-// ReattachContainerExecPid) only after a clean Phase-1 resolve+attach pass
-// for path, so evicting some OTHER path out of the set simply means that
-// other path's NEXT exec will miss this cache's fast path and fall through
-// to the full, correct Phase-1 attach again -- exactly as if it were being
-// seen for the first time. Eviction must never cause a stale or incorrect
-// exe path to be substituted for a live execPid; it only ever costs an extra
-// round of I/O for the evicted binary. A full cache must never silently skip
-// an attach -- callers only skip work on an actual contains() hit (which
-// itself never fires for a TTL-expired entry -- see exeLRUTTL), never
+// PERFORMANCE, never correctness. add is called (see ReattachContainerExecPid)
+// only after a clean Phase-1 resolve+attach pass for path at the given ident,
+// so evicting some OTHER path out of the set simply means that other path's
+// NEXT exec will miss this cache's fast path and fall through to the full,
+// correct Phase-1 attach again -- exactly as if it were being seen for the
+// first time. Eviction must never cause a stale or incorrect exe path (or a
+// stale identity for a live one) to be substituted for a live execPid; it
+// only ever costs an extra round of I/O for the evicted binary. A full cache
+// must never silently skip an attach -- callers only skip work on an actual
+// touchIfCurrent hit (which itself never fires for a path whose recorded
+// identity no longer matches -- see touchIfCurrent's doc comment), never
 // because add() had to evict to make room.
 //
-// Implemented as a thin wrapper around touchAndReport (discarding its
-// alreadyPresent return) -- code-review follow-up: add and touchAndReport
-// used to duplicate the identical insert+evict logic verbatim, but add is
-// only ever called from tests (production code only calls touchAndReport
-// directly, see ReattachContainerExecPid), so a future change to the
-// eviction/capacity logic applied to only one copy would silently leave the
-// other behind its own test coverage. Routing through touchAndReport keeps
-// exactly one copy of that logic and lets add's existing tests validate the
-// same code path production actually uses.
-func (c *exeLRUCache) add(path string) {
-	c.touchAndReport(path)
+// Implemented as a thin wrapper around touchAndReport (discarding its return
+// values) -- code-review follow-up: add and touchAndReport used to duplicate
+// the identical insert+evict logic verbatim, but add is only ever called from
+// tests (production code only calls touchAndReport directly, see
+// ReattachContainerExecPid), so a future change to the eviction/capacity logic
+// applied to only one copy would silently leave the other behind its own test
+// coverage. Routing through touchAndReport keeps exactly one copy of that
+// logic and lets add's existing tests validate the same code path production
+// actually uses.
+func (c *exeLRUCache) add(path string, ident exeIdentity) {
+	c.touchAndReport(path, ident)
 }
 
-// touchAndReport is the single-lookup combination of a contains() check
+// touchAndReport is the single-lookup combination of a touchIfCurrent() check
 // followed by an add() -- used at commit time (see ReattachContainerExecPid),
 // where the caller always wants to record path as freshly, successfully
-// attached AND learn whether that work turned out to be redundant (path was
-// already a live, non-expired resident), without paying for two separate map
-// lookups and up to two list.MoveToFront calls.
+// attached at ident AND learn (a) whether that work turned out to be
+// redundant (path was already resident with the SAME ident) and (b) whether
+// committing it evicted some other path to make room, without paying for two
+// separate map lookups and up to two list.MoveToFront calls.
 //
-// alreadyPresent reports whether path was a non-expired resident BEFORE this
-// call touched it -- i.e. exactly what contains(path) would have reported
-// had it been called first, TTL included: a present-but-TTL-expired entry
-// reports alreadyPresent=false, since (per exeLRUTTL's contract) it must be
-// treated as a miss, not a redundant hit. Unconditionally, on return, path is
-// resident as the most-recently-used entry with a freshly-stamped timestamp,
-// identical to what contains(path); add(path) would have left behind.
-func (c *exeLRUCache) touchAndReport(path string) (alreadyPresent bool) {
-	now := c.now()
+// current reports whether (path, ident) was ALREADY the resident value BEFORE
+// this call touched it -- i.e. exactly what touchIfCurrent(path, ident) would
+// have reported had it been called first. path present but with a DIFFERENT
+// ident reports current=false (this call's Phase-1 work was NOT redundant --
+// it correctly re-attached to genuinely new content), exactly like a
+// brand-new path would. This is what feeds
+// ig_uprobetracer_redundant_attach_total: it must only fire for a genuine
+// concurrent-race duplicate, never for a legitimate content change.
+//
+// evicted reports whether committing path required evicting some OTHER,
+// least-recently-used path to stay within capacity -- i.e. the cache was
+// genuinely full. This is what feeds ig_uprobetracer_exe_cache_miss_total
+// (see exeLRUCap's doc comment): the production signal for whether exeLRUCap
+// itself needs retuning, as distinct from ordinary concurrent-race redundancy.
+//
+// Unconditionally, on return, path is resident as the most-recently-used
+// entry with ident, identical to what touchIfCurrent(path, ident);
+// add(path, ident) would have left behind.
+func (c *exeLRUCache) touchAndReport(path string, ident exeIdentity) (current, evicted bool) {
 	if e, ok := c.elems[path]; ok {
 		entry := e.Value.(*exeLRUEntry)
-		alreadyPresent = now.Sub(entry.lastTouched) <= c.ttl
-		entry.lastTouched = now
+		current = entry.ident == ident
+		entry.ident = ident
 		c.order.MoveToFront(e)
-		return alreadyPresent
+		return current, false
 	}
-	entry := &exeLRUEntry{path: path, lastTouched: now}
+	entry := &exeLRUEntry{path: path, ident: ident}
 	e := c.order.PushFront(entry)
 	c.elems[path] = e
 	if c.order.Len() > c.cap {
@@ -202,7 +228,8 @@ func (c *exeLRUCache) touchAndReport(path string) (alreadyPresent bool) {
 		if oldest != nil {
 			c.order.Remove(oldest)
 			delete(c.elems, oldest.Value.(*exeLRUEntry).path)
+			evicted = true
 		}
 	}
-	return false
+	return false, evicted
 }

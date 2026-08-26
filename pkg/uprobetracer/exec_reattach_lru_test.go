@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
 )
@@ -271,90 +270,96 @@ func TestReattachContainerExecPidEvictionFallsThroughToCorrectAttach(t *testing.
 	}
 }
 
-// TestReattachContainerExecPidTTLExpiryTriggersRealAttach is the code-review
-// follow-up regression test for the exeLRUTTL backstop (see exeLRUTTL's doc
-// comment in execache.go, and ReattachContainerExecPid's doc comment on the
-// fast-path guard): an exe-target entry that is a cache hit by every
-// path/LRU criterion (same resolved path, never evicted for capacity reasons,
-// well under exeLRUCap churn) must still be treated as a miss -- and trigger
-// a real Phase-1 resolve+attach -- once it has aged past exeLRUTTL. This is
-// the concrete, bounded backstop against a container hot-reloading/self-
-// updating a binary in place at the same path: unlike a full inode check,
-// this cache genuinely cannot detect that the file content changed, so the
-// TTL is what keeps its staleness window bounded instead of open-ended.
-func TestReattachContainerExecPidTTLExpiryTriggersRealAttach(t *testing.T) {
+// TestReattachContainerExecPidStaleCacheHitOnInodeChange is the regression
+// test for matthyx's BLOCKER review comment on this PR
+// (armosec/private-node-agent#541): the fast-path guard must key on the
+// CONTENT currently backing a resolved exe path, not just the path string.
+//
+// Reproduction (matthyx's exact scenario): exec A (path P, inode 555)
+// attaches and is cached; exec B (a DIFFERENT path) execs without evicting A
+// (the cache has plenty of room under exeLRUCap); exec A execs AGAIN, but
+// /proc/<execPid>/exe now stats to a DIFFERENT inode (777) at the SAME path P
+// -- e.g. the binary was replaced in place, or an overlayfs copy-up produced
+// a new real file at the same virtual path. This second exec of A must be
+// treated as a genuine miss: a real Phase-1 resolve+attach must run for the
+// NEW content, never a stale hit that silently skips instrumenting it.
+func TestReattachContainerExecPidStaleCacheHitOnInodeChange(t *testing.T) {
 	procRoot := withFakeProcRoot(t)
 	tr, st := newTestTracer(t)
 	const trackedPid = fakePid
 	tr.containerPid2Inodes[trackedPid] = nil
 
-	target := "/opt/stable/bin"
-	firstExecPid := fakePid + 1
-	fakeExeProc(t, procRoot, firstExecPid, target)
+	pathA := "/opt/a/bin"
+	pathB := "/opt/b/bin"
+	st.exeIdentityByTarget = map[string]exeIdentity{
+		pathA: {dev: 1, ino: 555},
+	}
 
-	st.currentInode = 111
-	if err := tr.ReattachContainerExecPid(trackedPid, firstExecPid); err != nil {
-		t.Fatalf("initial ReattachContainerExecPid: %v", err)
+	// exec A: first time seeing pathA at inode 555 -- a genuine miss, attaches.
+	execA1 := fakePid + 1
+	fakeExeProc(t, procRoot, execA1, pathA)
+	st.currentInode = 555
+	if err := tr.ReattachContainerExecPid(trackedPid, execA1); err != nil {
+		t.Fatalf("exec A (1st): %v", err)
 	}
 	if st.attachCount != 1 {
-		t.Fatalf("attachCount after initial attach = %d, want 1", st.attachCount)
+		t.Fatalf("attachCount after exec A (1st) = %d, want 1", st.attachCount)
+	}
+	if k := tr.inodeRefCount[555]; k == nil || k.counter != 1 {
+		t.Fatalf("inodeRefCount[555] = %+v, want a fresh keeper with counter 1", k)
 	}
 
-	// Immediately re-exec the SAME path under a fresh execPid, well within the
-	// TTL: this must be a cache hit -- confirms the entry really is resident
-	// and would (absent the TTL) keep being a hit indefinitely for this
-	// stable, repeatedly-exec'd binary.
-	secondExecPid := fakePid + 2
-	fakeExeProc(t, procRoot, secondExecPid, target)
+	// exec B: a DIFFERENT path -- must not evict A (the cache has plenty of
+	// room under exeLRUCap), it simply occupies its own slot.
+	execB := fakePid + 2
+	fakeExeProc(t, procRoot, execB, pathB)
+	st.currentInode = 666
+	if err := tr.ReattachContainerExecPid(trackedPid, execB); err != nil {
+		t.Fatalf("exec B: %v", err)
+	}
+	if st.attachCount != 2 {
+		t.Fatalf("attachCount after exec B = %d, want 2", st.attachCount)
+	}
+
+	// The binary at pathA is replaced in place (e.g. rebuilt/relinked, or an
+	// overlayfs copy-up): the SAME path now stats to a NEW identity.
+	st.exeIdentityByTarget[pathA] = exeIdentity{dev: 1, ino: 777}
+
+	// exec A again, under a fresh execPid (a new fork+exec of the same
+	// wrapper loop), still resolving to pathA -- but now with the NEW
+	// identity.
+	execA2 := fakePid + 3
+	fakeExeProc(t, procRoot, execA2, pathA)
+	st.currentInode = 999 // the NEW binary's real (post-open) inode
+
 	opensBefore := len(st.openedPaths)
-	if err := tr.ReattachContainerExecPid(trackedPid, secondExecPid); err != nil {
-		t.Fatalf("second (pre-TTL) ReattachContainerExecPid: %v", err)
-	}
-	if len(st.openedPaths) != opensBefore {
-		t.Fatalf("second exec (well within TTL) was a miss, want a hit -- precondition for this test not met")
-	}
-
-	// Fast-forward the cache's injectable clock past exeLRUTTL, without any
-	// other churn (no capacity eviction is involved here at all).
-	cache := tr.containerPid2ExeTargets[trackedPid]
-	if cache == nil {
-		t.Fatal("containerPid2ExeTargets has no entry for trackedPid after two successful attaches")
-	}
-	base := cache.now()
-	cache.now = func() time.Time { return base.Add(exeLRUTTL + time.Second) }
-
-	// A third exec of the exact same path, now past the TTL: must be treated
-	// as a miss -- real Phase-1 I/O runs -- and the same, correct, live
-	// realInode must be (re-)attached, not skipped.
-	thirdExecPid := fakePid + 3
-	fakeExeProc(t, procRoot, thirdExecPid, target)
-	st.currentInode = 111 // unchanged content/inode -- this is the TTL backstop, not an inode-change scenario
-	opensBefore = len(st.openedPaths)
 	attachesBefore := st.attachCount
-	if err := tr.ReattachContainerExecPid(trackedPid, thirdExecPid); err != nil {
-		t.Fatalf("post-TTL ReattachContainerExecPid: %v", err)
-	}
-	if len(st.openedPaths) == opensBefore {
-		t.Error("post-TTL exec of a still-resident, unevicted path was a cache hit, want a miss -- exeLRUTTL must force a real Phase-1 attach once an entry ages past it")
-	}
-	if st.attachCount != attachesBefore {
-		// realInode 111 was already attached and still tracked (never
-		// detached), so the fresh Phase-1 pass should recognize the same
-		// inode as already-attached bookkeeping-wise (commitOpenedTargets is
-		// idempotent per inode) -- what matters here is that real I/O ran at
-		// all (checked above), not that a brand new inode was counted again.
-		t.Logf("attachCount unchanged at %d across the post-TTL call -- expected, since realInode 111 was already tracked", st.attachCount)
+	if err := tr.ReattachContainerExecPid(trackedPid, execA2); err != nil {
+		t.Fatalf("exec A (2nd, new identity at same path): %v", err)
 	}
 
-	// The cache must have been refreshed by this successful pass -- an
-	// immediate follow-up exec must be a hit again.
-	fourthExecPid := fakePid + 4
-	fakeExeProc(t, procRoot, fourthExecPid, target)
+	if len(st.openedPaths) == opensBefore {
+		t.Fatal("exec A (2nd) with a CHANGED identity at the same path was a cache hit, want a miss -- a stale cache hit here silently skips re-attaching the replaced binary (matthyx's BLOCKER)")
+	}
+	if st.attachCount != attachesBefore+1 {
+		t.Errorf("attachCount = %d after exec A (2nd), want %d -- the new binary must be freshly attached, not silently skipped", st.attachCount, attachesBefore+1)
+	}
+	if k := tr.inodeRefCount[999]; k == nil || k.counter != 1 {
+		t.Errorf("inodeRefCount[999] = %+v, want a fresh keeper with counter 1 (the NEW binary's inode must be credited)", k)
+	}
+	if k := tr.inodeRefCount[555]; k == nil {
+		t.Error("inodeRefCount[555] (exec A's original attach) disappeared -- a stale-content miss must not retroactively undo the original attach")
+	}
+
+	// The cache must now be current for pathA's NEW identity: an immediate
+	// follow-up exec of the same, now-current content must be a hit again.
+	execA3 := fakePid + 4
+	fakeExeProc(t, procRoot, execA3, pathA)
 	opensBefore = len(st.openedPaths)
-	if err := tr.ReattachContainerExecPid(trackedPid, fourthExecPid); err != nil {
-		t.Fatalf("post-refresh ReattachContainerExecPid: %v", err)
+	if err := tr.ReattachContainerExecPid(trackedPid, execA3); err != nil {
+		t.Fatalf("exec A (3rd, same new identity): %v", err)
 	}
 	if len(st.openedPaths) != opensBefore {
-		t.Error("exec right after the TTL-triggered re-attach was a miss, want a hit -- the successful pass must have re-stamped the cache entry")
+		t.Error("exec right after the identity-mismatch re-attach was a miss, want a hit -- the successful pass must have recorded the NEW identity")
 	}
 }
