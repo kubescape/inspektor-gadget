@@ -48,6 +48,26 @@ type testState struct {
 	lastLinks   int        // links returned by the last attach
 	openedPaths []string   // every path passed to openInContainer, in call order
 	openedPids  []uint32   // every containerPid passed to openInContainer, in call order
+
+	// exeIdentityByTarget lets a test simulate a SPECIFIC (dev, ino, mtime)
+	// identity for a given resolved exe target path, keyed by that path --
+	// used to simulate the SAME path resolving to a DIFFERENT identity across
+	// two execs (e.g. a binary replaced in place -- see
+	// TestReattachContainerExecPidStaleCacheHitOnInodeChange, the regression
+	// test for matthyx's BLOCKER review comment on armosec/private-node-agent#541).
+	// A target path with no explicit entry here gets a stable,
+	// deterministically-derived default identity (see statExeIdentity below),
+	// so every pre-existing test that never touches this field keeps its
+	// current cache-hit/miss behavior unchanged: same resolved path => same
+	// default identity => a hit is possible, exactly like the
+	// pre-inode-check cache.
+	exeIdentityByTarget map[string]exeIdentity
+	// identSeq lazily assigns each never-before-seen exe target path its own
+	// distinct, stable default identity (a fresh sequence number as the fake
+	// "ino"), the first time statExeIdentity sees it with no explicit
+	// exeIdentityByTarget override.
+	identSeq     map[string]uint64
+	nextIdentSeq uint64
 }
 
 func (s *testState) open(_ context.Context, pid uint32, filePath string) (*os.File, error) {
@@ -69,6 +89,34 @@ func (s *testState) readInode(_ int) (uint64, error) {
 		return 0, s.inodeErr
 	}
 	return s.currentInode, nil
+}
+
+// statExeIdentity is the test double for Tracer.statExeIdentity: it resolves
+// exeLink's target via a plain os.Readlink (fakeExeProc's symlinks work fine
+// here even though their targets need not exist on disk -- os.Readlink only
+// reads the link itself), then looks up a simulated identity for that target,
+// exactly mirroring how the real defaultStatExeIdentity is keyed off the
+// resolved target's identity, without requiring a real, stat-able file.
+func (s *testState) statExeIdentity(exeLink string) (exeIdentity, bool) {
+	target, err := os.Readlink(exeLink)
+	if err != nil || target == "" {
+		return exeIdentity{}, false
+	}
+	if s.exeIdentityByTarget != nil {
+		if id, ok := s.exeIdentityByTarget[target]; ok {
+			return id, true
+		}
+	}
+	if s.identSeq == nil {
+		s.identSeq = make(map[string]uint64)
+	}
+	seq, ok := s.identSeq[target]
+	if !ok {
+		s.nextIdentSeq++
+		seq = s.nextIdentSeq
+		s.identSeq[target] = seq
+	}
+	return exeIdentity{dev: 1, ino: seq}, true
 }
 
 func (s *testState) attach(_ *os.File, offsets []uint64) ([]link.Link, error) {
@@ -115,6 +163,7 @@ func newTestTracer(t *testing.T) (*Tracer[any], *testState) {
 	tr.syncAttach = true
 	tr.openInContainer = st.open
 	tr.readRealInode = st.readInode
+	tr.statExeIdentity = st.statExeIdentity
 	tr.attachToFile = st.attach
 	t.Cleanup(func() {
 		for _, f := range st.openFiles {
@@ -213,8 +262,8 @@ func TestDetachAfterReattachNoLeak(t *testing.T) {
 	if _, ok := tr.containerPid2Inodes[fakePid]; ok {
 		t.Errorf("containerPid2Inodes still has pid after detach")
 	}
-	if _, ok := tr.containerPid2ExeTarget[fakePid]; ok {
-		t.Errorf("containerPid2ExeTarget still has pid after detach")
+	if _, ok := tr.containerPid2ExeTargets[fakePid]; ok {
+		t.Errorf("containerPid2ExeTargets still has pid after detach")
 	}
 }
 
@@ -364,7 +413,7 @@ func TestReattachAfterCloseErrors(t *testing.T) {
 }
 
 // TestReattachOpenFailureDoesNotLatchExeTarget asserts that a Phase-1 open failure
-// (e.g. a transient overlayfs-mount race) does NOT record containerPid2ExeTarget, so
+// (e.g. a transient overlayfs-mount race) does NOT record containerPid2ExeTargets, so
 // the next exec retries instead of being permanently short-circuited. Splitting open
 // from attach moved the open error into the new openFailed flag; this guards that the
 // exe-target latch still gates on it, preserving the pre-split semantics.
@@ -380,8 +429,8 @@ func TestReattachOpenFailureDoesNotLatchExeTarget(t *testing.T) {
 	if err := tr.ReattachContainerPid(self); err != nil {
 		t.Fatalf("ReattachContainerPid: %v", err)
 	}
-	if _, ok := tr.containerPid2ExeTarget[self]; ok {
-		t.Errorf("containerPid2ExeTarget latched despite open failure (would wrongly short-circuit retries)")
+	if cache := tr.containerPid2ExeTargets[self]; cache != nil {
+		t.Errorf("containerPid2ExeTargets latched despite open failure (would wrongly short-circuit retries)")
 	}
 	if st.attachCount != 0 {
 		t.Errorf("attachCount = %d, want 0 (every open failed)", st.attachCount)
@@ -981,7 +1030,7 @@ func TestReattachAfterSettledAttachIdempotent(t *testing.T) {
 }
 
 // TestDetachContainerClearsSettled pins that DetachContainer removes the
-// settled bookkeeping alongside containerPid2OciConfig/containerPid2ExeTarget,
+// settled bookkeeping alongside containerPid2OciConfig/containerPid2ExeTargets,
 // so a container ID reused later by an unrelated, unsettled container cannot
 // inherit a stale "settled" flag from this tracer's own map.
 func TestDetachContainerClearsSettled(t *testing.T) {
@@ -1019,8 +1068,9 @@ func TestReattachContainerExecPidResolvesSettledPathFromExecPid(t *testing.T) {
 		t.Fatalf("ReattachContainerExecPid: %v", err)
 	}
 
-	if got := tr.containerPid2ExeTarget[fakePid]; got != wantExe {
-		t.Errorf("containerPid2ExeTarget[trackedPid] = %q, want %q (must resolve from execPid, since trackedPid's own /proc/exe never changes for a forked child)", got, wantExe)
+	cache := tr.containerPid2ExeTargets[fakePid]
+	if cache == nil || !cache.peek(wantExe) {
+		t.Errorf("containerPid2ExeTargets[trackedPid] does not contain %q (must resolve from execPid, since trackedPid's own /proc/exe never changes for a forked child)", wantExe)
 	}
 }
 
@@ -1071,8 +1121,8 @@ func TestReattachContainerExecPidNoBookkeepingForExecPid(t *testing.T) {
 	if _, ok := tr.containerPid2Inodes[self]; ok {
 		t.Errorf("containerPid2Inodes gained an entry keyed by execPid %d (would leak once per forked exec)", self)
 	}
-	if _, ok := tr.containerPid2ExeTarget[self]; ok {
-		t.Errorf("containerPid2ExeTarget gained an entry keyed by execPid %d (would leak once per forked exec)", self)
+	if _, ok := tr.containerPid2ExeTargets[self]; ok {
+		t.Errorf("containerPid2ExeTargets gained an entry keyed by execPid %d (would leak once per forked exec)", self)
 	}
 	if got := tr.containerPid2Inodes[trackedPid]; len(got) != 1 || got[0] != 700 {
 		t.Errorf("containerPid2Inodes[trackedPid] = %v, want [700] (attach must be credited to trackedPid)", got)

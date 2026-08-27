@@ -115,8 +115,8 @@ func TestReattachContainerPidTimesOutOnStuckOpen(t *testing.T) {
 	if len(inodes) != 0 {
 		t.Errorf("containerPid2Inodes[pid] = %v, want empty (no partial attach survives a timeout)", inodes)
 	}
-	if _, latched := tr.containerPid2ExeTarget[fakePid]; latched {
-		t.Error("containerPid2ExeTarget latched despite a timed-out open (would permanently skip retrying this pid)")
+	if cache := tr.containerPid2ExeTargets[fakePid]; cache != nil {
+		t.Error("containerPid2ExeTargets latched despite a timed-out open (would permanently skip retrying this pid)")
 	}
 }
 
