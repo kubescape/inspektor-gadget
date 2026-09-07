@@ -323,8 +323,3 @@ func (c *Container) IsPauseContainer() bool {
 	return c.K8s.PodName != "" && c.K8s.ContainerName == ""
 }
 
-// IsPauseContainer checks whether a container is a Kubernetes pause container.
-func IsPauseContainer(c *Container) bool {
-	return c.IsPauseContainer()
-}
-
