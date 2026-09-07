@@ -123,6 +123,9 @@ func containerRuntimeEnricher(
 			return false
 		}
 
+		log.Warnf("Runtime enricher (%s): failed to get container %s: %s",
+			runtimeName, container.Runtime.ContainerID, err)
+
 		// Container could be managed by another runtime, don't drop it.
 		return true
 	}

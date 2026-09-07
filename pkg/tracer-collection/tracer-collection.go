@@ -70,9 +70,10 @@ func (tc *TracerCollection) TracerMapsUpdater() containercollection.FuncNotify {
 	return func(event containercollection.PubSubEvent) {
 		switch event.Type {
 		case containercollection.EventTypeAddContainer:
-			// Skip the pause container, only if it is not a standalone
-			// container (ig use-case)
-			if event.Container.K8s.ContainerName == "" && event.Container.Runtime.ContainerName == "" {
+			// Skip Kubernetes pause containers (part of a pod, but without a container name).
+			// Do not skip containers in non-Kubernetes environments (e.g. ECS/Docker)
+			// or containers where runtime enrichment has not yet populated Runtime.ContainerName.
+			if event.Container.K8s.PodName != "" && event.Container.K8s.ContainerName == "" {
 				return
 			}
 
