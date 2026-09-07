@@ -42,7 +42,8 @@ type tracer struct {
 
 	containerSelector containercollection.ContainerSelector
 
-	mntnsSetMap *ebpf.Map
+	mntnsSetMap  *ebpf.Map
+	testMntnsSet *sync.Map
 }
 
 func NewTracerCollection(cc *containercollection.ContainerCollection) (*TracerCollection, error) {
@@ -63,16 +64,13 @@ func NewTracerCollectionTest(cc *containercollection.ContainerCollection) (*Trac
 }
 
 func (tc *TracerCollection) TracerMapsUpdater() containercollection.FuncNotify {
-	if tc.testOnly {
-		return func(event containercollection.PubSubEvent) {}
-	}
-
 	return func(event containercollection.PubSubEvent) {
 		switch event.Type {
 		case containercollection.EventTypeAddContainer:
-			// Skip the pause container, only if it is not a standalone
-			// container (ig use-case)
-			if event.Container.K8s.ContainerName == "" && event.Container.Runtime.ContainerName == "" {
+			// Skip Kubernetes pause containers (part of a pod, but without a container name).
+			// Do not skip containers in non-Kubernetes environments (e.g. ECS/Docker)
+			// or containers where runtime enrichment has not yet populated Runtime.ContainerName.
+			if event.Container.IsPauseContainer() {
 				return
 			}
 
@@ -83,7 +81,12 @@ func (tc *TracerCollection) TracerMapsUpdater() containercollection.FuncNotify {
 					mntnsC := uint64(event.Container.Mntns)
 					one := uint32(1)
 					if mntnsC != 0 {
-						t.mntnsSetMap.Put(mntnsC, one)
+						if t.mntnsSetMap != nil {
+							t.mntnsSetMap.Put(mntnsC, one)
+						}
+						if t.testMntnsSet != nil {
+							t.testMntnsSet.Store(mntnsC, struct{}{})
+						}
 					} else {
 						log.Errorf("new container with mntns=0")
 					}
@@ -96,7 +99,12 @@ func (tc *TracerCollection) TracerMapsUpdater() containercollection.FuncNotify {
 			for _, t := range tc.tracers {
 				if containercollection.ContainerSelectorMatches(&t.containerSelector, event.Container) {
 					mntnsC := uint64(event.Container.Mntns)
-					t.mntnsSetMap.Delete(mntnsC)
+					if t.mntnsSetMap != nil {
+						t.mntnsSetMap.Delete(mntnsC)
+					}
+					if t.testMntnsSet != nil {
+						t.testMntnsSet.Delete(mntnsC)
+					}
 				}
 			}
 		}
@@ -110,6 +118,7 @@ func (tc *TracerCollection) AddTracer(id string, containerSelector containercoll
 		return fmt.Errorf("tracer id %q: %w", id, os.ErrExist)
 	}
 	var mntnsSetMap *ebpf.Map
+	var testMntnsSet *sync.Map
 	if !tc.testOnly {
 		mntnsSpec := &ebpf.MapSpec{
 			Name:       MountMapPrefix + id,
@@ -123,19 +132,32 @@ func (tc *TracerCollection) AddTracer(id string, containerSelector containercoll
 		if err != nil {
 			return fmt.Errorf("creating mntnsset map: %w", err)
 		}
-
-		tc.containerCollection.ContainerRangeWithSelector(&containerSelector, func(c *containercollection.Container) {
-			one := uint32(1)
-			mntnsC := uint64(c.Mntns)
-			if mntnsC != 0 {
-				mntnsSetMap.Put(mntnsC, one)
-			}
-		})
+	} else {
+		testMntnsSet = &sync.Map{}
 	}
+
+	tc.containerCollection.ContainerRangeWithSelector(&containerSelector, func(c *containercollection.Container) {
+		if c.IsPauseContainer() {
+			return
+		}
+		mntnsC := uint64(c.Mntns)
+		if mntnsC == 0 {
+			return
+		}
+		if mntnsSetMap != nil {
+			one := uint32(1)
+			mntnsSetMap.Put(mntnsC, one)
+		}
+		if testMntnsSet != nil {
+			testMntnsSet.Store(mntnsC, struct{}{})
+		}
+	})
+
 	tc.tracers[id] = tracer{
 		tracerID:          id,
 		containerSelector: containerSelector,
 		mntnsSetMap:       mntnsSetMap,
+		testMntnsSet:      testMntnsSet,
 	}
 	return nil
 }

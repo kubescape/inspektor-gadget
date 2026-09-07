@@ -311,3 +311,14 @@ func (c *Container) SetPodLabels(podLabels map[string]string) {
 	}
 	c.podLabelsAsString = strings.Join(kvPairs, ",")
 }
+
+// IsPauseContainer checks whether a container is a Kubernetes pause container.
+// Pause containers belong to a Kubernetes pod (PodName != "") but do not have
+// a container name. Containers in non-Kubernetes environments (e.g. ECS, standalone Docker)
+// or containers where runtime enrichment has not yet populated ContainerName must not be skipped.
+func (c *Container) IsPauseContainer() bool {
+	if c == nil {
+		return false
+	}
+	return c.K8s.PodName != "" && c.K8s.ContainerName == ""
+}
