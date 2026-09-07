@@ -292,5 +292,3 @@ func TestAddTracerInitialContainers(t *testing.T) {
 	// Pre-existing non-K8s container MUST be added to tracer mount ns set
 	require.True(t, tracerMountNsExists(tc, "initial-test", 2002), "Pre-existing non-K8s container must be added to tracer")
 }
-
-

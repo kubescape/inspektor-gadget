@@ -322,4 +322,3 @@ func (c *Container) IsPauseContainer() bool {
 	}
 	return c.K8s.PodName != "" && c.K8s.ContainerName == ""
 }
-

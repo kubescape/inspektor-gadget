@@ -227,4 +227,3 @@ func (tc *TracerCollection) TracerMountNsMap(id string) (*ebpf.Map, error) {
 
 	return t.mntnsSetMap, nil
 }
-
