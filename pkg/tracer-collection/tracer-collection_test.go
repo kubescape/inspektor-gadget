@@ -75,6 +75,17 @@ func TestTracer(t *testing.T) {
 	require.True(t, tc.TracerExists("my_tracer_id2"), "Error while checking tracer my_tracer_id2: not found")
 }
 
+func tracerMountNsExists(tc *TracerCollection, id string, mntns uint64) bool {
+	tc.tracersMutex.RLock()
+	defer tc.tracersMutex.RUnlock()
+	t, ok := tc.tracers[id]
+	if !ok || t.testMntnsSet == nil {
+		return false
+	}
+	_, exists := t.testMntnsSet.Load(mntns)
+	return exists
+}
+
 func TestIsPauseContainer(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -152,7 +163,8 @@ func TestIsPauseContainer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.expected, isPauseContainer(&tt.container))
+			require.Equal(t, tt.expected, tt.container.IsPauseContainer())
+			require.Equal(t, tt.expected, containercollection.IsPauseContainer(&tt.container))
 		})
 	}
 }
@@ -195,8 +207,8 @@ func TestTracerMapsUpdater(t *testing.T) {
 		Type:      containercollection.EventTypeAddContainer,
 		Container: k8sPause,
 	})
-	require.False(t, tc.TracerMountNsExistsForTest("all-containers", 1001), "K8s pause container mntns should not be added")
-	require.False(t, tc.TracerMountNsExistsForTest("k8s-default", 1001), "K8s pause container mntns should not be added")
+	require.False(t, tracerMountNsExists(tc, "all-containers", 1001), "K8s pause container mntns should not be added")
+	require.False(t, tracerMountNsExists(tc, "k8s-default", 1001), "K8s pause container mntns should not be added")
 
 	// 2. Non-K8s / ECS container with delayed inspect (both container names empty):
 	// MUST NOT be skipped as pause container
@@ -213,8 +225,8 @@ func TestTracerMapsUpdater(t *testing.T) {
 		Type:      containercollection.EventTypeAddContainer,
 		Container: ecsContainer,
 	})
-	require.True(t, tc.TracerMountNsExistsForTest("all-containers", 1002), "Non-k8s container mntns must be added")
-	require.False(t, tc.TracerMountNsExistsForTest("k8s-default", 1002), "Non-k8s container should not match k8s-default selector")
+	require.True(t, tracerMountNsExists(tc, "all-containers", 1002), "Non-k8s container mntns must be added")
+	require.False(t, tracerMountNsExists(tc, "k8s-default", 1002), "Non-k8s container should not match k8s-default selector")
 
 	// 3. K8s regular container: should match both
 	k8sContainer := &containercollection.Container{
@@ -231,14 +243,55 @@ func TestTracerMapsUpdater(t *testing.T) {
 		Type:      containercollection.EventTypeAddContainer,
 		Container: k8sContainer,
 	})
-	require.True(t, tc.TracerMountNsExistsForTest("all-containers", 1003), "K8s container should be added to all-containers tracer")
-	require.True(t, tc.TracerMountNsExistsForTest("k8s-default", 1003), "K8s container should be added to k8s-default tracer")
+	require.True(t, tracerMountNsExists(tc, "all-containers", 1003), "K8s container should be added to all-containers tracer")
+	require.True(t, tracerMountNsExists(tc, "k8s-default", 1003), "K8s container should be added to k8s-default tracer")
 
 	// 4. Remove container: mntns should be deleted
 	updater(containercollection.PubSubEvent{
 		Type:      containercollection.EventTypeRemoveContainer,
 		Container: ecsContainer,
 	})
-	require.False(t, tc.TracerMountNsExistsForTest("all-containers", 1002), "Removed container mntns should be deleted")
+	require.False(t, tracerMountNsExists(tc, "all-containers", 1002), "Removed container mntns should be deleted")
 }
+
+func TestAddTracerInitialContainers(t *testing.T) {
+	var cc containercollection.ContainerCollection
+	cc.Initialize([]containercollection.ContainerCollectionOption{}...)
+
+	// Pre-populate container collection with containers
+	pauseContainer := &containercollection.Container{
+		K8s: containercollection.K8sMetadata{
+			BasicK8sMetadata: types.BasicK8sMetadata{
+				Namespace:     "default",
+				PodName:       "mypod",
+				ContainerName: "",
+			},
+		},
+		Mntns: 2001,
+	}
+	cc.AddContainer(pauseContainer)
+
+	ecsContainer := &containercollection.Container{
+		Runtime: containercollection.RuntimeMetadata{
+			BasicRuntimeMetadata: types.BasicRuntimeMetadata{
+				ContainerID:   "ecs456",
+				ContainerName: "",
+			},
+		},
+		Mntns: 2002,
+	}
+	cc.AddContainer(ecsContainer)
+
+	tc, err := NewTracerCollectionTest(&cc)
+	require.NoError(t, err)
+
+	err = tc.AddTracer("initial-test", containercollection.ContainerSelector{})
+	require.NoError(t, err)
+
+	// Pre-existing pause container should NOT be added to tracer mount ns set
+	require.False(t, tracerMountNsExists(tc, "initial-test", 2001), "Pre-existing pause container must not be added to tracer")
+	// Pre-existing non-K8s container MUST be added to tracer mount ns set
+	require.True(t, tracerMountNsExists(tc, "initial-test", 2002), "Pre-existing non-K8s container must be added to tracer")
+}
+
 

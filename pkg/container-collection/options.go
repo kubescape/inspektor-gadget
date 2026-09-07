@@ -589,7 +589,7 @@ func WithKubernetesEnrichment(nodeName string) ContainerCollectionOption {
 				container.SetPodLabels(pod.Labels)
 
 				// drop pause containers
-				if container.K8s.PodName != "" && container.K8s.ContainerName == "" {
+				if container.IsPauseContainer() {
 					return false
 				}
 			}

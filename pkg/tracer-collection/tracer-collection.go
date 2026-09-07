@@ -63,14 +63,6 @@ func NewTracerCollectionTest(cc *containercollection.ContainerCollection) (*Trac
 	}, nil
 }
 
-// isPauseContainer checks whether a container is a Kubernetes pause container.
-// Pause containers belong to a Kubernetes pod (PodName != "") but do not have
-// a container name. Containers in non-Kubernetes environments (e.g. ECS, standalone Docker)
-// or containers where runtime enrichment has not yet populated ContainerName must not be skipped.
-func isPauseContainer(c *containercollection.Container) bool {
-	return c.K8s.PodName != "" && c.K8s.ContainerName == ""
-}
-
 func (tc *TracerCollection) TracerMapsUpdater() containercollection.FuncNotify {
 	return func(event containercollection.PubSubEvent) {
 		switch event.Type {
@@ -78,7 +70,7 @@ func (tc *TracerCollection) TracerMapsUpdater() containercollection.FuncNotify {
 			// Skip Kubernetes pause containers (part of a pod, but without a container name).
 			// Do not skip containers in non-Kubernetes environments (e.g. ECS/Docker)
 			// or containers where runtime enrichment has not yet populated Runtime.ContainerName.
-			if isPauseContainer(event.Container) {
+			if event.Container.IsPauseContainer() {
 				return
 			}
 
@@ -140,23 +132,27 @@ func (tc *TracerCollection) AddTracer(id string, containerSelector containercoll
 		if err != nil {
 			return fmt.Errorf("creating mntnsset map: %w", err)
 		}
-
-		tc.containerCollection.ContainerRangeWithSelector(&containerSelector, func(c *containercollection.Container) {
-			one := uint32(1)
-			mntnsC := uint64(c.Mntns)
-			if mntnsC != 0 {
-				mntnsSetMap.Put(mntnsC, one)
-			}
-		})
 	} else {
 		testMntnsSet = &sync.Map{}
-		tc.containerCollection.ContainerRangeWithSelector(&containerSelector, func(c *containercollection.Container) {
-			mntnsC := uint64(c.Mntns)
-			if mntnsC != 0 {
-				testMntnsSet.Store(mntnsC, struct{}{})
-			}
-		})
 	}
+
+	tc.containerCollection.ContainerRangeWithSelector(&containerSelector, func(c *containercollection.Container) {
+		if c.IsPauseContainer() {
+			return
+		}
+		mntnsC := uint64(c.Mntns)
+		if mntnsC == 0 {
+			return
+		}
+		if mntnsSetMap != nil {
+			one := uint32(1)
+			mntnsSetMap.Put(mntnsC, one)
+		}
+		if testMntnsSet != nil {
+			testMntnsSet.Store(mntnsC, struct{}{})
+		}
+	})
+
 	tc.tracers[id] = tracer{
 		tracerID:          id,
 		containerSelector: containerSelector,
@@ -232,14 +228,3 @@ func (tc *TracerCollection) TracerMountNsMap(id string) (*ebpf.Map, error) {
 	return t.mntnsSetMap, nil
 }
 
-// TracerMountNsExistsForTest reports whether a mount namespace is tracked by the tracer in test mode.
-func (tc *TracerCollection) TracerMountNsExistsForTest(id string, mntns uint64) bool {
-	tc.tracersMutex.RLock()
-	defer tc.tracersMutex.RUnlock()
-	t, ok := tc.tracers[id]
-	if !ok || t.testMntnsSet == nil {
-		return false
-	}
-	_, exists := t.testMntnsSet.Load(mntns)
-	return exists
-}
