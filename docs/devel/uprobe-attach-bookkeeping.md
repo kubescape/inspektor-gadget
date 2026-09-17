@@ -70,6 +70,11 @@ sharing an image share the inode, and `DetachContainer` decrements once per reco
 that under-counts would let the next unrelated detach drop it to zero and close links other
 containers still rely on.
 
+For the same reason both commit paths keep `containerPid2Inodes` unique. A heal reports that a
+reference was taken for an inode the pid already records, so `commitOpenedTargets` (exec driven)
+and `commitMappedLibraries` (the map_files route) each append only when the inode is new to that
+pid. A duplicate record would be decremented twice on detach.
+
 A nonzero `staleInodeRecords` means something released links without clearing the pid record.
 Treat the warn line as a bug report about that, not as normal operation.
 

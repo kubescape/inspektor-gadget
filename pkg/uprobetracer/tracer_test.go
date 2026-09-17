@@ -832,6 +832,50 @@ func TestReattachMappedLibrariesIdempotent(t *testing.T) {
 // TestReattachMappedLibrariesRefcountBalance asserts that after an attach via
 // attachOneOpenFile, DetachContainer decrements to zero and leaves no leak in
 // inodeRefCount or containerPid2Inodes.
+// TestHealViaMappedLibrariesKeepsRecordUnique is the mapped-libs twin of
+// TestHealPreservesRefcountForOtherPids. The heal in attachOneOpenFile is
+// reachable from commitMappedLibraries (P2b map_files path) as well as from
+// commitOpenedTargets, and both must keep containerPid2Inodes unique: a heal
+// returns added==true for an inode this pid ALREADY records, so an
+// unconditional append records it twice. DetachContainer decrements the keeper
+// once per record, so the duplicate double-decrements and closes links another
+// container is still relying on, which is the same failure the exec-path twin
+// guards against. Raised by matthyx in review of the heal.
+func TestHealViaMappedLibrariesKeepsRecordUnique(t *testing.T) {
+	tr, st := newTestTracer(t)
+	st.currentInode = 100 // both containers share the same image/inode
+
+	pidA, pidB := fakePid, fakePid+1
+	if err := tr.AttachContainer(testContainer(pidA)); err != nil {
+		t.Fatalf("AttachContainer A: %v", err)
+	}
+	if err := tr.AttachContainer(testContainer(pidB)); err != nil {
+		t.Fatalf("AttachContainer B: %v", err)
+	}
+
+	// The shared attachment goes away while both pids still record the inode.
+	delete(tr.inodeRefCount, 100)
+
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open devnull: %v", err)
+	}
+	st.openFiles = append(st.openFiles, f)
+	tr.commitMappedLibraries(pidA, []mappedOpen{{file: f, path: "libnetty.so", rangeKey: "7f00-7f01"}})
+
+	if got := tr.containerPid2Inodes[pidA]; len(got) != 1 || got[0] != 100 {
+		t.Fatalf("containerPid2Inodes[A] = %v after heal via mapped libs, want [100] exactly once", got)
+	}
+
+	// B going away must not take A's instrumentation with it.
+	if err := tr.DetachContainer(testContainer(pidB)); err != nil {
+		t.Fatalf("DetachContainer B: %v", err)
+	}
+	if k := tr.inodeRefCount[100]; k == nil || k.counter != 1 {
+		t.Errorf("inodeRefCount[100] = %+v after detaching B, want counter 1 with A still attached", k)
+	}
+}
+
 func TestReattachMappedLibrariesRefcountBalance(t *testing.T) {
 	tr, st := newTestTracer(t)
 	st.currentInode = 888

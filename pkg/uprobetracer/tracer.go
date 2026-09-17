@@ -863,6 +863,13 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 	// one short-circuit that logs nothing. Fall through to a real attach
 	// instead, and say so: a heal means something released the links without
 	// clearing the record, which is a bug worth seeing in its own right.
+	// DEBUG (not for merge): make every dedup decision visible with the raw
+	// realInodePtr, so a false positive from kernel inode-pointer reuse can be
+	// told apart from a genuine re-attach of the same file.
+	t.logger.Warnf("REALINODE-DEBUG %q: label=%q containerPid=%d realInodePtr=0x%x existing=%v keeperLive=%v",
+		t.progName, label, containerPid, realInodePtr, existing[realInodePtr],
+		func() bool { _, ok := t.inodeRefCount[realInodePtr]; return ok }())
+
 	healedRefs := 0
 	if existing[realInodePtr] {
 		if _, live := t.inodeRefCount[realInodePtr]; live {
@@ -874,6 +881,14 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 		// decrements once per record, so a keeper rebuilt here must start at
 		// that count, not at 1: otherwise the next unrelated detach drops it to
 		// zero and closes links the pids healed here still rely on.
+		//
+		// If the re-attach below then FAILS (symbol absent, rollback), the stale
+		// record is deliberately left in place -- attachOneOpenFile takes no
+		// reference on failure, which keeps DetachContainer balanced -- so this
+		// warn repeats on every later exec for that pid. That is accepted for a
+		// tripwire: a target that is recorded, unbound and unattachable is worth
+		// saying out loud every time, and the alternative (dropping the record)
+		// would hide a leak.
 		healedRefs = t.recordedInodeRefs(realInodePtr)
 		t.staleInodeRecords.Add(1)
 		t.logger.Warnf("uprobetracer: %q: inode of %q is recorded for %d container(s) including %d but has no live attachment; re-attaching (count=%d)",
@@ -900,6 +915,8 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 		return realInodePtr, false, nil
 	}
 	t.logger.Debugf("attaching uprobe %q to container %d: %q (%d probe sites)", t.progName, containerPid, label, len(progLinks))
+	t.logger.Warnf("REALINODE-DEBUG %q: ATTACHED label=%q containerPid=%d realInodePtr=0x%x sites=%d",
+		t.progName, label, containerPid, realInodePtr, len(progLinks))
 	t.linksAttached.Add(uint64(len(progLinks)))
 	counter := 1
 	if healedRefs > counter {
@@ -1578,8 +1595,14 @@ func (t *Tracer[Event]) commitMappedLibraries(containerPid uint32, opened []mapp
 			continue
 		}
 		if added {
+			// Same guard as commitOpenedTargets: a heal returns added==true for
+			// an inode this pid ALREADY records, and DetachContainer decrements
+			// once per record, so an unconditional append would
+			// double-decrement and close links other pids still rely on.
+			if !existing[realInodePtr] {
+				attachedRealInodes = append(attachedRealInodes, realInodePtr)
+			}
 			existing[realInodePtr] = true
-			attachedRealInodes = append(attachedRealInodes, realInodePtr)
 			// Mark the pid as having a map_files-credited inode so HasMappedLibForPid
 			// reports success and the Phase-3 retry loop can stop. Set on a real
 			// attach OR a refcount bump (added==true), since either means the
