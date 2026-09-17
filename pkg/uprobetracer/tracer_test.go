@@ -193,6 +193,54 @@ func settledTestContainer(pid uint32) *containercollection.Container {
 	return c
 }
 
+// TestReattachReattachesWhenKeeperGone is the complement of
+// TestReattachIdempotentSameInode: dedup must hold while the attachment is
+// LIVE, and must NOT hold once it is gone. containerPid2Inodes is only a
+// record that a reference was once taken; inodeRefCount is what actually owns
+// the fd and links. When the two disagree -- inode still recorded for the pid,
+// keeper gone, so nothing is bound in the kernel -- attachOneOpenFile's
+// `existing[realInodePtr]` fast path currently returns silently, with no
+// re-attach and no log line, so the target stays uncaptured for the lifetime of
+// the container while every coverage signal still reports it attached.
+//
+// Observed in production as SUB-8651: an agent held a recorded inode for a
+// claude binary with no open fd for it, and an independent bcc uprobe at the
+// same offsets counted 330+ hits that the agent never saw.
+func TestReattachReattachesWhenKeeperGone(t *testing.T) {
+	tr, st := newTestTracer(t)
+	st.currentInode = 100
+
+	if err := tr.AttachContainer(testContainer(fakePid)); err != nil {
+		t.Fatalf("AttachContainer: %v", err)
+	}
+	if st.attachCount != 1 {
+		t.Fatalf("attachCount = %d after first attach, want 1", st.attachCount)
+	}
+	if got := tr.containerPid2Inodes[fakePid]; len(got) != 1 || got[0] != 100 {
+		t.Fatalf("containerPid2Inodes[pid] = %v, want [100]", got)
+	}
+
+	// The attachment goes away while the pid's record survives. Deleting the
+	// keeper is how the state is reached here; what matters to the assertion is
+	// only that nothing is bound any more while the inode is still recorded.
+	delete(tr.inodeRefCount, 100)
+
+	if err := tr.ReattachContainerPid(fakePid); err != nil {
+		t.Fatalf("ReattachContainerPid: %v", err)
+	}
+
+	if st.attachCount != 2 {
+		t.Errorf("attachCount = %d after reattach with no live keeper, want 2: "+
+			"a recorded inode was treated as proof of a live attachment", st.attachCount)
+	}
+	if k := tr.inodeRefCount[100]; k == nil || k.counter != 1 {
+		t.Errorf("inodeRefCount[100] = %+v after reattach, want a fresh keeper with counter 1", k)
+	}
+	if got := tr.containerPid2Inodes[fakePid]; len(got) != 1 || got[0] != 100 {
+		t.Errorf("containerPid2Inodes[pid] = %v after reattach, want [100] exactly once", got)
+	}
+}
+
 func TestReattachIdempotentSameInode(t *testing.T) {
 	tr, st := newTestTracer(t)
 	st.currentInode = 100
@@ -322,6 +370,49 @@ func TestReattachSkipsSymbolAbsent(t *testing.T) {
 	}
 	if len(tr.containerPid2Inodes[fakePid]) != 0 {
 		t.Errorf("containerPid2Inodes mutated when symbol absent: %v", tr.containerPid2Inodes[fakePid])
+	}
+}
+
+// TestHealPreservesRefcountForOtherPids covers the multi-container case of the
+// heal in TestReattachReattachesWhenKeeperGone. Containers sharing an image
+// share the real inode, so several pids can record the same realInodePtr
+// against ONE keeper. A keeper rebuilt by a heal must therefore start at the
+// number of pids that still record it, not at 1: DetachContainer decrements
+// once per record, so a keeper that under-counts lets the next unrelated detach
+// drop it to zero and close links the healed pid is still relying on. That
+// would turn one silently-uncaptured container into two.
+func TestHealPreservesRefcountForOtherPids(t *testing.T) {
+	tr, st := newTestTracer(t)
+	st.currentInode = 100 // both containers share the same image/inode
+
+	pidA, pidB := fakePid, fakePid+1
+	if err := tr.AttachContainer(testContainer(pidA)); err != nil {
+		t.Fatalf("AttachContainer A: %v", err)
+	}
+	if err := tr.AttachContainer(testContainer(pidB)); err != nil {
+		t.Fatalf("AttachContainer B: %v", err)
+	}
+	if k := tr.inodeRefCount[100]; k == nil || k.counter != 2 {
+		t.Fatalf("inodeRefCount[100] = %+v before heal, want counter 2", k)
+	}
+
+	// The shared attachment goes away while both pids still record the inode.
+	delete(tr.inodeRefCount, 100)
+
+	if err := tr.ReattachContainerPid(pidA); err != nil {
+		t.Fatalf("ReattachContainerPid A: %v", err)
+	}
+	if k := tr.inodeRefCount[100]; k == nil || k.counter != 2 {
+		t.Fatalf("inodeRefCount[100] = %+v after heal by A, want counter 2: "+
+			"both A and B still record this inode", k)
+	}
+
+	// B going away must not take A's instrumentation with it.
+	if err := tr.DetachContainer(testContainer(pidB)); err != nil {
+		t.Fatalf("DetachContainer B: %v", err)
+	}
+	if k := tr.inodeRefCount[100]; k == nil || k.counter != 1 {
+		t.Errorf("inodeRefCount[100] = %+v after detaching B, want counter 1 with A still attached", k)
 	}
 }
 

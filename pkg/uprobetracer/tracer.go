@@ -252,6 +252,18 @@ type Tracer[Event any] struct {
 	// (e.g. SSL/P1) via this same pending-drain path.
 	createTimeAttachUnresolved atomic.Uint64
 
+	// staleInodeRecords counts heals in attachOneOpenFile: an inode still
+	// recorded in containerPid2Inodes for a pid whose inodeKeeper (fd + links)
+	// had gone, so nothing was bound in the kernel while every coverage signal
+	// still reported the target attached. A nonzero value here is a bug
+	// elsewhere -- the two structures are meant to be updated together
+	// (commitOpenedTargets records only when a reference was taken;
+	// DetachContainer clears both) -- so this is a tripwire for whatever
+	// releases links without clearing the record, not a normal-operation
+	// counter. Exposed via the warn line at the heal site rather than a metric
+	// because the interesting question is WHICH target went silent.
+	staleInodeRecords atomic.Uint64
+
 	// Create-time attach (AttachContainer) is dispatched to bounded background
 	// goroutines so it NEVER runs on the synchronous container-start (fanotify
 	// FAN_ACCESS_PERM) path: the AddContainer callback that AttachContainer serves
@@ -841,10 +853,31 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 		return 0, false, fmt.Errorf("getting inode info for %q: %w", label, err)
 	}
 
-	// Already counted for THIS pid: nothing to do.
+	// Already counted for THIS pid -- but that record is only trustworthy while
+	// the attachment it refers to is still live. containerPid2Inodes records
+	// that a reference was once taken; inodeRefCount is what actually owns the
+	// fd and the links. When the two disagree (inode still recorded, keeper
+	// gone) nothing is bound in the kernel any more, and returning here would
+	// leave the target uncaptured for the lifetime of the container while every
+	// coverage signal still reports it attached -- silently, since this is the
+	// one short-circuit that logs nothing. Fall through to a real attach
+	// instead, and say so: a heal means something released the links without
+	// clearing the record, which is a bug worth seeing in its own right.
+	healedRefs := 0
 	if existing[realInodePtr] {
-		file.Close()
-		return realInodePtr, false, nil
+		if _, live := t.inodeRefCount[realInodePtr]; live {
+			file.Close()
+			return realInodePtr, false, nil
+		}
+		// Containers sharing an image share the real inode, so SEVERAL pids can
+		// record this realInodePtr against one keeper. DetachContainer
+		// decrements once per record, so a keeper rebuilt here must start at
+		// that count, not at 1: otherwise the next unrelated detach drops it to
+		// zero and closes links the pids healed here still rely on.
+		healedRefs = t.recordedInodeRefs(realInodePtr)
+		t.staleInodeRecords.Add(1)
+		t.logger.Warnf("uprobetracer: %q: inode of %q is recorded for %d container(s) including %d but has no live attachment; re-attaching (count=%d)",
+			t.progName, label, healedRefs, containerPid, t.staleInodeRecords.Load())
 	}
 
 	if keeper, exists := t.inodeRefCount[realInodePtr]; exists {
@@ -868,8 +901,29 @@ func (t *Tracer[Event]) attachOneOpenFile(containerPid uint32, file *os.File, la
 	}
 	t.logger.Debugf("attaching uprobe %q to container %d: %q (%d probe sites)", t.progName, containerPid, label, len(progLinks))
 	t.linksAttached.Add(uint64(len(progLinks)))
-	t.inodeRefCount[realInodePtr] = &inodeKeeper{counter: 1, file: file, links: progLinks}
+	counter := 1
+	if healedRefs > counter {
+		counter = healedRefs
+	}
+	t.inodeRefCount[realInodePtr] = &inodeKeeper{counter: counter, file: file, links: progLinks}
 	return realInodePtr, true, nil
+}
+
+// recordedInodeRefs counts the pids that still list realInodePtr in
+// containerPid2Inodes. Called only on attachOneOpenFile's heal path, under
+// t.mu, so the O(pids) walk is off every hot path: it runs once per stale
+// record found, which in a healthy fleet is never.
+func (t *Tracer[Event]) recordedInodeRefs(realInodePtr uint64) int {
+	refs := 0
+	for _, inodes := range t.containerPid2Inodes {
+		for _, inode := range inodes {
+			if inode == realInodePtr {
+				refs++
+				break
+			}
+		}
+	}
+	return refs
 }
 
 // attachOneFile opens filePath inside the container of containerPid and then
@@ -1020,8 +1074,14 @@ func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []opened
 			continue
 		}
 		if added {
+			// A heal (re-attach of an inode still recorded for this pid) must
+			// not append a second entry: DetachContainer decrements the keeper
+			// once per recorded inode, so a duplicate would double-decrement
+			// and close links other PIDs still rely on.
+			if !existing[realInodePtr] {
+				attachedRealInodes = append(attachedRealInodes, realInodePtr)
+			}
 			existing[realInodePtr] = true
-			attachedRealInodes = append(attachedRealInodes, realInodePtr)
 		}
 	}
 	t.containerPid2Inodes[containerPid] = attachedRealInodes
