@@ -85,3 +85,21 @@ func TestSetExecHoldHooksNoNotifierIsSafeNoOp(t *testing.T) {
 		cc2.SetExecHoldHooks(fakeExecHoldCrediter{}, fakeResolveAttacher{})
 	})
 }
+
+// TestExecHoldStatsNoNotifierReportsUnavailable pins ExecHoldStats' ok=false
+// contract: no exec-hold fanotify group means "nothing to export yet", not a
+// panic and not a (zero-value, true) that a metrics exporter could mistake
+// for real all-zero counters.
+func TestExecHoldStatsNoNotifierReportsUnavailable(t *testing.T) {
+	cc := &ContainerCollection{}
+	stats, ok := cc.ExecHoldStats()
+	require.False(t, ok, "no notifier at all must report unavailable")
+	require.Zero(t, stats)
+
+	cc2 := &ContainerCollection{}
+	require.NoError(t, cc2.Initialize())
+	t.Cleanup(cc2.Close)
+	stats2, ok2 := cc2.ExecHoldStats()
+	require.False(t, ok2, "plain Initialize() with no WithContainerFanotifyEbpf must report unavailable")
+	require.Zero(t, stats2)
+}

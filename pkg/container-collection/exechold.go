@@ -47,6 +47,23 @@ import (
 // exec-hold mark, and against the container-hook's own allowlist: a path whose
 // basename is not allowlisted is a cheap no-op here, not a mark attempt.
 
+// ExecHoldStats returns the exec-hold fanotify gate's current counters, and
+// whether they are available at all.
+//
+// ok=false means only "no exec-hold fanotify group exists to report on" --
+// the same routine, non-error condition SetExecHoldHooks and
+// MarkExecHoldCandidateByMntns already treat as a no-op (an empty allowlist,
+// or WithContainerFanotifyEbpf's caller never enabling it), never "exec-hold
+// is enabled but reporting failed". A caller wiring this into a metrics
+// exporter (see armosec/private-node-agent's execholdmetrics package) should
+// treat ok=false as "nothing to export yet", not as a warning.
+func (cc *ContainerCollection) ExecHoldStats() (containerhook.ExecHoldStats, bool) {
+	if cc.containerNotifier == nil {
+		return containerhook.ExecHoldStats{}, false
+	}
+	return cc.containerNotifier.ExecHoldStats(), true
+}
+
 // SetExecHoldHooks wires the exec-hold dispatcher's crediter and resolve+attach
 // hand-off to the container-hook's own, single ContainerNotifier -- the one
 // MarkExecHoldCandidateByMntns above also delegates to.
