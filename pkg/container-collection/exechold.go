@@ -16,6 +16,7 @@ package containercollection
 
 import (
 	containerhook "github.com/inspektor-gadget/inspektor-gadget/pkg/container-hook"
+	log "github.com/sirupsen/logrus"
 )
 
 // MarkExecHoldCandidateByMntns asks the container-hook to install an exec-hold
@@ -80,6 +81,19 @@ func (cc *ContainerCollection) ExecHoldStats() (containerhook.ExecHoldStats, boo
 // error a caller needs to guard against.
 func (cc *ContainerCollection) SetExecHoldHooks(crediter containerhook.ExecHoldCrediter, attacher containerhook.ResolveAttacher) {
 	if cc.containerNotifier == nil {
+		// A log line, not a silent return: this branch is reachable by a
+		// genuinely normal sequencing case (calling this before
+		// Initialize(WithContainerFanotifyEbpf()) has run), but a caller
+		// that gates this call on its own feature-active check first (the
+		// intended pattern -- see e.g. armosec/private-node-agent's
+		// ExecHoldWirer, which only calls here once it has already found a
+		// live crediter) should never hit it in steady state. If it does,
+		// the crediter/attacher this call carried are silently discarded
+		// with no retry, and exec-hold provides zero uprobe-attach
+		// protection for this process's lifetime despite appearing
+		// configured -- a warning here is the only thing that can ever
+		// surface that, since nothing else observes the drop.
+		log.Warn("container-collection: SetExecHoldHooks called before the container-hook notifier exists (or exec-hold is not enabled); crediter/attacher discarded, exec-hold provides no protection until this is called again after the notifier exists")
 		return
 	}
 	cc.containerNotifier.SetExecHoldHooks(crediter, attacher)

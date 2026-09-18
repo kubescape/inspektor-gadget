@@ -27,7 +27,20 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
+
+	containerutils "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils"
 )
+
+// realMntNs returns the calling test process's own current mount namespace
+// id -- the only value MarkExecHoldCandidate's mount-namespace re-check will
+// accept for uint32(os.Getpid()), which is the only pid these tests can ever
+// hand it (a test's own root IS "/", see stageExternalCandidate).
+func realMntNs(t *testing.T) uint64 {
+	t.Helper()
+	ns, err := containerutils.GetMntNs(os.Getpid())
+	require.NoError(t, err)
+	return ns
+}
 
 // stageExternalCandidate creates a directory holding a regular file named
 // basename and returns that file's absolute path.
@@ -59,7 +72,7 @@ func stageExternalCandidate(t *testing.T, basename string) string {
 // is the whole point of the entry point existing.
 func TestMarkExecHoldCandidateMarksRootfsBinary(t *testing.T) {
 	n := newExecHoldTestNotifier(t, []string{"allowed"})
-	const mntnsID = uint64(4242)
+	mntnsID := realMntNs(t)
 
 	binPath := stageExternalCandidate(t, "allowed")
 	var binStat unix.Stat_t
@@ -129,6 +142,25 @@ func TestMarkExecHoldCandidateNotApplicable(t *testing.T) {
 	})
 }
 
+// TestMarkExecHoldCandidateMntnsMismatchIsNotApplicable pins the pid-reuse
+// guard: a caller-supplied mntnsID that does not match containerPID's actual,
+// current mount namespace must not mark anything, and must report the same
+// routine ExecHoldMarkNotApplicable a caller racing container lifecycle
+// already has to handle for "the container is gone" -- not a distinguishable
+// error, since the two are indistinguishable from the caller's own
+// perspective (a stale pid-to-mntns mapping looks exactly like a gone
+// container looks exactly like exec-hold never having been enabled).
+func TestMarkExecHoldCandidateMntnsMismatchIsNotApplicable(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+	binPath := stageExternalCandidate(t, "allowed")
+
+	// Deliberately wrong: this test process's real mount namespace is never 1.
+	require.Equal(t, ExecHoldMarkNotApplicable,
+		n.MarkExecHoldCandidate(1, uint32(os.Getpid()), binPath))
+	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd),
+		"a mount-namespace mismatch must not mark anything")
+}
+
 // TestMarkExecHoldCandidateConcurrentCallers asserts the entry point is safe to
 // drive from a subsystem with its own goroutines, concurrently, which is the
 // only way an external caller can use it.
@@ -140,6 +172,7 @@ func TestMarkExecHoldCandidateNotApplicable(t *testing.T) {
 func TestMarkExecHoldCandidateConcurrentCallers(t *testing.T) {
 	n := newExecHoldTestNotifier(t, []string{"allowed"})
 	binPath := stageExternalCandidate(t, "allowed")
+	mntnsID := realMntNs(t)
 
 	const callers = 16
 	var wg sync.WaitGroup
@@ -148,7 +181,7 @@ func TestMarkExecHoldCandidateConcurrentCallers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if n.MarkExecHoldCandidate(4242, uint32(os.Getpid()), binPath) == ExecHoldMarkInstalled {
+			if n.MarkExecHoldCandidate(mntnsID, uint32(os.Getpid()), binPath) == ExecHoldMarkInstalled {
 				installed.Add(1)
 			}
 		}()

@@ -22,6 +22,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
+	containerutils "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
 )
 
@@ -88,11 +89,16 @@ func (r ExecHoldMarkResult) String() string {
 // the binary's first run; a caller that watched the binary being written closes
 // exactly that gap.
 //
-// Nothing here trusts the caller beyond the path string: the path is resolved
+// The path itself is never trusted beyond its string form: it is resolved
 // with the same openat2 RESOLVE_IN_ROOT|RESOLVE_NO_MAGICLINKS and st_dev
 // controls as every other mark, through the same markExecHoldPath, and the
 // allowlist is this notifier's own — the caller cannot widen it or name a host
-// binary.
+// binary. containerPID and mntnsID ARE trusted to correspond to the same
+// container by the caller (see the mount-namespace re-check below for why
+// that is checked, not merely assumed): a caller racing its own event stream
+// against container lifecycle could supply a stale containerPID for a given
+// mntnsID after the container that pid belonged to exited and the pid was
+// recycled by the kernel for an unrelated process.
 //
 // It is safe to call from any goroutine, concurrently with the notifier's own
 // event loops: the resolve-and-mark runs under the same execHoldMarkedMu that
@@ -129,6 +135,26 @@ func (n *ContainerNotifier) MarkExecHoldCandidate(mntnsID uint64, containerPID u
 		return ExecHoldMarkNotApplicable
 	}
 	defer rootDir.Close()
+
+	// Re-check that containerPID still has the mntnsID the caller supplied
+	// for it, narrowing (a second, independent /proc/<pid> read cannot
+	// atomically tie itself to the already-open rootDir fd above, so this is
+	// not a full close of the window) the pid-reuse race described on this
+	// function's doc comment. Without this, execHoldMarkExecedBinary would
+	// mark whatever process containerPID now names against the WRONG
+	// mntnsID's dedup bookkeeping (n.execHoldMarked[mntnsID]) -- marking the
+	// wrong process's binary while permanently desyncing that dedup entry
+	// from what was actually marked on disk.
+	currentMntNs, err := containerutils.GetMntNs(int(containerPID))
+	if err != nil {
+		log.Debugf("container-hook: exec-hold: external mark: checking mnt namespace of pid %d: %s", containerPID, err)
+		return ExecHoldMarkNotApplicable
+	}
+	if currentMntNs != mntnsID {
+		log.Debugf("container-hook: exec-hold: external mark: pid %d no longer has the expected mount namespace (want %d, got %d); not marking, likely pid reuse",
+			containerPID, mntnsID, currentMntNs)
+		return ExecHoldMarkNotApplicable
+	}
 
 	if n.execHoldMarkExecedBinary(mntnsID, rootDir, candidatePath) {
 		log.Debugf("container-hook: exec-hold: marked %s in mntns %d on external request", candidatePath, mntnsID)

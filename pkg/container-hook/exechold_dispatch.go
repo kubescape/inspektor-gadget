@@ -153,9 +153,30 @@ func execHoldKeyOfFd(fd int) (execHoldKey, error) {
 // calls so that recording hold-state and installing the mark stay in the same
 // code path, in that order.
 type execHoldDispatch struct {
-	// holds is the set of objects this dispatcher has a mark installed for. An
-	// event whose key is absent is not ours and is allowed immediately.
-	holds   map[execHoldKey]struct{}
+	// holds counts, per object, how many install attempts this dispatcher
+	// currently believes contributed to that object's kernel mark. A key
+	// absent (or at zero) is not ours and an event for it is allowed
+	// immediately. The count exists ONLY to make a FAILED install's rollback
+	// safe when a DIFFERENT, already-successful install exists for the same
+	// key -- e.g. two allowlisted basenames hardlinked to the same inode,
+	// enumerated separately by markExecHoldCandidatesInRoot. Without it, one
+	// call's rollback (execHoldRememberHold's returned func, on its own
+	// mark() failure) would unconditionally delete the entry, silently
+	// erasing the OTHER call's still-valid, still-installed mark from this
+	// dispatcher's bookkeeping -- future execs of that inode would then miss
+	// the F10 guard and be waved through unheld, with no log or metric
+	// distinguishing that from a genuinely unmarked object.
+	//
+	// This is NOT reconciled against the kernel's own idempotent
+	// FAN_MARK_ADD folding (a second ADD for an object already marked is a
+	// harmless no-op at the kernel level) -- it only has to stay consistent
+	// with itself: execHoldForgetHold (called from execHoldSettle, paired
+	// with the unconditional kernel-level FAN_MARK_REMOVE a settle performs)
+	// deletes the entry outright rather than decrementing, because once a
+	// hold settles the kernel mark is gone regardless of how many local
+	// installs contributed to it, and any nonzero count left behind would
+	// be untrue.
+	holds   map[execHoldKey]int
 	holdsMu sync.Mutex
 
 	hooks atomic.Pointer[execHoldHooks]
@@ -250,33 +271,47 @@ func (n *ContainerNotifier) SetExecHoldHooks(crediter ExecHoldCrediter, attacher
 
 // execHoldRememberHold records that a mark is being installed for key. It is
 // called by markExecHoldPath BEFORE fanotify_mark, so no event can arrive for
-// an object the dispatcher has no state for; the returned rollback undoes it if
-// the mark itself fails.
+// an object the dispatcher has no state for; the returned rollback undoes
+// (only) this call's own contribution if the mark itself fails, leaving any
+// other install's count for the same key untouched -- see execHoldDispatch's
+// doc comment on holds for why this must be a count and not a set.
 func (n *ContainerNotifier) execHoldRememberHold(key execHoldKey) (rollback func()) {
 	n.execHold.holdsMu.Lock()
 	defer n.execHold.holdsMu.Unlock()
 
 	if n.execHold.holds == nil {
-		n.execHold.holds = make(map[execHoldKey]struct{})
+		n.execHold.holds = make(map[execHoldKey]int)
 	}
-	n.execHold.holds[key] = struct{}{}
+	n.execHold.holds[key]++
 
-	// The set is deliberately not reference counted. Two call sites racing to
-	// mark the SAME object, one of them failing, can therefore drop the
-	// survivor's hold-state, after which an event for it is allowed immediately
-	// by the guard below. That is the fail-open direction, and the alternative —
-	// a count that a resolved hold would have to reconcile with a mark the
-	// kernel has already folded into one — buys nothing here.
+	rolledBack := false
 	return func() {
 		n.execHold.holdsMu.Lock()
 		defer n.execHold.holdsMu.Unlock()
-		delete(n.execHold.holds, key)
+		// Idempotent: a rollback func is a plain closure a caller could in
+		// principle invoke more than once, and double-decrementing would
+		// wrongly erase a LATER, unrelated install for the same key.
+		if rolledBack {
+			return
+		}
+		rolledBack = true
+		n.execHold.holds[key]--
+		if n.execHold.holds[key] <= 0 {
+			delete(n.execHold.holds, key)
+		}
 	}
 }
 
 // execHoldForgetHold drops hold-state for key, called when the mark it belongs
 // to has been removed, so the guard stays an accurate picture of what this
 // dispatcher marked.
+//
+// Deletes outright rather than decrementing: it is called from execHoldSettle
+// paired with an unconditional kernel-level FAN_MARK_REMOVE (see
+// execHoldEventRef.unmark), so once a hold settles the kernel mark is gone
+// regardless of how many local installs (execHoldRememberHold calls)
+// contributed to it, and any nonzero count left behind here would no longer
+// describe reality.
 func (n *ContainerNotifier) execHoldForgetHold(key execHoldKey) {
 	n.execHold.holdsMu.Lock()
 	defer n.execHold.holdsMu.Unlock()
@@ -287,8 +322,7 @@ func (n *ContainerNotifier) execHoldForgetHold(key execHoldKey) {
 func (n *ContainerNotifier) execHoldHasHold(key execHoldKey) bool {
 	n.execHold.holdsMu.Lock()
 	defer n.execHold.holdsMu.Unlock()
-	_, ok := n.execHold.holds[key]
-	return ok
+	return n.execHold.holds[key] > 0
 }
 
 // execHoldEventRef is the dispatcher's view of one permission event: the facts
