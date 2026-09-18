@@ -101,25 +101,34 @@ func initExecHoldFanotify() (*fanotify.NotifyFD, error) {
 // returned as an fd the caller can act on without resolving the path again.
 func execHoldOpenCandidate(rootFd int, rootDev uint64, unsafePath string) (*os.File, error) {
 	// O_PATH avoids blocking on opening the candidate if it turns out to be a
-	// pipe or a device, and is enough for both fstat and fanotify_mark.
+	// pipe or a device, and is enough for fstat. It is NOT enough for
+	// fanotify_mark: the kernel's NULL-pathname mark-by-fd form resolves the
+	// dirfd argument via fdget(), which explicitly excludes FMODE_PATH files
+	// and returns EBADF for an O_PATH descriptor -- verified directly against
+	// this host's kernel (fanotify_mark on an O_PATH fd: "bad file descriptor";
+	// the identical call on an O_RDONLY fd for the same inode: succeeds). So
+	// validation happens via O_PATH, but the fd actually handed to Mark() below
+	// is a separate, plain O_RDONLY re-open of the SAME already-validated
+	// object -- never a second resolution of the path, which would reopen the
+	// exact TOCTOU window this function's own RESOLVE_IN_ROOT/st_dev checks
+	// exist to close.
 	how := unix.OpenHow{
 		Flags:   unix.O_PATH | unix.O_CLOEXEC,
 		Mode:    0,
 		Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS,
 	}
-	fd, err := unix.Openat2(rootFd, unsafePath, &how)
+	pathFd, err := unix.Openat2(rootFd, unsafePath, &how)
 	if err != nil {
 		return nil, fmt.Errorf("openat2 %q in container rootfs: %w", unsafePath, err)
 	}
-	file := os.NewFile(uintptr(fd), unsafePath)
+	pathFile := os.NewFile(uintptr(pathFd), unsafePath)
+	defer pathFile.Close()
 
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
-		file.Close()
+	if err := unix.Fstat(pathFd, &stat); err != nil {
 		return nil, fmt.Errorf("fstat %q in container rootfs: %w", unsafePath, err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		file.Close()
 		return nil, fmt.Errorf("%q in container rootfs is not a regular file: expected %d, got %d",
 			unsafePath, unix.S_IFREG, stat.Mode&unix.S_IFMT)
 	}
@@ -136,12 +145,21 @@ func execHoldOpenCandidate(rootFd int, rootDev uint64, unsafePath string) (*os.F
 	// inside the container (e.g. /usr as a separate volume) is skipped rather
 	// than marked. Refusing to mark is the safe direction of that trade.
 	if uint64(stat.Dev) != rootDev {
-		file.Close()
 		return nil, fmt.Errorf("%q in container rootfs is on device %d, not the rootfs device %d: refusing to mark",
 			unsafePath, uint64(stat.Dev), rootDev)
 	}
 
-	return file, nil
+	// Re-open the exact object behind pathFd -- not unsafePath again -- via
+	// /proc/self/fd, so there is no second path resolution and therefore no
+	// window for the container to swap the target between validation and this
+	// re-open. Safe to use a real, readable open now: S_ISREG and st_dev are
+	// already confirmed, so this can no longer land on a device, pipe, or
+	// cross-device target the O_PATH open was specifically avoiding.
+	fd, err := unix.Openat(unix.AT_FDCWD, fmt.Sprintf("/proc/self/fd/%d", pathFd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("re-opening validated candidate %q for marking: %w", unsafePath, err)
+	}
+	return os.NewFile(uintptr(fd), unsafePath), nil
 }
 
 // markExecHoldPath resolves candidatePath under the container rootfs referred
