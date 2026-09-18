@@ -1,0 +1,67 @@
+// Copyright 2024 The Inspektor Gadget authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package containercollection
+
+import (
+	containerhook "github.com/inspektor-gadget/inspektor-gadget/pkg/container-hook"
+)
+
+// MarkExecHoldCandidateByMntns asks the container-hook to install an exec-hold
+// mark on candidatePath — a path as seen INSIDE the container — for the tracked
+// container whose mount namespace is mntnsID.
+//
+// It exists for consumers that observe container activity the container-hook
+// does not. The container-hook marks exec-hold candidates from two places, both
+// driven by events it sees itself: the enumeration at container create, which
+// only sees what already existed in the rootfs, and the first exec of an
+// allowlisted binary, which is one exec too late for that binary's first run. A
+// consumer whose own tracer watched the binary being WRITTEN can close that gap
+// by calling here before it is ever executed.
+//
+// The mount namespace id is the identity used because it is what the
+// collection already resolves containers by for exactly this kind of caller
+// (LookupContainerByMntns, EnrichByMntNs), and it is the identity the
+// container-hook itself keys its per-container exec-hold bookkeeping on, so
+// nothing has to be translated between the two.
+//
+// Every refusal is reported as an ExecHoldMarkResult rather than an error, and
+// ExecHoldMarkNotApplicable covers both "exec-hold was never enabled" and "that
+// container is not (or no longer) tracked" — a caller driven by a live event
+// stream races container lifecycle by construction and must not treat losing
+// that race as a failure.
+//
+// The candidate is resolved and validated entirely inside the container-hook,
+// under the same openat2 RESOLVE_IN_ROOT and st_dev hardening as every other
+// exec-hold mark, and against the container-hook's own allowlist: a path whose
+// basename is not allowlisted is a cheap no-op here, not a mark attempt.
+//
+// It is safe to call from any goroutine.
+func (cc *ContainerCollection) MarkExecHoldCandidateByMntns(mntnsID uint64, candidatePath string) containerhook.ExecHoldMarkResult {
+	if cc.containerNotifier == nil {
+		return containerhook.ExecHoldMarkNotApplicable
+	}
+
+	container := cc.LookupContainerByMntns(mntnsID)
+	if container == nil {
+		return containerhook.ExecHoldMarkNotApplicable
+	}
+
+	pid := container.ContainerPid()
+	if pid == 0 {
+		return containerhook.ExecHoldMarkNotApplicable
+	}
+
+	return cc.containerNotifier.MarkExecHoldCandidate(mntnsID, pid, candidatePath)
+}
