@@ -547,16 +547,33 @@ func (n *ContainerNotifier) watchExecEvents() {
 		}
 		mntnsID := binary.NativeEndian.Uint64(rec.RawSample[0:8])
 		pid := binary.NativeEndian.Uint32(rec.RawSample[8:12])
+		// Dispatched BEFORE the callback, as its own goroutine -- not after,
+		// and not as a blocking call. execHoldOnExec's only real cost is a
+		// single readlink of /proc/<pid>/exe, which races the exec'd process
+		// exiting; a live-fire sweep on a real cluster found that race lost
+		// 150+ times in a row during an apt-get install burst of many
+		// short-lived helper processes. The root cause was ordering, not the
+		// race itself: n.callback below flows into GadgetPubSub.publish,
+		// which blocks THIS goroutine in wg.Wait() until every subscriber
+		// (including whatever uprobe gadget's reattach, an ELF-parse-and-
+		// offset-resolve operation genuinely worth tens of milliseconds) has
+		// finished -- so under any exec burst the ringbuf backs up, and by
+		// the time a queued record's execHoldOnExec finally ran, its pid was
+		// almost always long gone. A goroutine dispatched here costs a few
+		// hundred nanoseconds, so it does not delay the callback below by
+		// any amount worth the name; it just gives the readlink a chance to
+		// run while the pid is still what fired it, instead of queued behind
+		// however long every OTHER subscriber of every OTHER record takes.
+		go n.execHoldOnExec(mntnsID, pid)
 		n.callback(ContainerEvent{
 			Type:         EventTypeExecContainer,
 			ContainerPID: pid,
 			MntnsID:      mntnsID,
 		})
-		// After the callback, never before: the exec-driven reattach path is
-		// what this event exists for and must not be delayed by exec-hold
-		// bookkeeping. This exec has already happened and is never held; the
-		// mark installed here catches the NEXT exec of the same binary.
-		n.execHoldOnExec(mntnsID, pid)
+		// execHoldOnExec was already dispatched above, before this call: this
+		// exec has already happened and is never held by it, so there is
+		// nothing here for it to delay or be delayed by; the mark it installs
+		// catches the NEXT exec of the same binary.
 	}
 }
 
