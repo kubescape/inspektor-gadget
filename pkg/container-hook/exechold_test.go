@@ -177,7 +177,11 @@ func fanotifyMarkedInodes(t *testing.T, fd int) []uint64 {
 	raw, err := os.ReadFile(filepath.Join("/proc/self/fdinfo", strconv.Itoa(fd)))
 	require.NoError(t, err)
 
-	re := regexp.MustCompile(`^fanotify ino:([0-9a-f]+) .*mask:([0-9a-f]+)`)
+	// The leading space in " mask:" is load-bearing: an fdinfo line carries both
+	// "mask:" and "ignored_mask:", and a greedy `.*mask:` matches the LATTER,
+	// reading every mark's mask as the ignored mask (0) and so reporting no
+	// marks at all.
+	re := regexp.MustCompile(`^fanotify ino:([0-9a-f]+) .* mask:([0-9a-f]+)`)
 	var inodes []uint64
 	for _, line := range strings.Split(string(raw), "\n") {
 		m := re.FindStringSubmatch(line)
