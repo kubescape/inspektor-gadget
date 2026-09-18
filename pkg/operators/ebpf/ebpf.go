@@ -79,6 +79,37 @@ const (
 type gadgetObjects struct {
 	programIDs []ebpf.ProgramID
 	mapIDs     []ebpf.MapID
+
+	// instance is the ebpfInstance that published this entry. It exists so an
+	// external caller holding the gadget's GadgetContext -- the identity this
+	// operator ALREADY keys gadgetObjs by -- can reach the instance's live
+	// tracers through the exported accessors in uprobeaccess.go, without a
+	// second registry and without a second identity scheme.
+	//
+	// Its lifetime is exactly the entry's: published at the end of Start,
+	// removed in Close. That is precisely "this gadget is running", which is
+	// what the accessors' ok=false has to mean.
+	instance *ebpfInstance
+}
+
+// publishGadgetObjects records this instance's per-gadget objects under the
+// operator lock. Split out of Start (and unpublishGadgetObjects out of Close)
+// purely so the accessor contract can be tested: reaching the inline code in
+// Start requires a loaded gadget image and root.
+func (i *ebpfInstance) publishGadgetObjects(gadgetCtx operators.GadgetContext, objs gadgetObjects) {
+	objs.instance = i
+	i.bpfOperator.mu.Lock()
+	if i.bpfOperator.gadgetObjs == nil {
+		i.bpfOperator.gadgetObjs = make(map[operators.GadgetContext]gadgetObjects)
+	}
+	i.bpfOperator.gadgetObjs[gadgetCtx] = objs
+	i.bpfOperator.mu.Unlock()
+}
+
+func (i *ebpfInstance) unpublishGadgetObjects(gadgetCtx operators.GadgetContext) {
+	i.bpfOperator.mu.Lock()
+	delete(i.bpfOperator.gadgetObjs, gadgetCtx)
+	i.bpfOperator.mu.Unlock()
 }
 
 // ebpfOperator reads ebpf programs from OCI images and runs them
@@ -938,12 +969,7 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		id, _ := info.ID()
 		gadgetObjs.mapIDs = append(gadgetObjs.mapIDs, id)
 	}
-	i.bpfOperator.mu.Lock()
-	if i.bpfOperator.gadgetObjs == nil {
-		i.bpfOperator.gadgetObjs = make(map[operators.GadgetContext]gadgetObjects)
-	}
-	i.bpfOperator.gadgetObjs[gadgetCtx] = gadgetObjs
-	i.bpfOperator.mu.Unlock()
+	i.publishGadgetObjects(gadgetCtx, gadgetObjs)
 
 	for name, m := range i.collection.Maps {
 		gadgetCtx.SetVar(operators.MapPrefix+name, m)
@@ -1053,11 +1079,6 @@ func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 }
 
 func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
-	if i.collection != nil {
-		i.collection.Close()
-		i.collection = nil
-	}
-
 	// P2b: cancel ALL map_files retry timers and JOIN their goroutines BEFORE
 	// closing the uprobe tracers. The timer goroutines call into the tracers
 	// (acquiring t.mu transiently); cancelAll waits for them without holding any
@@ -1077,9 +1098,28 @@ func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
 		uprobeTracer.Close()
 	}
 
-	i.bpfOperator.mu.Lock()
-	delete(i.bpfOperator.gadgetObjs, gadgetCtx)
-	i.bpfOperator.mu.Unlock()
+	i.unpublishGadgetObjects(gadgetCtx)
+
+	// i.collection.Close() runs LAST, deliberately, and not before every
+	// tracer above has been closed: uprobeTracer.Close() sets that tracer's
+	// t.closed under t.mu, which is what CreditIfAttached/AttachOpenFile (an
+	// external caller reached via ebpfoperator.UprobeTracerForGadget, e.g.
+	// exec-hold's dispatcher racing this teardown from its own goroutine)
+	// check before ever touching t.prog. Closing the collection first would
+	// close every *ebpf.Program in it -- including the ones live
+	// uprobeTracers still reference in t.prog -- while those tracers were
+	// still reachable and not yet marked closed, so an in-flight attach
+	// could reach link.Uprobe/Uretprobe with an already-closed program: a
+	// real teardown race that attachOneOpenFile's failure branch would then
+	// log at Debug and silently treat exactly like the benign "symbol not
+	// present" case. unpublishGadgetObjects also runs before this, so no NEW
+	// lookup via UprobeTracerForGadget can find this instance's tracers once
+	// the collection is about to go away, only ones already obtained before
+	// Close() started -- which is exactly the window t.closed protects.
+	if i.collection != nil {
+		i.collection.Close()
+		i.collection = nil
+	}
 
 	return nil
 }

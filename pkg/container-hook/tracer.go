@@ -183,7 +183,24 @@ type futureContainer struct {
 type ContainerNotifier struct {
 	runtimeBinaryNotify *fanotify.NotifyFD
 	pidFileDirNotify    *fanotify.NotifyFD
-	callback            ContainerNotifyFunc
+	// execHoldNotify is the dedicated fanotify group carrying the per-container
+	// FAN_OPEN_EXEC_PERM marks on allowlisted binaries. See initExecHoldFanotify
+	// for why it is separate from the two groups above.
+	execHoldNotify *fanotify.NotifyFD
+	// execHoldBinaries is this notifier's copy of the exec-hold allowlist, taken
+	// at construction so it cannot change under the callback goroutines.
+	execHoldBinaries []string
+	// execHoldMarked records which allowlisted basenames already got a
+	// first-exec mark in a given container, keyed by the container's mount
+	// namespace id — the only container identity an exec event carries. See
+	// execHoldMarkExecedBinary; entries are dropped on container termination.
+	execHoldMarked   map[uint64]map[string]struct{}
+	execHoldMarkedMu sync.Mutex
+	// execHold is the hold-event dispatcher's own state: what this notifier
+	// marked, how many holds are running, and the counters. Owned entirely by
+	// exechold_dispatch.go.
+	execHold execHoldDispatch
+	callback ContainerNotifyFunc
 
 	// containers is the set of containers that are being watched for
 	// termination. This prevents duplicate calls to
@@ -320,6 +337,7 @@ func Supported() bool {
 func NewContainerNotifier(callback ContainerNotifyFunc) (*ContainerNotifier, error) {
 	n := &ContainerNotifier{
 		callback:          callback,
+		execHoldBinaries:  execHoldBinaries,
 		containers:        make(map[string]*watchedContainer),
 		futureContainers:  make(map[string]*futureContainer),
 		pendingContainers: make(map[string]*pendingContainer),
@@ -363,6 +381,13 @@ func (n *ContainerNotifier) installEbpf(fanotifyFd int) error {
 	if err := execSpec.CollectExecEvents.Set(collectExecEventsVal); err != nil {
 		return err
 	}
+
+	// Raise exec_args map capacity from 128 to 512 entries to provide headroom
+	// for the exec-hold feature's concurrent hold pressure (see #607).
+	// On kernels >= 5.11, this preallocated map's memory (roughly 512 * 5152 bytes
+	// ≈ 2.6 MB, where struct record in execruntime.h is 5152 bytes) is charged to
+	// the loading process's cgroup memory limit, which operators should be aware of.
+	execSpec.ExecArgs.MaxEntries = 512
 
 	opts := ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{
@@ -429,6 +454,17 @@ func (n *ContainerNotifier) install() error {
 	}
 	n.pidFileDirNotify = pidFileDirNotify
 
+	// Only pay for the exec-hold group when an operator opted in: it consumes one
+	// of the per-uid fanotify groups and a goroutine that would otherwise never
+	// see an event.
+	if len(n.execHoldBinaries) > 0 {
+		execHoldNotify, err := initExecHoldFanotify()
+		if err != nil {
+			return err
+		}
+		n.execHoldNotify = execHoldNotify
+	}
+
 	// Load, initialize and attach ebpf program
 	err = n.installEbpf(runtimeBinaryNotify.Fd)
 	if err != nil {
@@ -477,6 +513,13 @@ func (n *ContainerNotifier) install() error {
 		n.wg.Add(1)
 		go n.watchExecEvents()
 	}
+	if n.execHoldNotify != nil {
+		n.wg.Add(2)
+		go n.watchExecHold()
+		// Separate from the loop it watches, on purpose: it has to stay live
+		// exactly when that loop does not.
+		go n.watchExecHoldWatchdog()
+	}
 
 	return nil
 }
@@ -504,11 +547,53 @@ func (n *ContainerNotifier) watchExecEvents() {
 		}
 		mntnsID := binary.NativeEndian.Uint64(rec.RawSample[0:8])
 		pid := binary.NativeEndian.Uint32(rec.RawSample[8:12])
+		// Dispatched BEFORE the callback, as its own goroutine -- not after,
+		// and not as a blocking call. execHoldOnExec's only real cost is a
+		// single readlink of /proc/<pid>/exe, which races the exec'd process
+		// exiting; a live-fire sweep on a real cluster found that race lost
+		// 150+ times in a row during an apt-get install burst of many
+		// short-lived helper processes. The root cause was ordering, not the
+		// race itself: n.callback below flows into GadgetPubSub.publish,
+		// which blocks THIS goroutine in wg.Wait() until every subscriber
+		// (including whatever uprobe gadget's reattach, an ELF-parse-and-
+		// offset-resolve operation genuinely worth tens of milliseconds) has
+		// finished -- so under any exec burst the ringbuf backs up, and by
+		// the time a queued record's execHoldOnExec finally ran, its pid was
+		// almost always long gone. A goroutine dispatched here costs a few
+		// hundred nanoseconds, so it does not delay the callback below by
+		// any amount worth the name; it just gives the readlink a chance to
+		// run while the pid is still what fired it, instead of queued behind
+		// however long every OTHER subscriber of every OTHER record takes.
+		// n.wg-tracked, like every other long-lived goroutine this notifier
+		// spawns: Close() closes n.execHoldNotify.File and then calls
+		// n.wg.Wait() BEFORE n.objs.Close() releases the underlying eBPF
+		// objects. An untracked goroutine here could still be running when
+		// objs.Close() frees those objects out from under it. The
+		// n.closed.Load() check right before calling into execHoldOnExec
+		// narrows (it cannot fully close, the same as any check-then-act
+		// race) the separate, smaller window against execHoldNotify.File
+		// itself already being closed by the time this goroutine actually
+		// runs -- markExecHoldPath's Mark() call already treats a mark
+		// failure as a routine, logged-and-skipped outcome, not a crash, so
+		// closing that window further is a hardening, not a requirement for
+		// safety.
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			if n.closed.Load() {
+				return
+			}
+			n.execHoldOnExec(mntnsID, pid)
+		}()
 		n.callback(ContainerEvent{
 			Type:         EventTypeExecContainer,
 			ContainerPID: pid,
 			MntnsID:      mntnsID,
 		})
+		// execHoldOnExec was already dispatched above, before this call: this
+		// exec has already happened and is never held by it, so there is
+		// nothing here for it to delay or be delayed by; the mark it installs
+		// catches the NEXT exec of the same binary.
 	}
 }
 
@@ -593,7 +678,17 @@ func (n *ContainerNotifier) watchContainersTermination() {
 
 				if c.pid > math.MaxUint32 {
 					log.Errorf("container PID (%d) exceeds math.MaxUint32 (%d)", c.pid, math.MaxUint32)
-					return
+					// continue, not return: this whole block runs under
+					// n.containersMu (locked above), and the real Unlock is
+					// the plain call at the end of this case, not a defer --
+					// a defer here would only fire when the enclosing
+					// long-lived function itself returns, deadlocking the
+					// mutex on the very next tick. `return` here left the
+					// lock held forever; skipping just this one container
+					// (its removal is deferred to a later tick, once its pid
+					// is representable) keeps every other container's
+					// termination detection working.
+					continue
 				}
 
 				if c.mntnsID != 0 {
@@ -601,6 +696,7 @@ func (n *ContainerNotifier) watchContainersTermination() {
 					if err := n.objs.TrackedMntns.Delete(&mntnsID); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 						log.Debugf("container-hook: untracking exec mntns %d: %s", mntnsID, err)
 					}
+					n.execHoldForget(mntnsID)
 				}
 
 				go n.callback(ContainerEvent{
@@ -656,6 +752,11 @@ func (n *ContainerNotifier) callbackAddContainerBounded(event ContainerEvent) {
 		// which is what makes the distribution usable as a budget gate.
 		start := time.Now()
 		defer func() { n.cbDuration.ObserveSince(start) }()
+		// Install the exec-hold marks before handing the event downstream, and
+		// inside the timed region: this is gated work like the callback itself, so
+		// it must show up in the duration budget and be covered by the same hard
+		// bound and fail-open rather than silently extending the gate.
+		n.markExecHoldCandidates(event.ContainerPID, event.MntnsID)
 		n.callback(event)
 	}()
 
@@ -825,6 +926,13 @@ func (n *ContainerNotifier) watchPidFileIterate() error {
 		ContainerConfig: string(bundleConfigJSON),
 		Bundle:          pc.bundleDir,
 		ContainerName:   containerName,
+		// newMntNs was already resolved and coherence-checked above (the
+		// "mntns changed" check). Carried through so
+		// callbackAddContainerBounded's async markExecHoldCandidates call can
+		// re-validate containerPID's identity at the time it actually runs,
+		// not just at the time this event was built -- see that function's
+		// doc comment.
+		MntnsID: newMntNs,
 	})
 
 	return nil
@@ -1230,6 +1338,10 @@ func (n *ContainerNotifier) Close() {
 	}
 	if n.pidFileDirNotify != nil {
 		n.pidFileDirNotify.File.Close()
+	}
+	if n.execHoldNotify != nil {
+		// Unblocks watchExecHold, and drops every mark this group carries.
+		n.execHoldNotify.File.Close()
 	}
 	if n.execReader != nil {
 		// Unblocks watchExecEvents (Read returns ringbuf.ErrClosed).
