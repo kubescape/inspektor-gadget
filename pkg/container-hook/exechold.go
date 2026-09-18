@@ -26,6 +26,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
+	containerutils "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
 )
 
@@ -262,7 +263,19 @@ func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File) []str
 // callbackAddContainerBounded), so it is covered by the same hard bound and
 // fail-open as the callback itself and can never hold runc's create→start
 // transition open.
-func (n *ContainerNotifier) markExecHoldCandidates(containerPID uint32) {
+//
+// expectedMntnsID re-validates containerPID's identity before trusting
+// /proc/<containerPID>/root: this runs from an unjoined, fire-and-forget
+// goroutine (see callbackAddContainerBounded's own doc comment) with no bound
+// on how long it might sit before actually running, so containerPID can in
+// principle have already exited and been recycled by the kernel for an
+// unrelated host process by the time this executes -- opening its root by PID
+// alone would then mark that unrelated process's binaries, not the intended
+// container's. This is the same TOCTOU class execHoldOpenCandidate's
+// open-then-validate hardening already closes for individual mark targets;
+// this closes it one level up, for the container identity the whole
+// enumeration is scoped to.
+func (n *ContainerNotifier) markExecHoldCandidates(containerPID uint32, expectedMntnsID uint64) {
 	if n.execHoldNotify == nil || len(n.execHoldBinaries) == 0 {
 		return
 	}
@@ -277,6 +290,28 @@ func (n *ContainerNotifier) markExecHoldCandidates(containerPID uint32) {
 		return
 	}
 	defer rootDir.Close()
+
+	// Re-checked AFTER opening root, narrowing the window rather than closing
+	// it outright: this is still a second, independent /proc/<pid> read, not
+	// derived from the already-open rootDir fd itself (nothing here ties the
+	// two reads to the same underlying process atomically), so a recycle
+	// landing in the gap between them is possible in principle, just far
+	// less likely than the original unchecked window this replaces. A
+	// mismatch means containerPID no longer names the container this
+	// enumeration was scoped to (exited and reused, or never matched), so
+	// nothing here should be trusted.
+	if expectedMntnsID != 0 {
+		currentMntNs, err := containerutils.GetMntNs(int(containerPID))
+		if err != nil {
+			log.Debugf("container-hook: exec-hold: checking mnt namespace of pid %d before enumeration: %s", containerPID, err)
+			return
+		}
+		if currentMntNs != expectedMntnsID {
+			log.Debugf("container-hook: exec-hold: pid %d no longer has the expected mount namespace (want %d, got %d); not enumerating, likely pid reuse",
+				containerPID, expectedMntnsID, currentMntNs)
+			return
+		}
+	}
 
 	for _, path := range n.markExecHoldCandidatesInRoot(rootDir) {
 		log.Debugf("container-hook: exec-hold: marked %s in container pid %d", path, containerPID)

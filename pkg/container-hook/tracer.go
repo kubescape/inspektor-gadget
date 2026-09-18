@@ -564,7 +564,27 @@ func (n *ContainerNotifier) watchExecEvents() {
 		// any amount worth the name; it just gives the readlink a chance to
 		// run while the pid is still what fired it, instead of queued behind
 		// however long every OTHER subscriber of every OTHER record takes.
-		go n.execHoldOnExec(mntnsID, pid)
+		// n.wg-tracked, like every other long-lived goroutine this notifier
+		// spawns: Close() closes n.execHoldNotify.File and then calls
+		// n.wg.Wait() BEFORE n.objs.Close() releases the underlying eBPF
+		// objects. An untracked goroutine here could still be running when
+		// objs.Close() frees those objects out from under it. The
+		// n.closed.Load() check right before calling into execHoldOnExec
+		// narrows (it cannot fully close, the same as any check-then-act
+		// race) the separate, smaller window against execHoldNotify.File
+		// itself already being closed by the time this goroutine actually
+		// runs -- markExecHoldPath's Mark() call already treats a mark
+		// failure as a routine, logged-and-skipped outcome, not a crash, so
+		// closing that window further is a hardening, not a requirement for
+		// safety.
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			if n.closed.Load() {
+				return
+			}
+			n.execHoldOnExec(mntnsID, pid)
+		}()
 		n.callback(ContainerEvent{
 			Type:         EventTypeExecContainer,
 			ContainerPID: pid,
@@ -658,7 +678,17 @@ func (n *ContainerNotifier) watchContainersTermination() {
 
 				if c.pid > math.MaxUint32 {
 					log.Errorf("container PID (%d) exceeds math.MaxUint32 (%d)", c.pid, math.MaxUint32)
-					return
+					// continue, not return: this whole block runs under
+					// n.containersMu (locked above), and the real Unlock is
+					// the plain call at the end of this case, not a defer --
+					// a defer here would only fire when the enclosing
+					// long-lived function itself returns, deadlocking the
+					// mutex on the very next tick. `return` here left the
+					// lock held forever; skipping just this one container
+					// (its removal is deferred to a later tick, once its pid
+					// is representable) keeps every other container's
+					// termination detection working.
+					continue
 				}
 
 				if c.mntnsID != 0 {
@@ -726,7 +756,7 @@ func (n *ContainerNotifier) callbackAddContainerBounded(event ContainerEvent) {
 		// inside the timed region: this is gated work like the callback itself, so
 		// it must show up in the duration budget and be covered by the same hard
 		// bound and fail-open rather than silently extending the gate.
-		n.markExecHoldCandidates(event.ContainerPID)
+		n.markExecHoldCandidates(event.ContainerPID, event.MntnsID)
 		n.callback(event)
 	}()
 
@@ -896,6 +926,13 @@ func (n *ContainerNotifier) watchPidFileIterate() error {
 		ContainerConfig: string(bundleConfigJSON),
 		Bundle:          pc.bundleDir,
 		ContainerName:   containerName,
+		// newMntNs was already resolved and coherence-checked above (the
+		// "mntns changed" check). Carried through so
+		// callbackAddContainerBounded's async markExecHoldCandidates call can
+		// re-validate containerPID's identity at the time it actually runs,
+		// not just at the time this event was built -- see that function's
+		// doc comment.
+		MntnsID: newMntNs,
 	})
 
 	return nil

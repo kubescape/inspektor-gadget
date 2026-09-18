@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
+	containerutils "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/utils"
 )
 
@@ -260,8 +261,41 @@ func TestMarkExecHoldCandidatesInRootRejectsBindMount(t *testing.T) {
 // pays nothing per container until an operator configures it.
 func TestMarkExecHoldCandidatesNoAllowlist(t *testing.T) {
 	n := &ContainerNotifier{}
-	n.markExecHoldCandidates(uint32(os.Getpid()))
+	n.markExecHoldCandidates(uint32(os.Getpid()), 0)
 	require.Nil(t, n.markExecHoldCandidatesInRoot(openRoot(t, t.TempDir())))
+}
+
+// TestMarkExecHoldCandidatesMntnsMismatchSkipsEnumeration pins the pid-reuse
+// guard added to markExecHoldCandidates: when the mount namespace read back
+// for containerPID does not match the expected one recorded at
+// container-add time, nothing is marked -- containerPID no longer identifies
+// the container this enumeration was scoped to (it exited and was recycled
+// for an unrelated process, or never matched to begin with).
+func TestMarkExecHoldCandidatesMntnsMismatchSkipsEnumeration(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"sh"})
+
+	// Wrong on purpose: this test process's real mount namespace is never 1
+	// (namespace inode numbers start well above the low, reserved range).
+	n.markExecHoldCandidates(uint32(os.Getpid()), 1)
+
+	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd),
+		"a mount-namespace mismatch must skip enumeration entirely, not mark anything")
+}
+
+// TestMarkExecHoldCandidatesMntnsMatchStillEnumerates is the control for the
+// guard above: the SAME call with the process's real, current mount
+// namespace must still enumerate normally, so the guard rejects a genuine
+// mismatch without silently breaking the intended path.
+func TestMarkExecHoldCandidatesMntnsMatchStillEnumerates(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"sh"})
+
+	realMntNs, err := containerutils.GetMntNs(os.Getpid())
+	require.NoError(t, err)
+
+	n.markExecHoldCandidates(uint32(os.Getpid()), realMntNs)
+
+	require.NotEmpty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd),
+		"a matching mount namespace must still enumerate and mark sh, exactly as with no check at all")
 }
 
 // TestSetExecHoldBinaries asserts the allowlist is snapshotted into the
