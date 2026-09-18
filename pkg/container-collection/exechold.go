@@ -46,7 +46,28 @@ import (
 // under the same openat2 RESOLVE_IN_ROOT and st_dev hardening as every other
 // exec-hold mark, and against the container-hook's own allowlist: a path whose
 // basename is not allowlisted is a cheap no-op here, not a mark attempt.
+
+// SetExecHoldHooks wires the exec-hold dispatcher's crediter and resolve+attach
+// hand-off to the container-hook's own, single ContainerNotifier -- the one
+// MarkExecHoldCandidateByMntns above also delegates to.
 //
+// A consumer must call this through the collection, never by constructing a
+// second ContainerNotifier of its own: the fanotify group and its dispatcher
+// live on this collection's one notifier, so a second notifier would gate a
+// fanotify group whose holds nothing here ever sees, silently doing nothing.
+//
+// It is a no-op if exec-hold's fanotify group was never created (the
+// allowlist was empty, or WithContainerFanotifyEbpf's caller never enabled
+// it) -- there is nothing to wire hooks into yet, and calling this before or
+// after that state is both a normal, expected sequencing outcome, not an
+// error a caller needs to guard against.
+func (cc *ContainerCollection) SetExecHoldHooks(crediter containerhook.ExecHoldCrediter, attacher containerhook.ResolveAttacher) {
+	if cc.containerNotifier == nil {
+		return
+	}
+	cc.containerNotifier.SetExecHoldHooks(crediter, attacher)
+}
+
 // It is safe to call from any goroutine.
 func (cc *ContainerCollection) MarkExecHoldCandidateByMntns(mntnsID uint64, candidatePath string) containerhook.ExecHoldMarkResult {
 	if cc.containerNotifier == nil {
