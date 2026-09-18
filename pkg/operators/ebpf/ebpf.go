@@ -79,6 +79,37 @@ const (
 type gadgetObjects struct {
 	programIDs []ebpf.ProgramID
 	mapIDs     []ebpf.MapID
+
+	// instance is the ebpfInstance that published this entry. It exists so an
+	// external caller holding the gadget's GadgetContext -- the identity this
+	// operator ALREADY keys gadgetObjs by -- can reach the instance's live
+	// tracers through the exported accessors in uprobeaccess.go, without a
+	// second registry and without a second identity scheme.
+	//
+	// Its lifetime is exactly the entry's: published at the end of Start,
+	// removed in Close. That is precisely "this gadget is running", which is
+	// what the accessors' ok=false has to mean.
+	instance *ebpfInstance
+}
+
+// publishGadgetObjects records this instance's per-gadget objects under the
+// operator lock. Split out of Start (and unpublishGadgetObjects out of Close)
+// purely so the accessor contract can be tested: reaching the inline code in
+// Start requires a loaded gadget image and root.
+func (i *ebpfInstance) publishGadgetObjects(gadgetCtx operators.GadgetContext, objs gadgetObjects) {
+	objs.instance = i
+	i.bpfOperator.mu.Lock()
+	if i.bpfOperator.gadgetObjs == nil {
+		i.bpfOperator.gadgetObjs = make(map[operators.GadgetContext]gadgetObjects)
+	}
+	i.bpfOperator.gadgetObjs[gadgetCtx] = objs
+	i.bpfOperator.mu.Unlock()
+}
+
+func (i *ebpfInstance) unpublishGadgetObjects(gadgetCtx operators.GadgetContext) {
+	i.bpfOperator.mu.Lock()
+	delete(i.bpfOperator.gadgetObjs, gadgetCtx)
+	i.bpfOperator.mu.Unlock()
 }
 
 // ebpfOperator reads ebpf programs from OCI images and runs them
@@ -938,12 +969,7 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		id, _ := info.ID()
 		gadgetObjs.mapIDs = append(gadgetObjs.mapIDs, id)
 	}
-	i.bpfOperator.mu.Lock()
-	if i.bpfOperator.gadgetObjs == nil {
-		i.bpfOperator.gadgetObjs = make(map[operators.GadgetContext]gadgetObjects)
-	}
-	i.bpfOperator.gadgetObjs[gadgetCtx] = gadgetObjs
-	i.bpfOperator.mu.Unlock()
+	i.publishGadgetObjects(gadgetCtx, gadgetObjs)
 
 	for name, m := range i.collection.Maps {
 		gadgetCtx.SetVar(operators.MapPrefix+name, m)
@@ -1077,9 +1103,7 @@ func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
 		uprobeTracer.Close()
 	}
 
-	i.bpfOperator.mu.Lock()
-	delete(i.bpfOperator.gadgetObjs, gadgetCtx)
-	i.bpfOperator.mu.Unlock()
+	i.unpublishGadgetObjects(gadgetCtx)
 
 	return nil
 }
