@@ -15,12 +15,26 @@
 package containercollection
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	containerhook "github.com/inspektor-gadget/inspektor-gadget/pkg/container-hook"
 )
+
+// fakeExecHoldCrediter and fakeResolveAttacher are minimal stand-ins so this
+// test can assert SetExecHoldHooks reaches the real ContainerNotifier without
+// needing a live uprobetracer.Tracer or a real resolve+attach pipeline.
+type fakeExecHoldCrediter struct{}
+
+func (fakeExecHoldCrediter) CreditIfAttached(uint32, *os.File) (uint64, bool, error) {
+	return 0, false, nil
+}
+
+type fakeResolveAttacher struct{}
+
+func (fakeResolveAttacher) ResolveAndAttach(uint32, *os.File) error { return nil }
 
 // TestMarkExecHoldCandidateByMntnsNotApplicable asserts the routine outcomes an
 // external caller must be able to distinguish from a real failure. Both are
@@ -44,5 +58,30 @@ func TestMarkExecHoldCandidateByMntnsNotApplicable(t *testing.T) {
 		require.Nil(t, cc.LookupContainerByMntns(4242))
 		require.Equal(t, containerhook.ExecHoldMarkNotApplicable,
 			cc.MarkExecHoldCandidateByMntns(4242, "/usr/bin/allowed"))
+	})
+}
+
+// TestSetExecHoldHooksNoNotifierIsSafeNoOp asserts SetExecHoldHooks never
+// panics when exec-hold's fanotify group -- and therefore the notifier that
+// owns it -- was never created (plain Initialize() with no
+// WithContainerFanotifyEbpf option, exactly like MarkExecHoldCandidateByMntns's
+// own "no container notifier installed" case above). Delegation to a REAL
+// notifier is covered at the container-hook layer
+// (ContainerNotifier.SetExecHoldHooks's own tests); constructing one here
+// would need a live, root-privileged fanotify group and would only be
+// re-testing that same behavior through an extra layer of indirection.
+func TestSetExecHoldHooksNoNotifierIsSafeNoOp(t *testing.T) {
+	cc := &ContainerCollection{}
+	require.NotPanics(t, func() {
+		cc.SetExecHoldHooks(fakeExecHoldCrediter{}, fakeResolveAttacher{})
+	})
+
+	cc2 := &ContainerCollection{}
+	require.NoError(t, cc2.Initialize())
+	t.Cleanup(cc2.Close)
+	require.Nil(t, cc2.containerNotifier,
+		"plain Initialize() with no WithContainerFanotifyEbpf must not construct a notifier")
+	require.NotPanics(t, func() {
+		cc2.SetExecHoldHooks(fakeExecHoldCrediter{}, fakeResolveAttacher{})
 	})
 }
