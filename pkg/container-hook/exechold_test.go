@@ -417,6 +417,148 @@ func TestExecHoldForgetKeepsSharedMarkForOtherContainer(t *testing.T) {
 	require.False(t, n.execHoldHasHold(key), "once the LAST owner is forgotten, the shared object's state must finally be dropped")
 }
 
+// TestMarkExecHoldPathAppendsImmediately confirms markExecHoldPath publishes
+// into execHoldContainerMarks synchronously, within the call itself, so
+// execHoldKeyStillOwned (consulted by execHoldSettle and by OTHER
+// containers' execHoldForget) sees a mark within microseconds of install --
+// not batched until a later, possibly much-delayed execHoldEndInstall call.
+// An earlier design iteration for the container-termination race fix
+// regressed exactly this property (batching the publish to the end of a
+// whole enumeration) and had to be reverted: doing so made a mark invisible
+// to sibling containers sharing the same host inode for the enumeration's
+// entire duration instead of microseconds.
+func TestMarkExecHoldPathAppendsImmediately(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+	rootPath := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
+	binPath := filepath.Join(rootPath, "usr/bin/allowed")
+	require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755))
+
+	root := openRoot(t, rootPath)
+	rootID, err := execHoldStatObject(int(root.Fd()))
+	require.NoError(t, err)
+
+	m, err := n.markExecHoldPath(int(root.Fd()), rootID, 42, "/usr/bin/allowed")
+	require.NoError(t, err)
+	t.Cleanup(func() { m.file.Close() })
+
+	require.True(t, n.execHoldKeyStillOwned(m.key, 0),
+		"the mark must be visible to cross-container ownership checks immediately after markExecHoldPath returns, not batched")
+}
+
+// TestExecHoldEndInstallSelfCleansWholeBatchOnMidEnumerationForget is the
+// regression test for the enumeration-scope gap in the container-termination
+// race fix: a forget landing BETWEEN two candidates of the same create-time
+// enumeration must cause the WHOLE batch (candidates installed before AND
+// after the forget) to self-clean when the enumeration's single End call
+// runs -- not just whichever candidate happened to be in flight at the exact
+// moment forget ran. An earlier, per-candidate-scoped version of this fix
+// cleared its own "forget happened" signal as soon as ANY one candidate's
+// counter hit zero, letting later candidates in the SAME loop publish into
+// an already-forgotten mntnsID -- reproducing the original leak. This
+// drives the exact Begin/markExecHoldPath/Forget/markExecHoldPath/End
+// sequence markExecHoldCandidatesInRoot's loop goes through, deterministically,
+// without needing real goroutines to land the exact interleaving.
+func TestExecHoldEndInstallSelfCleansWholeBatchOnMidEnumerationForget(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+	rootPath := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "usr/bin/allowed"), []byte("#!/bin/sh\n"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "bin/allowed"), []byte("#!/bin/sh\n"), 0o755))
+
+	root := openRoot(t, rootPath)
+	rootID, err := execHoldStatObject(int(root.Fd()))
+	require.NoError(t, err)
+
+	const mntnsID = uint64(777)
+	startEpoch := n.execHoldBeginInstall(mntnsID)
+
+	// Candidate 1 installs and publishes BEFORE the forget.
+	m1, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/usr/bin/allowed")
+	require.NoError(t, err)
+
+	// The container terminates mid-enumeration, between candidate 1 and 2.
+	// It finds candidate 1 already published (immediate visibility) and
+	// releases it directly through its own normal removal loop; since a
+	// candidate is still in flight (this enumeration's Begin has not ended
+	// yet), it also bumps the forget-epoch for the benefit of what is still
+	// to come.
+	n.execHoldForget(mntnsID)
+	require.False(t, n.execHoldHasHold(m1.key), "candidate 1, already published when forget ran, must be released by forget's own normal loop")
+
+	// Candidate 2 installs and publishes AFTER the forget -- markExecHoldPath
+	// does not know anything about the forget that just happened.
+	m2, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/bin/allowed")
+	require.NoError(t, err)
+
+	published := n.execHoldEndInstall(mntnsID, startEpoch, []execHoldCandidateInstall{
+		{path: "/usr/bin/allowed", mark: m1},
+		{path: "/bin/allowed", mark: m2},
+	}, false)
+
+	require.False(t, published, "the whole batch must self-clean once forget landed anywhere in the window, not just the candidate racing it directly")
+	require.Empty(t, n.execHoldContainerMarks[mntnsID], "neither candidate's mark may remain published")
+	require.Empty(t, n.execHoldMarked[mntnsID], "neither candidate's dedup entry may remain")
+	require.False(t, n.execHoldHasHold(m1.key))
+	require.False(t, n.execHoldHasHold(m2.key), "candidate 2, published only after forget ran, must be rolled back by End's own rollback, not silently kept")
+}
+
+// TestExecHoldEndInstallMultipleConcurrentInstallsEachSelfClean simulates two
+// independent install batches for the SAME mntnsID racing a single forget --
+// e.g. create-time enumeration racing a first-exec mark for the same
+// container. Both are still in flight (their marks not yet even installed)
+// when forget runs, so forget's own removal loop has nothing to find; each
+// must instead detect the epoch mismatch and self-clean its OWN contribution
+// independently at its OWN End call, and the epoch bookkeeping must not be
+// cleared until the LAST of them finishes -- a plain bool flag would be
+// cleared by whichever finishes first, leaving the second one unable to tell
+// it was ever forgotten (see execHoldEndInstall's own doc comment).
+func TestExecHoldEndInstallMultipleConcurrentInstallsEachSelfClean(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+	rootPath := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "usr/bin/allowed"), []byte("#!/bin/sh\n"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "bin/allowed"), []byte("#!/bin/sh\n"), 0o755))
+
+	root := openRoot(t, rootPath)
+	rootID, err := execHoldStatObject(int(root.Fd()))
+	require.NoError(t, err)
+
+	const mntnsID = uint64(888)
+
+	epoch1 := n.execHoldBeginInstall(mntnsID)
+	epoch2 := n.execHoldBeginInstall(mntnsID)
+	require.Equal(t, epoch1, epoch2, "both concurrent installs must see the same starting epoch")
+
+	// Forget runs while BOTH are in flight and BEFORE either has published
+	// anything: its own removal loop has nothing to release, but it still
+	// bumps the epoch because in-flight > 0.
+	n.execHoldForget(mntnsID)
+
+	m1, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/usr/bin/allowed")
+	require.NoError(t, err)
+	m2, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/bin/allowed")
+	require.NoError(t, err)
+
+	// The FIRST to finish is not the last one out (the second is still in
+	// flight): it must still detect the mismatch and self-clean.
+	published1 := n.execHoldEndInstall(mntnsID, epoch1, []execHoldCandidateInstall{{path: "/usr/bin/allowed", mark: m1}}, false)
+	require.False(t, published1)
+	require.False(t, n.execHoldHasHold(m1.key))
+	require.Contains(t, n.execHoldInstallsInFlight, mntnsID, "one install is still in flight; bookkeeping must not be torn down yet")
+
+	// The SECOND (now the last out) must independently self-clean too.
+	published2 := n.execHoldEndInstall(mntnsID, epoch2, []execHoldCandidateInstall{{path: "/bin/allowed", mark: m2}}, false)
+	require.False(t, published2)
+	require.False(t, n.execHoldHasHold(m2.key))
+
+	require.Empty(t, n.execHoldContainerMarks[mntnsID])
+	require.NotContains(t, n.execHoldInstallsInFlight, mntnsID, "in-flight bookkeeping must be fully drained once the last racing install exits")
+	require.Empty(t, n.execHoldForgetEpoch, "the epoch entry must be cleaned up once the last racing install exits, or it would grow unboundedly with container churn")
+}
+
 // TestExecHoldAbsentBinaryIsNotMarkedAtCreate is the premise of this whole code
 // path, asserted explicitly rather than assumed: a binary that is not in the
 // container rootfs when the container is created gets no mark from the

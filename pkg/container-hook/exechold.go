@@ -255,6 +255,150 @@ type execHoldMarkedFile struct {
 	file *os.File
 }
 
+// execHoldCandidateInstall pairs a successfully installed mark with the path
+// it was installed for, so execHoldEndInstall can roll back (or record into
+// execHoldMarked) exactly the right entries -- see markExecHoldCandidatesInRoot
+// and execHoldMarkExecedBinary, the two callers.
+type execHoldCandidateInstall struct {
+	path string
+	mark execHoldMarkedFile
+}
+
+// execHoldBeginInstall records that a markExecHoldPath install (or batch of
+// them, for the whole create-time enumeration) for mntnsID is starting, and
+// returns the CURRENT forget-epoch for mntnsID -- the snapshot
+// execHoldEndInstall later compares against to detect whether execHoldForget
+// ran for mntnsID at any point during this window. Paired with
+// execHoldEndInstall; see ContainerNotifier's own doc comment on
+// execHoldForgetEpoch/execHoldInstallsInFlight for why this exists.
+func (n *ContainerNotifier) execHoldBeginInstall(mntnsID uint64) uint64 {
+	n.execHoldContainerMarksMu.Lock()
+	defer n.execHoldContainerMarksMu.Unlock()
+	if n.execHoldInstallsInFlight == nil {
+		n.execHoldInstallsInFlight = make(map[uint64]int)
+	}
+	n.execHoldInstallsInFlight[mntnsID]++
+	return n.execHoldForgetEpoch[mntnsID] // zero-value map miss == epoch 0, a valid baseline
+}
+
+// execHoldEndInstall closes the in-flight window execHoldBeginInstall opened
+// for mntnsID. installed is exactly the set of marks THIS caller's
+// markExecHoldPath calls contributed during the window -- each one already
+// individually, immediately visible via execHoldContainerMarks the moment it
+// was installed (see markExecHoldPath), so cross-container ownership
+// (execHoldKeyStillOwned) sees it right away, not just at the end of a whole
+// enumeration.
+//
+// If execHoldForget ran for mntnsID at any point during this window
+// (detected via the epoch snapshotted at Begin no longer matching), this
+// call rolls back exactly ITS OWN contributions -- removing them from
+// execHoldContainerMarks and releasing them -- rather than leaving them as
+// orphans forget already looked for and did not find. Rollback only
+// releases entries STILL PRESENT in execHoldContainerMarks[mntnsID] at this
+// point: forget's own normal removal loop may already have released some of
+// this same batch's earlier entries (if forget landed mid-batch, after some
+// candidates published but before others), and releasing those again would
+// double-Close/double-unmark them.
+//
+// callerHoldsMarkedMu: true when the caller (execHoldMarkExecedBinary)
+// already holds execHoldMarkedMu via its own outer defer across its whole
+// body -- this must NOT re-acquire it then (sync.Mutex is not reentrant).
+// false when the caller (markExecHoldCandidatesInRoot) does not hold it, in
+// which case this takes/releases it itself for the execHoldMarked
+// write/delete below, AFTER releasing execHoldContainerMarksMu. That
+// ordering leaves one narrow, accepted residual: a forget landing in the
+// gap between this call releasing execHoldContainerMarksMu and (re)acquiring
+// execHoldMarkedMu can leave a stale execHoldMarked dedup-cache entry (a few
+// bytes, one map key) for an already-forgotten mntnsID. Closing it fully
+// would require either nesting execHoldMarkedMu inside execHoldContainerMarksMu
+// here -- which would deadlock against execHoldMarkExecedBinary's existing
+// OPPOSITE nesting (execHoldMarkedMu outer) -- or holding execHoldMarkedMu
+// externally across the whole enumeration's syscalls, serializing every
+// OTHER container's first-exec marking against it for that duration. Both
+// are worse than the bug: the kernel mark, fd and dispatcher hold-state --
+// the actual leak this function exists to prevent -- are NOT affected by
+// this residual; a stale execHoldMarked entry only risks skipping a
+// re-resolve, and even then only in the compound, narrow case of mntnsID
+// reuse landing on a coincidentally-matching inode, self-correcting via the
+// cheap-stat comparison in execHoldMarkExecedBinary otherwise.
+func (n *ContainerNotifier) execHoldEndInstall(mntnsID uint64, startEpoch uint64, installed []execHoldCandidateInstall, callerHoldsMarkedMu bool) (published bool) {
+	n.execHoldContainerMarksMu.Lock()
+	n.execHoldInstallsInFlight[mntnsID]--
+	lastOut := n.execHoldInstallsInFlight[mntnsID] <= 0
+	if lastOut {
+		delete(n.execHoldInstallsInFlight, mntnsID)
+	}
+	forgotten := n.execHoldForgetEpoch[mntnsID] != startEpoch
+
+	var toRelease []execHoldCandidateInstall
+	if forgotten && len(installed) > 0 {
+		installedByFile := make(map[*os.File]execHoldCandidateInstall, len(installed))
+		for _, ci := range installed {
+			installedByFile[ci.mark.file] = ci
+		}
+		// Fresh slice, not an in-place filter over the same backing array
+		// being ranged: that would alias and corrupt not-yet-visited
+		// elements while writing already-visited ones.
+		var remaining []execHoldMarkedFile
+		for _, m := range n.execHoldContainerMarks[mntnsID] {
+			if ci, ours := installedByFile[m.file]; ours {
+				toRelease = append(toRelease, ci) // still present -- genuinely ours to roll back
+				continue
+			}
+			remaining = append(remaining, m)
+		}
+		if len(remaining) == 0 {
+			delete(n.execHoldContainerMarks, mntnsID)
+		} else {
+			n.execHoldContainerMarks[mntnsID] = remaining
+		}
+	}
+	if lastOut {
+		delete(n.execHoldForgetEpoch, mntnsID)
+	}
+	n.execHoldContainerMarksMu.Unlock()
+
+	markedMu := func(fn func()) {
+		if callerHoldsMarkedMu {
+			fn()
+			return
+		}
+		n.execHoldMarkedMu.Lock()
+		fn()
+		n.execHoldMarkedMu.Unlock()
+	}
+
+	published = !forgotten && len(installed) > 0
+	if published {
+		markedMu(func() {
+			if n.execHoldMarked == nil {
+				n.execHoldMarked = make(map[uint64]map[string]execHoldKey)
+			}
+			if n.execHoldMarked[mntnsID] == nil {
+				n.execHoldMarked[mntnsID] = make(map[string]execHoldKey)
+			}
+			for _, ci := range installed {
+				n.execHoldMarked[mntnsID][ci.path] = ci.mark.key
+			}
+		})
+		return published
+	}
+
+	if len(toRelease) > 0 {
+		for _, ci := range toRelease {
+			n.execHoldReleaseOneMark(mntnsID, ci.mark)
+		}
+		markedMu(func() {
+			if inner, ok := n.execHoldMarked[mntnsID]; ok {
+				for _, ci := range toRelease {
+					delete(inner, ci.path)
+				}
+			}
+		})
+	}
+	return published
+}
+
 // markExecHoldPath resolves candidatePath under the container rootfs referred
 // to by rootFd, with execHoldOpenCandidate's full hardening, and installs the
 // FAN_OPEN_EXEC_PERM mark on the object it resolved to.
@@ -269,10 +413,21 @@ type execHoldMarkedFile struct {
 // installed exactly as before this scoping existed (fire-and-forget, closed
 // immediately, never explicitly removed) rather than refused -- refusing
 // would give up real protection over a bookkeeping gap.
-func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdentity, mntnsID uint64, candidatePath string) (execHoldKey, error) {
+//
+// Returns the installed execHoldMarkedFile (not just its key): callers wrap
+// this in execHoldBeginInstall/execHoldEndInstall (see their own doc
+// comments), which needs the retained file to roll a mark back if
+// execHoldForget ran for mntnsID while this call -- or a sibling call in the
+// same batch -- was still in flight. The append into execHoldContainerMarks
+// below happens immediately, not deferred to that later rollback decision:
+// execHoldKeyStillOwned (consulted by execHoldSettle and by OTHER
+// containers' execHoldForget) must see this mark within microseconds, not
+// for the duration of a whole enumeration, or a sibling container settling a
+// shared-inode hold could strip protection this call is still installing.
+func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdentity, mntnsID uint64, candidatePath string) (execHoldMarkedFile, error) {
 	file, err := execHoldOpenCandidate(rootFd, root, candidatePath)
 	if err != nil {
-		return execHoldKey{}, err
+		return execHoldMarkedFile{}, err
 	}
 
 	// The dispatcher's hold-state is keyed on the object's (dev, ino), which is
@@ -281,7 +436,7 @@ func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdenti
 	key, err := execHoldKeyOfFd(int(file.Fd()))
 	if err != nil {
 		file.Close()
-		return execHoldKey{}, fmt.Errorf("identifying %q for marking: %w", candidatePath, err)
+		return execHoldMarkedFile{}, fmt.Errorf("identifying %q for marking: %w", candidatePath, err)
 	}
 
 	// Mark the ALREADY-OPEN, already-validated fd: passing it as dirFd
@@ -294,36 +449,22 @@ func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdenti
 	})
 	if err != nil {
 		file.Close()
-		return execHoldKey{}, fmt.Errorf("marking %q: %w", candidatePath, err)
+		return execHoldMarkedFile{}, fmt.Errorf("marking %q: %w", candidatePath, err)
 	}
 
+	m := execHoldMarkedFile{key: key, file: file}
 	if mntnsID == 0 {
 		file.Close()
-		return key, nil
+		return m, nil
 	}
-	// A narrow, accepted race lives here: if the container owning mntnsID
-	// terminates (running execHoldForget) in the gap between the install
-	// above and this append, the append is not visible to that already-ran
-	// execHoldForget call, and what was just installed is never explicitly
-	// removed. Closing this fully would need container registration
-	// (AddWatchContainerTermination, which populates n.containers with the
-	// mntnsID a liveness check here would need) to happen BEFORE marking
-	// rather than after, which callbackAddContainerBounded's current
-	// ordering does not guarantee -- an earlier attempt at a post-append
-	// liveness check here false-positived on exactly that ordering and was
-	// reverted. Accepted for the same reason every OTHER mntns-recycle window
-	// in this file is accepted (see markExecHoldCandidates' own doc comment):
-	// narrow, and the failure mode is an orphaned mark outliving its
-	// container, not a safety violation -- the same watchdog/timeout/fail-open
-	// posture that already governs every hold still applies to it.
 	n.execHoldContainerMarksMu.Lock()
 	if n.execHoldContainerMarks == nil {
 		n.execHoldContainerMarks = make(map[uint64][]execHoldMarkedFile)
 	}
-	n.execHoldContainerMarks[mntnsID] = append(n.execHoldContainerMarks[mntnsID], execHoldMarkedFile{key: key, file: file})
+	n.execHoldContainerMarks[mntnsID] = append(n.execHoldContainerMarks[mntnsID], m)
 	n.execHoldContainerMarksMu.Unlock()
 
-	return key, nil
+	return m, nil
 }
 
 // execHoldInstallMark records the dispatcher's hold-state for key and then
@@ -389,11 +530,32 @@ func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File, mntns
 	}
 
 	var marked []string
+	var installed []execHoldCandidateInstall
+
+	// Begin/End bracket the WHOLE enumeration below, not each individual
+	// markExecHoldPath call: an earlier version of this bracketing scoped it
+	// per-candidate, which let a forget landing between candidate i and i+1
+	// clear its own signal before i+1 even started, letting i+1 publish into
+	// an already-forgotten mntnsID -- reproducing the exact race this exists
+	// to close. Deferred so End always runs even on an early return (there
+	// is none today, but this makes that safe if one is added later) and so
+	// the in-flight/epoch bookkeeping in execHoldInstallsInFlight/
+	// execHoldForgetEpoch never outlives the call that created it.
+	var startEpoch uint64
+	if mntnsID != 0 {
+		startEpoch = n.execHoldBeginInstall(mntnsID)
+	}
+	defer func() {
+		if mntnsID != 0 {
+			n.execHoldEndInstall(mntnsID, startEpoch, installed, false)
+		}
+	}()
+
 	for _, basename := range n.execHoldBinaries {
 		for _, dir := range execHoldSearchPaths {
 			candidatePath := filepath.Join(dir, basename)
 
-			key, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, candidatePath)
+			m, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, candidatePath)
 			if err != nil {
 				// Expected for every search path the binary is not in, so this
 				// stays at debug level: the rejection cases are logged by the
@@ -402,28 +564,18 @@ func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File, mntns
 				continue
 			}
 
-			// Recorded into execHoldMarked, not just execHoldContainerMarks:
-			// execHoldMarkExecedBinary's first-exec dedup looks a path up
-			// there, and without this a binary already present at container
-			// create time would ALWAYS miss that lookup on its first exec
-			// (execHoldMarked was otherwise populated only by the first-exec
-			// path itself) and pay a second, redundant FAN_MARK_ADD, a second
-			// execHold.holds increment and a second retained fd for the
-			// identical object -- FAN_MARK_ADD's kernel-level folding does
-			// not undo any of those LOCAL costs.
-			if mntnsID != 0 {
-				n.execHoldMarkedMu.Lock()
-				if n.execHoldMarked == nil {
-					n.execHoldMarked = make(map[uint64]map[string]execHoldKey)
-				}
-				if n.execHoldMarked[mntnsID] == nil {
-					n.execHoldMarked[mntnsID] = make(map[string]execHoldKey)
-				}
-				n.execHoldMarked[mntnsID][candidatePath] = key
-				n.execHoldMarkedMu.Unlock()
-			}
-
+			// execHoldMarked -- the first-exec dedup cache -- is populated by
+			// the deferred execHoldEndInstall call above, not here: a binary
+			// already present at container create time still needs an entry
+			// there (without one, its actual first exec would ALWAYS miss
+			// execHoldMarkExecedBinary's dedup lookup and pay a second,
+			// redundant FAN_MARK_ADD, holds increment, and retained fd for
+			// the identical object), but recording it must go through the
+			// same forget-epoch check as the kernel mark itself, or a forget
+			// landing after this specific write could resurrect a dedup
+			// entry for an already-dead mntnsID.
 			marked = append(marked, candidatePath)
+			installed = append(installed, execHoldCandidateInstall{path: candidatePath, mark: m})
 		}
 	}
 
@@ -582,21 +734,35 @@ func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os
 		return false
 	}
 
-	key, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, execedPath)
+	if mntnsID == 0 {
+		// No container identity to track ownership under -- markExecHoldPath
+		// itself already treats this as fire-and-forget (closes the file
+		// immediately, never retained in execHoldContainerMarks); skip the
+		// in-flight/epoch bookkeeping entirely rather than key it on a value
+		// that never names a real container, and skip the execHoldMarked
+		// dedup write too, matching markExecHoldPath's own mntnsID==0
+		// handling.
+		_, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, execedPath)
+		if err != nil {
+			log.Debugf("container-hook: exec-hold: not marking exec'd %s: %s", execedPath, err)
+			return false
+		}
+		return true
+	}
+
+	// execHoldMarkedMu is already held (the outer defer above): passing
+	// callerHoldsMarkedMu=true tells execHoldEndInstall not to re-acquire it
+	// for the execHoldMarked write/delete below, which would self-deadlock
+	// (sync.Mutex is not reentrant).
+	startEpoch := n.execHoldBeginInstall(mntnsID)
+	m, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, execedPath)
+	var installed []execHoldCandidateInstall
 	if err != nil {
 		log.Debugf("container-hook: exec-hold: not marking exec'd %s in mntns %d: %s", execedPath, mntnsID, err)
-		return false
+	} else {
+		installed = []execHoldCandidateInstall{{path: execedPath, mark: m}}
 	}
-
-	if n.execHoldMarked == nil {
-		n.execHoldMarked = make(map[uint64]map[string]execHoldKey)
-	}
-	if n.execHoldMarked[mntnsID] == nil {
-		n.execHoldMarked[mntnsID] = make(map[string]execHoldKey)
-	}
-	n.execHoldMarked[mntnsID][execedPath] = key
-
-	return true
+	return n.execHoldEndInstall(mntnsID, startEpoch, installed, true)
 }
 
 // execHoldOnExec marks an allowlisted binary that has just been exec'd inside a
@@ -689,37 +855,62 @@ func (n *ContainerNotifier) execHoldForget(mntnsID uint64) {
 	n.execHoldContainerMarksMu.Lock()
 	marks := n.execHoldContainerMarks[mntnsID]
 	delete(n.execHoldContainerMarks, mntnsID)
+	if n.execHoldInstallsInFlight[mntnsID] > 0 {
+		// A markExecHoldPath install (or batch of them, for a create-time
+		// enumeration) for mntnsID is currently between installing its
+		// kernel mark and finishing -- exactly the race
+		// execHoldBeginInstall/execHoldEndInstall exist to close. Its own
+		// entries are not (yet) visible above, so bump the forget-epoch:
+		// execHoldEndInstall compares against the epoch it snapshotted at
+		// Begin, and self-cleans its own contribution instead of leaving it
+		// as an orphan this call already looked for and did not find.
+		//
+		// Left unbumped (the common, non-racing case: nothing in flight)
+		// deliberately -- an epoch entry only ever exists while something is
+		// actively racing it, so this map's growth stays bounded to that
+		// window rather than accumulating one entry per container that ever
+		// existed on the node.
+		if n.execHoldForgetEpoch == nil {
+			n.execHoldForgetEpoch = make(map[uint64]uint64)
+		}
+		n.execHoldForgetEpoch[mntnsID]++
+	}
 	n.execHoldContainerMarksMu.Unlock()
 
 	// Unmark and drop dispatcher state off the lock above: these are
 	// syscalls plus execHold.holdsMu, and execHoldContainerMarksMu must stay
 	// free for markExecHoldPath's own (different-mntnsID) appends while this
-	// runs. execHoldReleaseHeldMark pairs the removal syscall with the
-	// holds-map deletion under execHold.holdsMu, same as execHoldSettle,
-	// so this cannot interleave with a concurrent execHoldInstallMark for
-	// the same key either.
+	// runs.
 	for _, m := range marks {
-		// This container's own entry for mntnsID is already deleted above
-		// (exceptMntnsID=0 excludes nothing further): a true positive here
-		// means some OTHER, still-alive container's mark also references
-		// this exact object -- almost always a shared, unmodified base-image
-		// layer where several containers resolve the same allowlisted
-		// binary to the identical host inode. Removing the kernel mark now
-		// would strip THAT container's protection for its own first exec of
-		// the same object, even though nothing about ITS lifecycle changed.
-		if n.execHoldKeyStillOwned(m.key, 0) {
-			m.file.Close()
-			continue
-		}
-		key := m.key
-		file := m.file
-		n.execHoldReleaseHeldMark(key, func() {
-			if err := n.execHoldMark(unix.FAN_MARK_REMOVE, unix.FAN_OPEN_EXEC_PERM, int(file.Fd()), ""); err != nil {
-				log.Debugf("container-hook: exec-hold: removing mark for %s (mntns %d, container terminated): %s", key, mntnsID, err)
-			}
-		})
-		file.Close()
+		n.execHoldReleaseOneMark(mntnsID, m)
 	}
+}
+
+// execHoldReleaseOneMark releases the local resources of mark m, which
+// belonged to mntnsID: unless another tracked container still owns the same
+// object (execHoldKeyStillOwned -- most commonly a shared, unmodified
+// base-image layer where several containers resolve the same allowlisted
+// binary to the identical host inode), removes the kernel mark and
+// dispatcher hold-state via execHoldReleaseHeldMark (which pairs the
+// FAN_MARK_REMOVE syscall with the holds-map deletion under one holdsMu
+// span, so this cannot interleave with a concurrent execHoldInstallMark for
+// the same key); always closes the retained fd. Used by execHoldForget (a
+// container terminating with marks still outstanding) and execHoldEndInstall
+// (an in-flight install rolling back its own contribution because
+// execHoldForget already ran for its mntnsID).
+func (n *ContainerNotifier) execHoldReleaseOneMark(mntnsID uint64, m execHoldMarkedFile) {
+	if n.execHoldKeyStillOwned(m.key, 0) {
+		m.file.Close()
+		return
+	}
+	key := m.key
+	file := m.file
+	n.execHoldReleaseHeldMark(key, func() {
+		if err := n.execHoldMark(unix.FAN_MARK_REMOVE, unix.FAN_OPEN_EXEC_PERM, int(file.Fd()), ""); err != nil {
+			log.Debugf("container-hook: exec-hold: removing mark for %s (mntns %d): %s", key, mntnsID, err)
+		}
+	})
+	file.Close()
 }
 
 // execHoldKeyStillOwned reports whether any tracked container OTHER than

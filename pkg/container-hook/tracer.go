@@ -228,7 +228,30 @@ type ContainerNotifier struct {
 	// container's mount namespace id, so execHoldForget can remove them (and
 	// their dispatcher hold-state) when the container terminates. See
 	// markExecHoldPath and execHoldMarkedFile.
-	execHoldContainerMarks   map[uint64][]execHoldMarkedFile
+	execHoldContainerMarks map[uint64][]execHoldMarkedFile
+	// execHoldForgetEpoch and execHoldInstallsInFlight close the race between
+	// markExecHoldPath installing a mark for mntnsID and execHoldForget
+	// running for that SAME mntnsID before the install has fully finished
+	// (see execHoldBeginInstall/execHoldEndInstall). Both guarded by the
+	// SAME execHoldContainerMarksMu as execHoldContainerMarks itself.
+	//
+	// execHoldForgetEpoch is bumped by execHoldForget ONLY when something is
+	// actually in flight for that mntnsID -- the common, non-racing
+	// termination case leaves no entry at all, bounding this map's growth.
+	// Any install whose Begin-time snapshot no longer matches the epoch at
+	// End time self-cleans, regardless of how many sibling
+	// candidates/installs raced it or how execHoldInstallsInFlight moved in
+	// between -- a plain bool here would be wrong: it could be cleared by an
+	// EARLIER-finishing sibling install before a LATER one (or a brand-new
+	// install starting right after) gets a chance to observe it.
+	execHoldForgetEpoch map[uint64]uint64
+	// execHoldInstallsInFlight counts, per mntnsID, markExecHoldPath calls
+	// currently between installing a kernel mark and either publishing it or
+	// bailing out. It is the lifecycle/GC signal that bounds
+	// execHoldForgetEpoch's growth (an epoch entry is created only while
+	// something is in flight, and deleted once the last such install exits),
+	// not itself the correctness gate -- that is the epoch comparison.
+	execHoldInstallsInFlight map[uint64]int
 	execHoldContainerMarksMu sync.Mutex
 	// execHold is the hold-event dispatcher's own state: what this notifier
 	// marked, how many holds are running, and the counters. Owned entirely by
