@@ -68,6 +68,39 @@ func TestAttachOpenFileFreshAttach(t *testing.T) {
 	}
 }
 
+// TestAttachOpenFileOffsetResolverSeesHoldPathTrue pins AttachRequest.HoldPath
+// for the ONE call site it exists to mark: a resolver invoked from
+// AttachOpenFile (the exec-hold dispatcher's resolve+attach hand-off) must see
+// HoldPath == true, so it can choose to pay extra latency (e.g. a real-inode
+// lookup) here specifically, without paying it on openTargets'/
+// discoverAndOpenMappedLibraries' synchronous, latency-sensitive paths (see
+// TestMultiOffsetResolverReceivesProgName for the false case on those).
+func TestAttachOpenFileOffsetResolverSeesHoldPathTrue(t *testing.T) {
+	tr, st := newTestTracer(t)
+	st.currentInode = 200
+	trackPidWithoutAttach(t, tr, st, fakePid)
+
+	elfFile := writeSyntheticELF(t, testBuildID)
+	f, err := os.Open(elfFile.Name())
+	if err != nil {
+		t.Fatalf("opening synthetic ELF candidate: %v", err)
+	}
+
+	var got AttachRequest
+	tr.SetAttachOffsetsResolver(func(req AttachRequest) ([]uint64, error) {
+		got = req
+		return nil, errors.New("no offsets: resolver only needs to observe HoldPath here")
+	})
+
+	if _, _, err := tr.AttachOpenFile(fakePid, f, "exec-hold candidate"); err != nil {
+		t.Fatalf("AttachOpenFile: %v", err)
+	}
+
+	if !got.HoldPath {
+		t.Error("HoldPath = false, want true: this request came from AttachOpenFile")
+	}
+}
+
 // 2. The inode is already attached for another pid: AttachOpenFile must NOT
 // attach again -- only bump the shared refcount and credit this pid, exactly
 // like CreditIfAttached's third-pid case.

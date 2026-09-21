@@ -951,7 +951,7 @@ func (t *Tracer[Event]) openTargets(ctx context.Context, containerPid uint32, pa
 			openFailed = true
 			continue
 		}
-		opened = append(opened, openedTarget{file: file, label: filePath, offsets: t.resolveAttachOffsets(file, containerPid)})
+		opened = append(opened, openedTarget{file: file, label: filePath, offsets: t.resolveAttachOffsets(file, containerPid, false)})
 	}
 	return opened, openFailed
 }
@@ -1221,8 +1221,11 @@ func (t *Tracer[Event]) AttachOpenFile(containerPid uint32, file *os.File, label
 	defer func() { <-sem }()
 
 	// Off-lock, same reasoning as openTargets/CreditIfAttached: the ELF parse
-	// and resolver I/O below must not run under t.mu.
-	offsets := t.resolveAttachOffsets(file, containerPid)
+	// and resolver I/O below must not run under t.mu. holdPath=true: this IS
+	// the exec-hold hand-off, the one caller AttachRequest.HoldPath exists to
+	// mark, so a resolver may pay extra latency here that it must not pay on
+	// openTargets/discoverAndOpenMappedLibraries's synchronous paths.
+	offsets := t.resolveAttachOffsets(file, containerPid, true)
 
 	t.mu.Lock()
 	// muHold measures how long t.mu was held; observed AFTER unlock (not via
@@ -1722,7 +1725,7 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibraries(containerPid, execPid uin
 		// attachOffsetsResolver (resolver.go:161-164). Passing execPid here would
 		// change only log/error text, and would make those diagnostics disagree with
 		// every other pid field on this attach.
-		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: t.resolveAttachOffsets(file, containerPid)})
+		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: t.resolveAttachOffsets(file, containerPid, false)})
 	}
 	return opened, nil
 }
