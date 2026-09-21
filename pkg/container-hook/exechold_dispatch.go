@@ -103,11 +103,17 @@ type ExecHoldCrediter interface {
 // timeout and watchdog behaviour below is complete and exercised today and
 // wiring the real call is a one-line change at that call site.
 //
-// FILE OWNERSHIP: implementations CONSUME file and must close it on every
-// return path, matching ExecHoldCrediter. The exec stays held until this
-// returns, so an implementation must do its own I/O bounding; the dispatcher
-// only guarantees the exec is released at execHoldWorkerHardBound whether or
-// not this has returned.
+// FILE OWNERSHIP: implementations CONSUME file -- the caller must not use or
+// close it after this returns -- but, unlike ExecHoldCrediter, an
+// implementation is NOT required to close it on every return path. The real
+// implementation this is wired to (uprobetracer.Tracer.AttachOpenFile)
+// retains the file on a fresh successful attach, handing ownership to its
+// own longer-lived inode keeper rather than closing it; a ResolveAttacher may
+// do the same (close immediately, or retain, whichever its own bookkeeping
+// needs) as long as it never touches file again after taking that decision.
+// The exec stays held until this returns, so an implementation must do its
+// own I/O bounding; the dispatcher only guarantees the exec is released at
+// execHoldWorkerHardBound whether or not this has returned.
 type ResolveAttacher interface {
 	ResolveAndAttach(containerPid uint32, file *os.File) error
 }

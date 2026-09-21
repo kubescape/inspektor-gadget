@@ -1173,8 +1173,15 @@ func (t *Tracer[Event]) CreditIfAttached(containerPid uint32, file *os.File) (ui
 // should call CreditIfAttached first, as the exec-hold dispatcher already
 // does — AttachOpenFile is reached only on ITS miss.
 //
-// FILE OWNERSHIP: this function CONSUMES file and closes it on EVERY return
-// path, exactly as CreditIfAttached and attachOneOpenFile do.
+// FILE OWNERSHIP: this function CONSUMES file -- the caller must not use or
+// close it after calling this -- but does NOT always close it: it delegates
+// entirely to attachOneOpenFile, which closes file on every path EXCEPT a
+// fresh successful attach (added=true, no prior reference for this inode),
+// where ownership instead transfers to the new inodeKeeper that keeps it
+// open for as long as the attach is live (see attachOneOpenFile and
+// TestAttachOpenFileFreshAttach). This differs from CreditIfAttached, a pure
+// check that never takes a new attach and so genuinely does close file on
+// every return path; do not assume the two behave identically here.
 func (t *Tracer[Event]) AttachOpenFile(containerPid uint32, file *os.File, label string) (uint64, bool, error) {
 	// Cheap early-exit check BEFORE the expensive resolve below: closed or
 	// untracked means resolveAttachOffsets' ELF parse and resolver I/O would
