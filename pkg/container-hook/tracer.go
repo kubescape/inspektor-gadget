@@ -205,13 +205,21 @@ type ContainerNotifier struct {
 	// execHoldMarked records, per container mount namespace id (the only
 	// container identity an exec event carries) and allowlisted RESOLVED PATH
 	// (not basename -- two distinct objects can share a basename, see
-	// execHoldMarkExecedBinary), the execHoldKey that was marked there. The
-	// stored key, not just presence, is what lets a repeat exec of the same
-	// path be told apart from a REPLACED binary at that path (a different
-	// (dev, ino) since the first mark -- FAN_MARK_ADD marks the inode, not
-	// the path, so a replacement leaves the old mark orphaned on content that
-	// may not even be reachable anymore, with the new inode never marked at
-	// all). Entries are dropped on container termination (execHoldForget).
+	// execHoldMarkExecedBinary), the execHoldKey that was marked there.
+	// Populated by BOTH mark sources -- create-time enumeration
+	// (markExecHoldCandidatesInRoot) and the first-exec path
+	// (execHoldMarkExecedBinary) -- so a binary already present at container
+	// create time is not marked a second time (a redundant FAN_MARK_ADD, a
+	// second execHold.holds increment, and a second retained fd for the
+	// SAME object) the first time it is actually exec'd; only
+	// execHoldMarkExecedBinary itself consults this map to decide whether to
+	// mark. The stored key, not just presence, is what lets a repeat exec of
+	// the same path be told apart from a REPLACED binary at that path (a
+	// different (dev, ino) since the mark was recorded -- FAN_MARK_ADD marks
+	// the inode, not the path, so a replacement leaves the old mark orphaned
+	// on content that may not even be reachable anymore, with the new inode
+	// never marked at all). Entries are dropped on container termination
+	// (execHoldForget).
 	execHoldMarked   map[uint64]map[string]execHoldKey
 	execHoldMarkedMu sync.Mutex
 	// execHoldContainerMarks retains the still-open marking fd for every

@@ -393,12 +393,34 @@ func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File, mntns
 		for _, dir := range execHoldSearchPaths {
 			candidatePath := filepath.Join(dir, basename)
 
-			if _, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, candidatePath); err != nil {
+			key, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, candidatePath)
+			if err != nil {
 				// Expected for every search path the binary is not in, so this
 				// stays at debug level: the rejection cases are logged by the
 				// error text they carry.
 				log.Debugf("container-hook: exec-hold: not marking %s: %s", candidatePath, err)
 				continue
+			}
+
+			// Recorded into execHoldMarked, not just execHoldContainerMarks:
+			// execHoldMarkExecedBinary's first-exec dedup looks a path up
+			// there, and without this a binary already present at container
+			// create time would ALWAYS miss that lookup on its first exec
+			// (execHoldMarked was otherwise populated only by the first-exec
+			// path itself) and pay a second, redundant FAN_MARK_ADD, a second
+			// execHold.holds increment and a second retained fd for the
+			// identical object -- FAN_MARK_ADD's kernel-level folding does
+			// not undo any of those LOCAL costs.
+			if mntnsID != 0 {
+				n.execHoldMarkedMu.Lock()
+				if n.execHoldMarked == nil {
+					n.execHoldMarked = make(map[uint64]map[string]execHoldKey)
+				}
+				if n.execHoldMarked[mntnsID] == nil {
+					n.execHoldMarked[mntnsID] = make(map[string]execHoldKey)
+				}
+				n.execHoldMarked[mntnsID][candidatePath] = key
+				n.execHoldMarkedMu.Unlock()
 			}
 
 			marked = append(marked, candidatePath)
@@ -760,8 +782,17 @@ func (n *ContainerNotifier) watchExecHold() {
 			// permission event as allowed, so this fails open exactly like
 			// every other exec-hold error path, rather than leaving the
 			// group open with silent, permanent hangs waiting to happen.
+			//
+			// Synchronized the same way Close() is: execHoldNotifyMu.Lock()
+			// waits for any fanotify_mark call already in flight through
+			// execHoldMark (external marking, or termination cleanup) to
+			// finish before this fd is actually closed, so a mark call can
+			// never run on an fd this has already closed (and the OS may
+			// have already reused).
 			if n.execHoldNotify != nil {
+				n.execHoldNotifyMu.Lock()
 				n.execHoldNotify.File.Close()
+				n.execHoldNotifyMu.Unlock()
 			}
 			return
 		}

@@ -479,6 +479,48 @@ func TestExecHoldMarkExecedBinaryIgnoresUnallowlistedBinary(t *testing.T) {
 	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd))
 }
 
+// TestExecHoldMarkExecedBinaryDedupsAgainstCreateTimeMark is the regression
+// test for the create-time/first-exec dedup gap: execHoldMarked used to be
+// populated ONLY by the first-exec path, so a binary already present in the
+// rootfs at container-create time -- marked by markExecHoldCandidatesInRoot
+// during the enumeration -- always missed execHoldMarkExecedBinary's lookup
+// on its actual first exec, paying a second, redundant FAN_MARK_ADD, a
+// second execHold.holds increment and a second retained fd for the identical
+// object. markExecHoldCandidatesInRoot now records into execHoldMarked too.
+func TestExecHoldMarkExecedBinaryDedupsAgainstCreateTimeMark(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+
+	rootPath := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
+	binPath := filepath.Join(rootPath, "usr/bin/allowed")
+	require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	var binStat unix.Stat_t
+	require.NoError(t, unix.Stat(binPath, &binStat))
+
+	root := openRoot(t, rootPath)
+	const mntnsID = uint64(555)
+
+	// Container-create time: the binary is already there, so the enumeration
+	// marks it.
+	marked := n.markExecHoldCandidatesInRoot(root, mntnsID)
+	require.Equal(t, []string{"/usr/bin/allowed"}, marked)
+	require.Contains(t, n.execHoldMarked[mntnsID], "/usr/bin/allowed",
+		"the create-time mark must be recorded into execHoldMarked, not just execHoldContainerMarks")
+
+	// Its actual first exec must be deduplicated against that create-time
+	// mark, not treated as a fresh candidate.
+	require.False(t, n.execHoldMarkExecedBinary(mntnsID, root, "/usr/bin/allowed"),
+		"the first exec of a binary already marked at container-create time must not mark it again")
+
+	var count int
+	for _, ino := range fanotifyMarkedInodes(t, n.execHoldNotify.Fd) {
+		if ino == binStat.Ino {
+			count++
+		}
+	}
+	require.Equal(t, 1, count, "the group must hold exactly one mark on the binary, not one per mark source")
+}
+
 // TestExecHoldMarkExecedBinaryIsIdempotent asserts that a busy binary exec'd
 // over and over does not re-resolve and re-mark on every exec, and that the
 // group ends up holding exactly one mark on that inode.

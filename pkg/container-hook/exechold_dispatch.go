@@ -598,8 +598,16 @@ func (n *ContainerNotifier) execHoldWatchdogCheck(now time.Time) bool {
 	log.Errorf("container-hook: exec-hold: read loop made no progress for %s; closing the fanotify group, which releases every held exec. Exec-hold is now DISABLED for this notifier (watchdog_trips=%d)",
 		execHoldLoopStallBound, n.execHold.watchdogTrips.Load())
 
+	// Synchronized the same way Close() and watchExecHold's own error path
+	// are: execHoldNotifyMu.Lock() waits for any fanotify_mark call already
+	// in flight through execHoldMark (external marking, or termination
+	// cleanup, both of which can run concurrently with this watchdog) to
+	// finish before the fd is actually closed, so a mark call can never run
+	// on an fd this has already closed (and the OS may have already reused).
 	if n.execHoldNotify != nil {
+		n.execHoldNotifyMu.Lock()
 		n.execHoldNotify.File.Close()
+		n.execHoldNotifyMu.Unlock()
 	}
 	return true
 }
