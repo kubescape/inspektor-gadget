@@ -684,10 +684,20 @@ func (n *ContainerNotifier) watchExecEvents() {
 		// storms. The channel send is non-blocking and drops on overflow
 		// (fail-open, same posture as the hold dispatcher's own timeout):
 		// see execHoldOnExecCh's doc comment.
-		select {
-		case n.execHoldOnExecCh <- execHoldOnExecTask{mntnsID: mntnsID, pid: pid}:
-		default:
-			log.Debugf("container-hook: exec-hold worker channel full, dropping mark attempt for pid %d", pid)
+		//
+		// Gated on exec-hold actually being enabled: watchExecEvents also
+		// runs for a consumer that only wants EventTypeExecContainer (e.g. a
+		// uprobe reattach stream) with exec-hold off, and execHoldOnExecWorker
+		// is never started for them (see install) -- an unconditional send
+		// here would just be a channel op and, once full, a log line for a
+		// feature that consumer never opted into, with nothing ever draining
+		// the channel to make room again.
+		if n.execHoldNotify != nil {
+			select {
+			case n.execHoldOnExecCh <- execHoldOnExecTask{mntnsID: mntnsID, pid: pid}:
+			default:
+				log.Debugf("container-hook: exec-hold worker channel full, dropping mark attempt for pid %d", pid)
+			}
 		}
 		n.callback(ContainerEvent{
 			Type:         EventTypeExecContainer,
