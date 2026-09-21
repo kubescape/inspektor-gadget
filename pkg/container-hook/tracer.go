@@ -202,6 +202,17 @@ type ContainerNotifier struct {
 	// execHoldBinaries is this notifier's copy of the exec-hold allowlist, taken
 	// at construction so it cannot change under the callback goroutines.
 	execHoldBinaries []string
+	// execHoldTrustedMounts is this notifier's copy of the operator-declared
+	// trusted cross-device mount paths, taken at construction for the same
+	// reason execHoldBinaries is.
+	execHoldTrustedMounts []string
+	// execHoldNodeRootDev/execHoldNodeRootDevValid are snapshotted from the
+	// shared execHoldNodeRootDevice() sync.Once, so the notifier and the
+	// setter's startup log can never disagree. When Valid is false, every
+	// trusted cross-device exemption is refused (see
+	// execHoldResolveTrustedAnchors).
+	execHoldNodeRootDev      uint64
+	execHoldNodeRootDevValid bool
 	// execHoldMarked records, per container mount namespace id (the only
 	// container identity an exec event carries) and allowlisted RESOLVED PATH
 	// (not basename -- two distinct objects can share a basename, see
@@ -412,12 +423,19 @@ func NewContainerNotifier(callback ContainerNotifyFunc) (*ContainerNotifier, err
 		// a later, unrelated call) -- this notifier's copy must not move
 		// under the callback/marking goroutines reading it for this
 		// notifier's entire lifetime.
-		execHoldBinaries:  append([]string(nil), execHoldBinaries...),
-		containers:        make(map[string]*watchedContainer),
-		futureContainers:  make(map[string]*futureContainer),
-		pendingContainers: make(map[string]*pendingContainer),
-		done:              make(chan bool),
-		execHoldOnExecCh:  make(chan execHoldOnExecTask, execHoldOnExecChanCap),
+		execHoldBinaries: append([]string(nil), execHoldBinaries...),
+		// Cloned for the same reason, and the node root device is read from
+		// the shared sync.Once so this snapshot and the setter's startup log
+		// describe the same derivation.
+		execHoldTrustedMounts: append([]string(nil), execHoldTrustedCrossDeviceMounts...),
+		containers:            make(map[string]*watchedContainer),
+		futureContainers:      make(map[string]*futureContainer),
+		pendingContainers:     make(map[string]*pendingContainer),
+		done:                  make(chan bool),
+		execHoldOnExecCh:      make(chan execHoldOnExecTask, execHoldOnExecChanCap),
+	}
+	if len(n.execHoldTrustedMounts) > 0 {
+		n.execHoldNodeRootDev, n.execHoldNodeRootDevValid = execHoldNodeRootDevice()
 	}
 
 	if err := n.install(); err != nil {

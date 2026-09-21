@@ -75,12 +75,17 @@ func TestExecHoldOpenCandidateRejectsForeignDevice(t *testing.T) {
 	}
 	root := openRoot(t, "/")
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: rootDev}, crossDevicePath)
+	file, _, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: rootDev}, nil, crossDevicePath)
 	if file != nil {
 		file.Close()
 	}
 	require.Nil(t, file, "a candidate on a foreign device must not be returned for marking")
-	require.ErrorContains(t, err, "refusing to mark")
+	// Golden string, not a substring: with zero configuration this refusal must
+	// stay byte-identical to what it was before operator-declared trusted
+	// cross-device mounts existed. An ErrorContains on "refusing to mark" alone
+	// would survive a substantial rewording of the default path.
+	require.EqualError(t, err, fmt.Sprintf("%q in container rootfs is on device %d, not the rootfs device %d: refusing to mark",
+		crossDevicePath, statDev(t, crossDevicePath), rootDev))
 }
 
 // TestExecHoldOpenCandidateAcceptsRootfsBinary is the positive counterpart: a
@@ -92,7 +97,7 @@ func TestExecHoldOpenCandidateAcceptsRootfsBinary(t *testing.T) {
 
 	root := openRoot(t, rootPath)
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, "/usr/bin/allowed")
+	file, _, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, nil, "/usr/bin/allowed")
 	require.NoError(t, err)
 	require.NotNil(t, file)
 	defer file.Close()
@@ -113,7 +118,7 @@ func TestExecHoldOpenCandidateRejectsSymlinkEscape(t *testing.T) {
 
 	root := openRoot(t, rootPath)
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, "/usr/bin/allowed")
+	file, _, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, nil, "/usr/bin/allowed")
 	if file != nil {
 		file.Close()
 	}
@@ -163,7 +168,7 @@ func TestExecHoldOpenCandidateRejectsBindMountedHostBinary(t *testing.T) {
 	rootPath := stageBindMountEscape(t)
 	root := openRoot(t, rootPath)
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, "/usr/bin/allowed")
+	file, _, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, nil, "/usr/bin/allowed")
 	if file != nil {
 		file.Close()
 	}
@@ -438,7 +443,7 @@ func TestMarkExecHoldPathAppendsImmediately(t *testing.T) {
 	rootID, err := execHoldStatObject(int(root.Fd()))
 	require.NoError(t, err)
 
-	m, err := n.markExecHoldPath(int(root.Fd()), rootID, 42, "/usr/bin/allowed")
+	m, err := n.markExecHoldPath(int(root.Fd()), rootID, nil, 42, "/usr/bin/allowed")
 	require.NoError(t, err)
 	t.Cleanup(func() { m.file.Close() })
 
@@ -475,7 +480,7 @@ func TestExecHoldEndInstallSelfCleansWholeBatchOnMidEnumerationForget(t *testing
 	startEpoch := n.execHoldBeginInstall(mntnsID)
 
 	// Candidate 1 installs and publishes BEFORE the forget.
-	m1, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/usr/bin/allowed")
+	m1, err := n.markExecHoldPath(int(root.Fd()), rootID, nil, mntnsID, "/usr/bin/allowed")
 	require.NoError(t, err)
 
 	// The container terminates mid-enumeration, between candidate 1 and 2.
@@ -489,7 +494,7 @@ func TestExecHoldEndInstallSelfCleansWholeBatchOnMidEnumerationForget(t *testing
 
 	// Candidate 2 installs and publishes AFTER the forget -- markExecHoldPath
 	// does not know anything about the forget that just happened.
-	m2, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/bin/allowed")
+	m2, err := n.markExecHoldPath(int(root.Fd()), rootID, nil, mntnsID, "/bin/allowed")
 	require.NoError(t, err)
 
 	published := n.execHoldEndInstall(mntnsID, startEpoch, []execHoldCandidateInstall{
@@ -537,9 +542,9 @@ func TestExecHoldEndInstallMultipleConcurrentInstallsEachSelfClean(t *testing.T)
 	// bumps the epoch because in-flight > 0.
 	n.execHoldForget(mntnsID)
 
-	m1, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/usr/bin/allowed")
+	m1, err := n.markExecHoldPath(int(root.Fd()), rootID, nil, mntnsID, "/usr/bin/allowed")
 	require.NoError(t, err)
-	m2, err := n.markExecHoldPath(int(root.Fd()), rootID, mntnsID, "/bin/allowed")
+	m2, err := n.markExecHoldPath(int(root.Fd()), rootID, nil, mntnsID, "/bin/allowed")
 	require.NoError(t, err)
 
 	// The FIRST to finish is not the last one out (the second is still in

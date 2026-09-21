@@ -218,6 +218,11 @@ type execHoldDispatch struct {
 	// single drop adds hot-path string formatting and logger-internal lock
 	// contention on top of the overload it is trying to describe.
 	onExecDropped atomic.Uint64
+	// trustedCrossDeviceExceptions counts candidates accepted through an
+	// operator-declared trusted cross-device mount. Named "exceptions" rather
+	// than "marks" because it increments in markExecHoldPath, whose callers can
+	// still roll the mark back via execHoldEndInstall.
+	trustedCrossDeviceExceptions atomic.Uint64
 }
 
 // ExecHoldStats is a point-in-time view of the exec-hold dispatcher.
@@ -258,6 +263,11 @@ type ExecHoldStats struct {
 	// burst). Each drop is a fail-open, not a lost mark: the NEXT exec of the
 	// same binary in that container gets another chance.
 	OnExecDropped uint64
+	// TrustedCrossDeviceExceptions counts exec-hold candidates accepted via an
+	// operator-declared trusted cross-device mount exception. It counts
+	// exceptions exercised, not live marks: a mark rolled back by a mid-batch
+	// container termination still counts.
+	TrustedCrossDeviceExceptions uint64
 }
 
 // ExecHoldAvailable reports whether this notifier actually created the
@@ -286,6 +296,8 @@ func (n *ContainerNotifier) ExecHoldStats() ExecHoldStats {
 		GuardMisses:   n.execHold.guardMisses.Load(),
 		WatchdogTrips: n.execHold.watchdogTrips.Load(),
 		OnExecDropped: n.execHold.onExecDropped.Load(),
+
+		TrustedCrossDeviceExceptions: n.execHold.trustedCrossDeviceExceptions.Load(),
 	}
 }
 

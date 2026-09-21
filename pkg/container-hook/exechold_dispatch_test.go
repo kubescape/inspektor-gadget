@@ -383,7 +383,7 @@ func TestMarkExecHoldPathRollsBackHoldStateOnMarkFailure(t *testing.T) {
 	}
 
 	root := openRoot(t, rootPath)
-	_, err = n.markExecHoldPath(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, 0, "/usr/bin/allowed")
+	_, err = n.markExecHoldPath(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, nil, 0, "/usr/bin/allowed")
 	require.Error(t, err)
 
 	n.execHold.holdsMu.Lock()

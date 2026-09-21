@@ -60,6 +60,11 @@ const (
 	// distinguished here, because neither is actionable by the caller and
 	// telling them apart would mean duplicating the marking path rather than
 	// reusing it.
+	//
+	// A candidate on a cross-device mount an operator declared trusted (see
+	// SetExecHoldTrustedCrossDeviceMounts) is NOT refused by the st_dev
+	// control and so can yield ExecHoldMarkInstalled; that exemption is
+	// applied by the same shared marking path, not by this entry point.
 	ExecHoldMarkNotInstalled
 )
 

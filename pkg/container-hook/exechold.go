@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/s3rj1k/go-fanotify/fanotify"
@@ -62,6 +63,341 @@ var execHoldBinaries []string
 // constructed.
 func SetExecHoldBinaries(basenames []string) {
 	execHoldBinaries = append([]string(nil), basenames...)
+}
+
+// execHoldTrustedCrossDeviceMounts is the operator-configurable set of
+// CONTAINER-ABSOLUTE mount paths whose filesystem may be marked even though it
+// is not the container rootfs device. Empty by default.
+//
+// SECURITY: the anchor is resolved through the CONTAINER's mount table, so a
+// workload able to mount a host path AT a declared path obtains the exemption.
+// The node-root-device refusal removes the common form ON SINGLE-ROOT NODE
+// IMAGES ONLY (not Flatcar/Bottlerocket/Talos split-/usr, not a separate
+// /var); the rest is bounded by cluster pod-admission policy and by the
+// declared mount's StorageClass. See the feature's operator documentation.
+var execHoldTrustedCrossDeviceMounts []string
+
+// execHoldStatDevOfPath is the real statDev injected into
+// execHoldDeriveNodeRootDevice. Follows symlinks deliberately: the paths it is
+// given (HostProcFs/1/root, HOST_ROOT) are host-supplied, not container
+// content, and /proc/1/root is a magic link that must be followed to mean
+// anything at all.
+func execHoldStatDevOfPath(path string) (uint64, error) {
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		return 0, err
+	}
+	return uint64(st.Dev), nil
+}
+
+// execHoldSelfMntNs reads THIS process's mount namespace id from
+// /proc/self/ns/mnt.
+//
+// Deliberately NOT containerutils.GetMntNs(os.Getpid()): that resolves through
+// host.HostProcFs, so by pid number it reads our own process only under
+// hostPID -- the one case this check was already going to get right -- and
+// reads whatever unrelated host process carries our container-local pid number
+// otherwise. /proc/self is resolved by the kernel against the CALLING process
+// regardless of pid namespace or procfs mount, so it is the comparison the
+// self-check actually intends.
+func execHoldSelfMntNs() (uint64, error) {
+	var st unix.Stat_t
+	if err := unix.Stat("/proc/self/ns/mnt", &st); err != nil {
+		return 0, err
+	}
+	return st.Ino, nil
+}
+
+// execHoldDeriveNodeRootDevice is the whole node-root-device decision table as
+// a PURE function: no sync.Once, every input injected, so the table can be
+// driven deterministically in any order.
+//
+// Primary source: filepath.Join(host.HostProcFs, "1", "root"). Under
+// hostPID: true -- which the node-agent DaemonSet sets -- pid 1 is the node's
+// init and its root is the node's /. The decisive advantage over host.HostRoot
+// is that exec-hold ALREADY stakes its correctness on HostProcFs (every mark
+// route resolves container roots through it), so this introduces no new
+// environment dependency and no new failure mode.
+//
+// Self-check: pid 1's root is only informative if pid 1 is OUTSIDE our own
+// mount namespace. If the two mount namespaces are equal then /proc/1/root IS
+// our own root by definition, and the derivation tells us nothing we did not
+// already know -- the fail-open shape this self-check exists to catch.
+//
+//	pid1 vs self mntns | HOST_ROOT | result
+//	-------------------+-----------+---------------------------------------
+//	differ             | anything  | stat(HostProcFs/1/root) -> KNOWN (1)
+//	same               | set       | stat(hostRoot)          -> KNOWN (2)
+//	same               | unset     | UNKNOWN, fail closed
+//	any                | any       | any error               -> UNKNOWN
+//
+// (1) assumes pid 1 is the node's init. That holds under hostPID: true and
+// fails under pod-level shareProcessNamespace: true (without hostPID), where
+// pid 1 is the pause container. Kubernetes forbids the two together and the
+// shipped DaemonSet sets hostPID: true, so this is excluded in practice; the
+// published device in the startup line plus the live-fire `stat -c %d /`
+// cross-check are the safety net if a custom manifest ever reaches it.
+//
+// (2) takes an operator assertion at face value, and is re-enterable into the
+// same fail-open shape by an explicit HOST_ROOT=/ in a containerized
+// deployment WITHOUT hostPID: stat("/") then returns the agent container's own
+// overlay device and the derivation is confidently wrong. That residual is
+// pinned by TestExecHoldResolveTrustedAnchorsAcceptsNodeRootAnchorWhenDeviceIsMisderived;
+// the defense is the same as row 1's -- publication and the live-fire
+// cross-check.
+//
+// ANY error (nsErr non-nil, or statDev failing) yields known == false: an
+// undefined branch in a security control is not acceptable in a design whose
+// posture is explicit fail-closed.
+func execHoldDeriveNodeRootDevice(
+	pid1MntNs, selfMntNs uint64,
+	nsErr error,
+	hostRoot string, hostRootSet bool,
+	statDev func(string) (uint64, error),
+) (dev uint64, known bool) {
+	if nsErr != nil {
+		return 0, false
+	}
+	if pid1MntNs != selfMntNs {
+		dev, err := statDev(filepath.Join(host.HostProcFs, "1", "root"))
+		if err != nil {
+			return 0, false
+		}
+		return dev, true
+	}
+	if !hostRootSet {
+		return 0, false
+	}
+	dev, err := statDev(hostRoot)
+	if err != nil {
+		return 0, false
+	}
+	return dev, true
+}
+
+var (
+	execHoldNodeRootDevOnce  sync.Once
+	execHoldNodeRootDevValue uint64
+	execHoldNodeRootDevKnown bool
+)
+
+// execHoldNodeRootDevice reads the real inputs, delegates to the pure
+// execHoldDeriveNodeRootDevice above, memoizes for the process and emits the
+// single failure Error.
+//
+// The sync.Once has two real jobs: the Error fires once rather than once per
+// container create (execHoldResolveTrustedAnchors runs per enumeration), and
+// the setter's startup log and the notifier's snapshot can never disagree.
+func execHoldNodeRootDevice() (uint64, bool) {
+	execHoldNodeRootDevOnce.Do(func() {
+		pid1MntNs, nsErr := containerutils.GetMntNs(1)
+		var selfMntNs uint64
+		if nsErr == nil {
+			selfMntNs, nsErr = execHoldSelfMntNs()
+		}
+		hostRoot, hostRootSet := os.LookupEnv("HOST_ROOT")
+
+		// The failing path and error are captured here rather than returned by
+		// the pure function, so the single Error below can name WHICH input
+		// produced "unknown": the remedy differs per cause (add hostPID: true,
+		// fix the /host mount, or unset a bogus HOST_ROOT).
+		var statErrPath string
+		var statErr error
+		statDev := func(path string) (uint64, error) {
+			dev, err := execHoldStatDevOfPath(path)
+			if err != nil {
+				statErrPath, statErr = path, err
+			}
+			return dev, err
+		}
+
+		execHoldNodeRootDevValue, execHoldNodeRootDevKnown = execHoldDeriveNodeRootDevice(
+			pid1MntNs, selfMntNs, nsErr, hostRoot, hostRootSet, statDev)
+		if execHoldNodeRootDevKnown {
+			return
+		}
+
+		var cause string
+		switch {
+		case nsErr != nil:
+			// Note the non-obvious remedy in the third case: hostPID: true plus
+			// a bogus HOST_ROOT poisons HostProcFs, so GetMntNs(1) fails even
+			// though plain /proc/1 would have derived correctly.
+			cause = fmt.Sprintf("the mount-namespace self-check failed (%s); pid 1 is read through %q, so check hostPID: true, the HOST_ROOT mount, or an unnecessary HOST_ROOT setting",
+				nsErr, host.HostProcFs)
+		case statErr != nil:
+			cause = fmt.Sprintf("stat of %q failed (%s)", statErrPath, statErr)
+		default:
+			cause = "pid 1 shares this process's mount namespace and HOST_ROOT is unset, so /proc/1/root is our own root and says nothing about the node; set hostPID: true, or set HOST_ROOT to the node's root"
+		}
+		log.Errorf("container-hook: exec-hold: node root device unknown -- ALL trusted cross-device exemptions will be refused: %s", cause)
+	})
+	return execHoldNodeRootDevValue, execHoldNodeRootDevKnown
+}
+
+// SetExecHoldTrustedCrossDeviceMounts sets the trusted cross-device mount list.
+// Same timing contract as SetExecHoldBinaries: call it before
+// NewContainerNotifier. Clones for the same reason SetExecHoldBinaries does.
+//
+// DELIBERATELY unlike SetExecHoldBinaries, which is a pure sink:
+//   - the whole list is DROPPED with an Error unless acknowledged is true (the
+//     operator must assert they read the prerequisites);
+//   - entries that are empty, relative, or resolve to "/" are DROPPED with a
+//     Warn ("/" would silently disable the control this list excepts);
+//   - entries that are or contain an execHoldSearchPaths entry, and depth-1
+//     entries such as "/data", are ACCEPTED with a Warn (high blast radius).
+//
+// Because dropping can otherwise leave a misconfiguration silent, this ALSO
+// logs at Info the accepted list, the drop count, AND the derived node root
+// device (or "unknown"), so "is this armed, with what, and against which host
+// anchor" is answerable without a successful mark.
+func SetExecHoldTrustedCrossDeviceMounts(paths []string, acknowledged bool) {
+	if len(paths) == 0 {
+		// Nothing was configured, so there is nothing to arm, nothing to log,
+		// and no reason to force the node-root-device derivation (and its
+		// possible Error) on a deployment that never asked for the feature.
+		execHoldTrustedCrossDeviceMounts = nil
+		return
+	}
+
+	dropped := 0
+	if !acknowledged {
+		log.Errorf("container-hook: exec-hold: %d trusted cross-device mount(s) configured without execHoldTrustedCrossDeviceMountsAcknowledgeRisk; dropping the whole list. Declaring a trusted cross-device mount extends marking to whatever mount appears at that path inside a container: enable it only where pod admission prevents untrusted workloads from mounting host paths AND the declared mount is backed by a network or block CSI volume.",
+			len(paths))
+		dropped = len(paths)
+		paths = nil
+	}
+
+	var accepted []string
+	for _, p := range paths {
+		clean := filepath.Clean(p)
+		if p == "" || !filepath.IsAbs(clean) || clean == "/" {
+			log.Warnf("container-hook: exec-hold: dropping unsafe trusted cross-device mount %q: entries must be absolute container paths other than %q", p, "/")
+			dropped++
+			continue
+		}
+
+		var reasons []string
+		for _, sp := range execHoldSearchPaths {
+			if clean == sp || strings.HasPrefix(sp, clean+"/") || strings.HasPrefix(clean, sp+"/") {
+				reasons = append(reasons, fmt.Sprintf("it is or contains the default search path %q", sp))
+				break
+			}
+		}
+		if strings.Count(clean, "/") == 1 {
+			reasons = append(reasons, "it is a top-level path, which any container can collide with")
+		}
+		if len(reasons) > 0 {
+			log.Warnf("container-hook: exec-hold: trusted cross-device mount %q has a high blast radius (%s); prefer a more specific path", clean, strings.Join(reasons, "; "))
+		}
+		accepted = append(accepted, clean)
+	}
+
+	execHoldTrustedCrossDeviceMounts = accepted
+
+	if dev, known := execHoldNodeRootDevice(); known {
+		log.Infof("container-hook: exec-hold: trusted cross-device mounts armed: %q (node root device %d) (%d entries dropped as unsafe)", accepted, dev, dropped)
+	} else {
+		log.Infof("container-hook: exec-hold: trusted cross-device mounts armed: %q (node root device unknown -- ALL exemptions refused) (%d entries dropped as unsafe)", accepted, dropped)
+	}
+}
+
+// execHoldTrustedAnchor is a declared trusted mount, resolved ONCE per
+// enumeration against a container's rootFd, with its fd held open for the
+// batch so the mount cannot be swapped underneath it.
+type execHoldTrustedAnchor struct {
+	path string
+	id   execHoldRootIdentity
+	file *os.File // O_PATH, held open for the batch
+}
+
+// execHoldResolveTrustedAnchors resolves this notifier's declared trusted
+// mounts against rootFd, once per enumeration. The returned anchors' fds are
+// held open for the whole batch and must be released with
+// execHoldCloseTrustedAnchors.
+func (n *ContainerNotifier) execHoldResolveTrustedAnchors(rootFd int) []execHoldTrustedAnchor {
+	if len(n.execHoldTrustedMounts) == 0 {
+		return nil
+	}
+	if !n.execHoldNodeRootDevValid {
+		// Fail closed: without a KNOWN node root device there is no host-pinned
+		// conjunct left, and an unverified exemption is worse than none. No log
+		// here -- execHoldNodeRootDevice() already emitted one Error under its
+		// sync.Once, while this runs once per container create.
+		return nil
+	}
+
+	var anchors []execHoldTrustedAnchor
+	for _, p := range n.execHoldTrustedMounts { // already cleaned/validated by the setter
+		// RESOLVE_NO_SYMLINKS is what makes the declared path an UNFORGEABLE
+		// selector: without it a symlink at /home/coder pointing at
+		// /mnt/hostroot would make that mount the anchor under a declaration
+		// written for /home/coder, i.e. container content redirecting the
+		// operator's intent. A Kubernetes mountPath is always a real directory,
+		// so the legitimate cost is zero.
+		how := unix.OpenHow{
+			Flags:   unix.O_PATH | unix.O_CLOEXEC | unix.O_DIRECTORY,
+			Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS,
+		}
+		fd, err := unix.Openat2(rootFd, p, &how)
+		if err != nil {
+			// ENOENT is the expected, high-volume "not present in THIS
+			// container" case. Anything else -- ELOOP (symlinked path), ENOTDIR
+			// (not a directory) -- is always misconfiguration, never "not
+			// here", and would otherwise be as silently inert as a dropped
+			// entry.
+			if errors.Is(err, unix.ENOENT) {
+				log.Debugf("container-hook: exec-hold: trusted mount %q not present in this container", p)
+			} else {
+				log.Warnf("container-hook: exec-hold: trusted mount %q could not be resolved (%s); this declaration will never take effect", p, err)
+			}
+			continue
+		}
+		file := os.NewFile(uintptr(fd), p)
+		id, err := execHoldStatObject(fd)
+		if err != nil {
+			log.Warnf("container-hook: exec-hold: identifying trusted mount %q: %s", p, err)
+			file.Close()
+			continue
+		}
+		if id.dev == n.execHoldNodeRootDev {
+			// The one conjunct the container cannot forge: an anchor on the
+			// NODE's root filesystem is a host path, whatever the pod spec
+			// called it. Warn, not Debug: this is either an attack or a
+			// declaration that will never work. NOTE this covers /usr, /bin and
+			// /etc only on single-root node images -- not Flatcar, Bottlerocket
+			// or Talos (split /usr), and not a node with a separate /var.
+			log.Warnf("container-hook: exec-hold: trusted mount %q resolves to the node root device %d; refusing the exemption", p, id.dev)
+			file.Close()
+			continue
+		}
+		anchors = append(anchors, execHoldTrustedAnchor{path: p, id: id, file: file})
+	}
+	return anchors
+}
+
+// execHoldCloseTrustedAnchors releases the fds execHoldResolveTrustedAnchors
+// held open for a batch.
+func execHoldCloseTrustedAnchors(anchors []execHoldTrustedAnchor) {
+	for _, a := range anchors {
+		a.file.Close()
+	}
+}
+
+// execHoldMatchTrustedAnchor reports the anchor whose declared path is
+// unsafePath itself or a parent directory of it. First match wins.
+//
+// A pure string match: the identity comparison that actually gates the mark is
+// execHoldOpenCandidate's, not this. See that function's comment for why the
+// string's influence is monotone.
+func execHoldMatchTrustedAnchor(anchors []execHoldTrustedAnchor, unsafePath string) (execHoldTrustedAnchor, bool) {
+	clean := filepath.Clean(unsafePath)
+	for _, a := range anchors {
+		if clean == a.path || strings.HasPrefix(clean, a.path+"/") {
+			return a, true
+		}
+	}
+	return execHoldTrustedAnchor{}, false
 }
 
 // initExecHoldFanotify creates the fanotify group used to hold execs of
@@ -143,7 +479,12 @@ func execHoldStatObject(fd int) (execHoldRootIdentity, error) {
 // secureopen.OpenInContainer applies; it is taken as an already-open fd rather
 // than a /proc/<pid>/root path so the root is pinned once and the candidate is
 // returned as an fd the caller can act on without resolving the path again.
-func execHoldOpenCandidate(rootFd int, root execHoldRootIdentity, unsafePath string) (*os.File, error) {
+//
+// anchors are the operator-declared trusted cross-device mounts already
+// resolved for this enumeration (see execHoldResolveTrustedAnchors). The
+// returned string names the anchor a cross-device candidate was accepted
+// through, or "" when no exemption was used.
+func execHoldOpenCandidate(rootFd int, root execHoldRootIdentity, anchors []execHoldTrustedAnchor, unsafePath string) (*os.File, string, error) {
 	// O_PATH avoids blocking on opening the candidate if it turns out to be a
 	// pipe or a device, and is enough for fstat. It is NOT enough for
 	// fanotify_mark: the kernel's NULL-pathname mark-by-fd form resolves the
@@ -163,17 +504,17 @@ func execHoldOpenCandidate(rootFd int, root execHoldRootIdentity, unsafePath str
 	}
 	pathFd, err := unix.Openat2(rootFd, unsafePath, &how)
 	if err != nil {
-		return nil, fmt.Errorf("openat2 %q in container rootfs: %w", unsafePath, err)
+		return nil, "", fmt.Errorf("openat2 %q in container rootfs: %w", unsafePath, err)
 	}
 	pathFile := os.NewFile(uintptr(pathFd), unsafePath)
 	defer pathFile.Close()
 
 	var stat unix.Stat_t
 	if err := unix.Fstat(pathFd, &stat); err != nil {
-		return nil, fmt.Errorf("fstat %q in container rootfs: %w", unsafePath, err)
+		return nil, "", fmt.Errorf("fstat %q in container rootfs: %w", unsafePath, err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		return nil, fmt.Errorf("%q in container rootfs is not a regular file: expected %d, got %d",
+		return nil, "", fmt.Errorf("%q in container rootfs is not a regular file: expected %d, got %d",
 			unsafePath, unix.S_IFREG, stat.Mode&unix.S_IFMT)
 	}
 
@@ -188,25 +529,92 @@ func execHoldOpenCandidate(rootFd int, root execHoldRootIdentity, unsafePath str
 	// The cost is that a binary living on a filesystem legitimately mounted
 	// inside the container (e.g. /usr as a separate volume) is skipped rather
 	// than marked. Refusing to mark is the safe direction of that trade.
+	//
+	// An operator may declare container-absolute mount paths trusted for
+	// cross-device marking. Be precise about what that buys:
+	//
+	//   - A mount landing UNDER a declared path is still refused: different
+	//     mntID than the anchor. Retargeted here, and genuinely holds
+	//     (kernels >= 5.8 only).
+	//   - A mount landing AT the declared path IS the anchor, so the control
+	//     is genuinely WAIVED there. What remains is the node-root-device
+	//     refusal in execHoldResolveTrustedAnchors (host-pinned, unforgeable
+	//     by the container, but see its own comment for which node images it
+	//     actually covers), the AND with the basename allowlist, and the
+	//     cluster's pod-admission policy and StorageClass choice. This is the
+	//     accepted contract; see the feature docs.
+	//
+	// anchors are resolved ONCE per enumeration with their fds held open, the
+	// same way root is, so a container remounting mid-batch cannot present
+	// different anchors to different candidates. Nothing below performs a new
+	// PATH RESOLUTION; the one identity read (execHoldStatObject of the
+	// already-open candidate fd) is the same read the rootfs branch performs.
+	//
+	// The declared path is matched against unsafePath as a STRING, and that
+	// string's influence is monotone: it can only fail to select an anchor, or
+	// select one whose identity then mismatches -- never widen acceptance.
+	// (unsafePath's three sources: filepath.Join of a search path and an
+	// allowlisted basename; readlink /proc/<pid>/exe, kernel-resolved and
+	// absolute; an absolute caller-supplied path via MarkExecHoldCandidate.)
+	// A future refactor must preserve that property.
+	//
+	// Related asymmetry, safe in both directions: the path is matched as a
+	// string while pathFd is the independently resolved object. So an
+	// allowlisted binary reached via an in-root symlink from /usr/bin onto the
+	// trusted mount is refused (the string does not match -- a functional
+	// surprise, but safe), and a symlink from UNDER the trusted prefix onto a
+	// different cross-device mount is refused on identity.
+	var viaTrustedMount string
 	if uint64(stat.Dev) != root.dev {
-		return nil, fmt.Errorf("%q in container rootfs is on device %d, not the rootfs device %d: refusing to mark",
-			unsafePath, uint64(stat.Dev), root.dev)
-	}
-
-	// st_dev alone is not enough: a bind mount of a HOST path that happens to
-	// live on the SAME filesystem as the rootfs (a same-device bind mount, e.g.
-	// bind-mounting another directory from the node's root filesystem into the
-	// container) carries the same st_dev and passes the check above untouched,
-	// even though the candidate is not actually part of the container's own
-	// rootfs mount. Comparing the candidate's mount identity against the
-	// rootfs's closes that gap; see execHoldStatObject for why this is
-	// kernel-version-gated (pre-5.8: mntIDValid is false and this check is
-	// skipped, same posture as before this hardening existed).
-	if root.mntIDValid {
+		anchor, ok := execHoldMatchTrustedAnchor(anchors, unsafePath)
+		if !ok {
+			return nil, "", fmt.Errorf("%q in container rootfs is on device %d, not the rootfs device %d: refusing to mark",
+				unsafePath, uint64(stat.Dev), root.dev)
+		}
+		// Fails CLOSED, deliberately unlike the rootfs mntID branch below,
+		// which fails open on the same error. Closed is the better posture; the
+		// rootfs branch is not changed here because that would alter default
+		// behavior. Tracked as a follow-up on PR #5.
+		candID, err := execHoldStatObject(pathFd)
+		if err != nil {
+			return nil, "", fmt.Errorf("identifying %q against trusted mount %q: %w", unsafePath, anchor.path, err)
+		}
+		if candID.dev != anchor.id.dev {
+			return nil, "", fmt.Errorf("%q is on device %d, but trusted mount %q is on device %d: refusing to mark",
+				unsafePath, candID.dev, anchor.path, anchor.id.dev)
+		}
+		// Mount identity, retargeted from the rootfs mount to the anchor.
+		// Both-invalid is a pre-5.8 kernel and degrades to the device
+		// comparison above, the same posture the rootfs path already accepts.
+		// A mixed result cannot occur for two real fds on one kernel, so it is
+		// not special-cased.
+		if anchor.id.mntIDValid && candID.mntIDValid && candID.mntID != anchor.id.mntID {
+			return nil, "", fmt.Errorf("%q is on mount %d, not trusted mount %q's mount %d: refusing to mark (bind mount under a trusted mount)",
+				unsafePath, candID.mntID, anchor.path, anchor.id.mntID)
+		}
+		viaTrustedMount = anchor.path
+	} else if root.mntIDValid {
+		// st_dev alone is not enough: a bind mount of a HOST path that happens
+		// to live on the SAME filesystem as the rootfs (a same-device bind
+		// mount, e.g. bind-mounting another directory from the node's root
+		// filesystem into the container) carries the same st_dev and passes the
+		// check above untouched, even though the candidate is not actually part
+		// of the container's own rootfs mount. Comparing the candidate's mount
+		// identity against the rootfs's closes that gap; see execHoldStatObject
+		// for why this is kernel-version-gated (pre-5.8: mntIDValid is false and
+		// this check is skipped, same posture as before this hardening existed).
 		candID, err := execHoldStatObject(pathFd)
 		if err == nil && candID.mntIDValid && candID.mntID != root.mntID {
-			return nil, fmt.Errorf("%q in container rootfs is on mount %d, not the rootfs mount %d: refusing to mark (bind mount)",
-				unsafePath, candID.mntID, root.mntID)
+			// A trusted cross-device declaration cannot reach this branch --
+			// it is only consulted for a candidate that IS cross-device -- so
+			// an operator who declared a same-device mount would otherwise be
+			// sent chasing a bind mount they did not create.
+			hint := ""
+			if _, matched := execHoldMatchTrustedAnchor(anchors, unsafePath); matched {
+				hint = " (a trusted cross-device declaration does not apply to a same-device mount)"
+			}
+			return nil, "", fmt.Errorf("%q in container rootfs is on mount %d, not the rootfs mount %d: refusing to mark (bind mount)%s",
+				unsafePath, candID.mntID, root.mntID, hint)
 		}
 	}
 
@@ -222,9 +630,9 @@ func execHoldOpenCandidate(rootFd int, root execHoldRootIdentity, unsafePath str
 	// assume the returned fd is O_PATH-restricted.
 	fd, err := unix.Openat(unix.AT_FDCWD, fmt.Sprintf("/proc/self/fd/%d", pathFd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("re-opening validated candidate %q for marking: %w", unsafePath, err)
+		return nil, "", fmt.Errorf("re-opening validated candidate %q for marking: %w", unsafePath, err)
 	}
-	return os.NewFile(uintptr(fd), unsafePath), nil
+	return os.NewFile(uintptr(fd), unsafePath), viaTrustedMount, nil
 }
 
 // execHoldMark issues a fanotify_mark(2) call against execHoldNotify,
@@ -424,8 +832,8 @@ func (n *ContainerNotifier) execHoldEndInstall(mntnsID uint64, startEpoch uint64
 // containers' execHoldForget) must see this mark within microseconds, not
 // for the duration of a whole enumeration, or a sibling container settling a
 // shared-inode hold could strip protection this call is still installing.
-func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdentity, mntnsID uint64, candidatePath string) (execHoldMarkedFile, error) {
-	file, err := execHoldOpenCandidate(rootFd, root, candidatePath)
+func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdentity, anchors []execHoldTrustedAnchor, mntnsID uint64, candidatePath string) (execHoldMarkedFile, error) {
+	file, viaTrustedMount, err := execHoldOpenCandidate(rootFd, root, anchors, candidatePath)
 	if err != nil {
 		return execHoldMarkedFile{}, err
 	}
@@ -450,6 +858,18 @@ func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdenti
 	if err != nil {
 		file.Close()
 		return execHoldMarkedFile{}, fmt.Errorf("marking %q: %w", candidatePath, err)
+	}
+
+	if viaTrustedMount != "" {
+		// Info, deliberately unlike every other exec-hold mark log (Debug):
+		// this records a security-relevant exception to the rootfs-device
+		// control and must be auditable without fleet-wide debug logging. Note
+		// this is a library path other consumers embed, so the unconditional
+		// Info is a deliberate choice; the volume is bounded by one line per
+		// (container, marked path) at container-create rate.
+		n.execHold.trustedCrossDeviceExceptions.Add(1)
+		log.Infof("container-hook: exec-hold: marked %s in mntns %d via trusted cross-device mount %q (device %d) -- operator-declared exception to the rootfs-device control",
+			candidatePath, mntnsID, viaTrustedMount, key.dev)
 	}
 
 	m := execHoldMarkedFile{key: key, file: file}
@@ -529,6 +949,12 @@ func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File, mntns
 		return nil
 	}
 
+	// Once per enumeration, not once per candidate, with the fds held open for
+	// the batch: a container remounting mid-enumeration cannot present
+	// different anchors to different candidates.
+	anchors := n.execHoldResolveTrustedAnchors(int(rootDir.Fd()))
+	defer execHoldCloseTrustedAnchors(anchors)
+
 	var marked []string
 	var installed []execHoldCandidateInstall
 
@@ -555,7 +981,7 @@ func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File, mntns
 		for _, dir := range execHoldSearchPaths {
 			candidatePath := filepath.Join(dir, basename)
 
-			m, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, candidatePath)
+			m, err := n.markExecHoldPath(int(rootDir.Fd()), root, anchors, mntnsID, candidatePath)
 			if err != nil {
 				// Expected for every search path the binary is not in, so this
 				// stays at debug level: the rejection cases are logged by the
@@ -747,6 +1173,16 @@ func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os
 		return false
 	}
 
+	// Resolved here rather than per markExecHoldPath call, so this one site
+	// covers BOTH the first-exec route and the external premark route
+	// (MarkExecHoldCandidate delegates here rather than calling
+	// markExecHoldPath directly). These syscalls run under execHoldMarkedMu,
+	// which the outer defer above holds across this whole body -- the dedup
+	// fast path returns before reaching here, so deduped execs still pay
+	// nothing; a future reorder must not lose that.
+	anchors := n.execHoldResolveTrustedAnchors(int(rootDir.Fd()))
+	defer execHoldCloseTrustedAnchors(anchors)
+
 	if mntnsID == 0 {
 		// No container identity to track ownership under -- markExecHoldPath
 		// itself already treats this as fire-and-forget (closes the file
@@ -755,7 +1191,7 @@ func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os
 		// that never names a real container, and skip the execHoldMarked
 		// dedup write too, matching markExecHoldPath's own mntnsID==0
 		// handling.
-		_, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, execedPath)
+		_, err := n.markExecHoldPath(int(rootDir.Fd()), root, anchors, mntnsID, execedPath)
 		if err != nil {
 			log.Debugf("container-hook: exec-hold: not marking exec'd %s: %s", execedPath, err)
 			return false
@@ -768,7 +1204,7 @@ func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os
 	// for the execHoldMarked write/delete below, which would self-deadlock
 	// (sync.Mutex is not reentrant).
 	startEpoch := n.execHoldBeginInstall(mntnsID)
-	m, err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, execedPath)
+	m, err := n.markExecHoldPath(int(rootDir.Fd()), root, anchors, mntnsID, execedPath)
 	var installed []execHoldCandidateInstall
 	if err != nil {
 		log.Debugf("container-hook: exec-hold: not marking exec'd %s in mntns %d: %s", execedPath, mntnsID, err)
