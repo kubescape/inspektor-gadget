@@ -385,10 +385,28 @@ func (n *ContainerNotifier) execHoldReleaseHeldMark(key execHoldKey, unmarkSysca
 	n.execHold.holdsMu.Unlock()
 }
 
-// execHoldSettle resolves a hold: mark removed, hold-state dropped, exec
-// allowed. Idempotent by construction.
+// execHoldSettle resolves a hold: exec allowed, and -- unless the object is
+// still owned by a tracked container -- mark removed and hold-state dropped.
+// Idempotent by construction.
+//
+// holds is keyed globally per (dev, ino), while marks are installed and
+// retained per container (execHoldContainerMarks). Two or more containers can
+// legitimately share the identical host inode for an allowlisted binary --
+// most commonly an unmodified base-image layer overlayfs has not copied up --
+// each needing its OWN first-exec hold. Removing the kernel mark as soon as
+// ANY ONE of them resolves would silently strip that protection from every
+// other container still sharing the object, whose own future first exec
+// would then sail through the F10 guard unheld. execHoldKeyStillOwned checks
+// for that before touching shared state; only when nothing else references
+// the key does this fall through to the real removal.
 func (n *ContainerNotifier) execHoldSettle(h *execHoldHold, reason string) {
 	h.once.Do(func() {
+		if n.execHoldKeyStillOwned(h.ref.key, 0) {
+			h.ref.allow()
+			log.Debugf("container-hook: exec-hold: released exec of %s (pid %d), mark kept (still owned by another container): %s",
+				h.ref.key, h.ref.pid, reason)
+			return
+		}
 		n.execHoldReleaseHeldMark(h.ref.key, h.ref.unmark)
 		h.ref.allow()
 		log.Debugf("container-hook: exec-hold: released exec of %s (pid %d): %s", h.ref.key, h.ref.pid, reason)

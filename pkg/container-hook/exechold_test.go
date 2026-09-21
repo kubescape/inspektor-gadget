@@ -28,6 +28,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/s3rj1k/go-fanotify/fanotify"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
@@ -355,9 +356,9 @@ func TestExecHoldOnExecNoAllowlist(t *testing.T) {
 // churn.
 func TestExecHoldForgetDropsContainerState(t *testing.T) {
 	n := &ContainerNotifier{
-		execHoldMarked: map[uint64]map[string]struct{}{
-			42: {"allowed": {}},
-			43: {"allowed": {}},
+		execHoldMarked: map[uint64]map[string]execHoldKey{
+			42: {"allowed": {dev: 1, ino: 100}},
+			43: {"allowed": {dev: 1, ino: 200}},
 		},
 	}
 
@@ -369,6 +370,51 @@ func TestExecHoldForgetDropsContainerState(t *testing.T) {
 	// state is only populated for containers that actually exec'd something
 	// allowlisted.
 	n.execHoldForget(9999)
+}
+
+// TestExecHoldForgetKeepsSharedMarkForOtherContainer is execHoldForget's own
+// half of the shared-mark-across-containers fix (see
+// TestExecHoldSettleKeepsMarkWhileAnotherContainerOwnsIt for the settle
+// half): two containers can retain a mark for the IDENTICAL host inode (an
+// unmodified base-image layer). Terminating one must drop only its own
+// entry and retained fd -- the kernel mark and dispatcher hold-state must
+// stay in place for the other, still-alive owner, and only actually get
+// removed once that last owner is forgotten too.
+func TestExecHoldForgetKeepsSharedMarkForOtherContainer(t *testing.T) {
+	path, key := testBinary(t)
+
+	// A pipe stands in for the fanotify group: FAN_MARK_REMOVE on it always
+	// fails, which is fine here -- execHoldMark logs and moves on, same as
+	// TestMarkExecHoldPathRollsBackHoldStateOnMarkFailure's use of the same
+	// trick. What this test asserts is the LOCAL bookkeeping, not whether the
+	// kernel call itself succeeded.
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { r.Close(); w.Close() })
+
+	fileA, err := os.Open(path)
+	require.NoError(t, err)
+	fileB, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { fileA.Close(); fileB.Close() })
+
+	n := &ContainerNotifier{
+		execHoldNotify: &fanotify.NotifyFD{Fd: int(r.Fd()), File: r},
+		execHoldContainerMarks: map[uint64][]execHoldMarkedFile{
+			100: {{key: key, file: fileA}},
+			200: {{key: key, file: fileB}},
+		},
+	}
+	n.execHoldRememberHold(key)
+
+	n.execHoldForget(100)
+	require.NotContains(t, n.execHoldContainerMarks, uint64(100), "the terminated container's own entry must be dropped")
+	require.Contains(t, n.execHoldContainerMarks, uint64(200), "the OTHER, still-alive container's entry must be untouched")
+	require.True(t, n.execHoldHasHold(key), "hold-state must stay in place while another container still owns the object")
+
+	n.execHoldForget(200)
+	require.NotContains(t, n.execHoldContainerMarks, uint64(200))
+	require.False(t, n.execHoldHasHold(key), "once the LAST owner is forgotten, the shared object's state must finally be dropped")
 }
 
 // TestExecHoldAbsentBinaryIsNotMarkedAtCreate is the premise of this whole code
@@ -462,6 +508,47 @@ func TestExecHoldMarkExecedBinaryIsIdempotent(t *testing.T) {
 	// A DIFFERENT container running the same basename is a different inode in a
 	// different rootfs, so it is not deduplicated against the first one.
 	require.True(t, n.execHoldMarkExecedBinary(8, root, "/usr/bin/allowed"))
+}
+
+// TestExecHoldMarkExecedBinaryRemarksReplacedFile is the regression test for
+// the path-only dedup bug: FAN_MARK_ADD marks the INODE, not the path, so
+// after a first mark, replacing the file AT THE SAME PATH (e.g. an atomic
+// rewrite -- unlink + rename, as most package managers and self-updaters do)
+// leaves the OLD mark on now-orphaned content while the NEW inode at that
+// path was never marked at all. Dedup keyed only on (mntnsID, path) would
+// treat the second exec as a pure repeat and skip it forever; keying on the
+// actual (dev, ino) too must catch the replacement and mark the new object.
+func TestExecHoldMarkExecedBinaryRemarksReplacedFile(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+
+	rootPath := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
+	binPath := filepath.Join(rootPath, "usr/bin/allowed")
+	require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	var firstStat unix.Stat_t
+	require.NoError(t, unix.Stat(binPath, &firstStat))
+
+	root := openRoot(t, rootPath)
+	require.True(t, n.execHoldMarkExecedBinary(7, root, "/usr/bin/allowed"))
+	require.Contains(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd), firstStat.Ino)
+
+	// Atomic replace: a new file staged alongside, then renamed over the
+	// original -- a DIFFERENT inode ends up at the exact same path.
+	replacement := binPath + ".new"
+	require.NoError(t, os.WriteFile(replacement, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	require.NoError(t, os.Rename(replacement, binPath))
+	var secondStat unix.Stat_t
+	require.NoError(t, unix.Stat(binPath, &secondStat))
+	require.NotEqual(t, firstStat.Ino, secondStat.Ino, "the test setup must actually produce a different inode")
+
+	require.True(t, n.execHoldMarkExecedBinary(7, root, "/usr/bin/allowed"),
+		"a same-path exec of a REPLACED binary must be marked again, not treated as a repeat")
+	require.Contains(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd), secondStat.Ino,
+		"the new object's inode must now carry a mark")
+
+	// A third exec of the (now unchanged again) replacement is correctly
+	// deduplicated, same as the ordinary repeat case.
+	require.False(t, n.execHoldMarkExecedBinary(7, root, "/usr/bin/allowed"))
 }
 
 // TestExecHoldMarkExecedBinaryRejectsBindMountedHostBinary confirms this new

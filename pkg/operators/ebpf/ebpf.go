@@ -969,7 +969,6 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		id, _ := info.ID()
 		gadgetObjs.mapIDs = append(gadgetObjs.mapIDs, id)
 	}
-	i.publishGadgetObjects(gadgetCtx, gadgetObjs)
 
 	for name, m := range i.collection.Maps {
 		gadgetCtx.SetVar(operators.MapPrefix+name, m)
@@ -1041,6 +1040,18 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	// are running; it is not referenced at runtime and holds ~30 MiB of BTF
 	// type/line info that the GC cannot otherwise reclaim.
 	i.collectionSpec = nil
+
+	// Published here, at the very end, rather than right after gadgetObjs was
+	// built above: runTracer, attachProgram, runIterators and runMapIterators
+	// all still ran (and could still fail) after that point, and none of
+	// their error paths call unpublishGadgetObjects. Publishing before they
+	// run let UprobeTracersForGadget/UprobeTracerForGadget report ok=true --
+	// contradicting their own documented contract ("ok=false means... the
+	// gadget has not reached the end of Start yet") -- for a gadget whose
+	// Start could still fail, and left the registry entry stale forever if
+	// the caller does not call Close on a failed Start. Publishing only on
+	// this success path means ok=true now genuinely means Start finished.
+	i.publishGadgetObjects(gadgetCtx, gadgetObjs)
 
 	return nil
 }

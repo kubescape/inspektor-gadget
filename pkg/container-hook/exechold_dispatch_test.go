@@ -225,6 +225,38 @@ func TestExecHoldCreditedResolvesWithoutAttaching(t *testing.T) {
 	require.EqualValues(t, 0, stats.Timeouts)
 }
 
+// TestExecHoldSettleKeepsMarkWhileAnotherContainerOwnsIt is the security
+// regression test for the shared-mark-across-containers fix: holds/marks are
+// keyed globally per (dev, ino), but two or more containers can legitimately
+// share the identical host inode for an allowlisted binary (an unmodified
+// base-image layer overlayfs has not copied up). Settling ONE container's
+// held exec must NOT strip the kernel mark or hold-state a DIFFERENT, still
+// tracked container's own (simulated here via execHoldContainerMarks) mark on
+// the SAME object still needs for its own first exec.
+func TestExecHoldSettleKeepsMarkWhileAnotherContainerOwnsIt(t *testing.T) {
+	path, key := testBinary(t)
+	n := newDispatchTestNotifier(t, 4242)
+	n.SetExecHoldHooks(&fakeCrediter{credited: true}, &fakeAttacher{})
+	n.execHoldRememberHold(key)
+
+	// A second, distinct container's retained mark for the IDENTICAL object.
+	otherFile, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { otherFile.Close() })
+	n.execHoldContainerMarks = map[uint64][]execHoldMarkedFile{
+		9999: {{key: key, file: otherFile}},
+	}
+
+	ev := newTestEvent(t, key, uint32(os.Getpid()), path)
+	require.True(t, n.execHoldDispatchEvent(ev.ref))
+	ev.waitAllowed(t, 5*time.Second)
+
+	require.EqualValues(t, 0, ev.unmarks.Load(),
+		"the kernel mark must stay installed while another tracked container still owns the object")
+	require.True(t, n.execHoldHasHold(key),
+		"hold-state must stay in place too, or a later exec of the SAME shared object would miss the F10 guard")
+}
+
 // TestExecHoldNotCreditedReachesResolveAttach covers the other branch: nothing
 // is attached for this inode, so the dispatcher hands the file to the
 // resolve+attach seam (TODO(US-07)) and only then releases the exec.
@@ -351,7 +383,8 @@ func TestMarkExecHoldPathRollsBackHoldStateOnMarkFailure(t *testing.T) {
 	}
 
 	root := openRoot(t, rootPath)
-	require.Error(t, n.markExecHoldPath(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, 0, "/usr/bin/allowed"))
+	_, err = n.markExecHoldPath(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, 0, "/usr/bin/allowed")
+	require.Error(t, err)
 
 	n.execHold.holdsMu.Lock()
 	defer n.execHold.holdsMu.Unlock()

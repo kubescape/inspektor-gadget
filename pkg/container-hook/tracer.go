@@ -187,16 +187,32 @@ type ContainerNotifier struct {
 	// FAN_OPEN_EXEC_PERM marks on allowlisted binaries. See initExecHoldFanotify
 	// for why it is separate from the two groups above.
 	execHoldNotify *fanotify.NotifyFD
+	// execHoldNotifyMu guards every fanotify_mark(2) call against Close():
+	// markExecHoldPath's ADD can run from an unjoined callbackAddContainerBounded
+	// goroutine or an external caller (MarkExecHoldCandidate) at any time, so
+	// n.wg.Wait() in Close does not bound it. RLock is held for the duration of
+	// one mark call (concurrent marks for different objects do not block each
+	// other); Close takes the write lock -- which waits for every in-flight mark
+	// call to finish -- AFTER setting n.closed, so a mark call that acquires the
+	// RLock after that either already observed closed and bailed, or is blocked
+	// until Close's Lock releases and then observes closed itself. Either way,
+	// n.execHoldNotify.Mark is never called on an fd Close has already closed
+	// (and the OS may have already reused for something unrelated).
+	execHoldNotifyMu sync.RWMutex
 	// execHoldBinaries is this notifier's copy of the exec-hold allowlist, taken
 	// at construction so it cannot change under the callback goroutines.
 	execHoldBinaries []string
-	// execHoldMarked records which allowlisted RESOLVED PATHS (not basenames --
-	// two distinct objects can share a basename, see execHoldMarkExecedBinary)
-	// already got a first-exec mark in a given container, keyed by the
-	// container's mount namespace id — the only container identity an exec
-	// event carries. See execHoldMarkExecedBinary; entries are dropped on
-	// container termination (execHoldForget).
-	execHoldMarked   map[uint64]map[string]struct{}
+	// execHoldMarked records, per container mount namespace id (the only
+	// container identity an exec event carries) and allowlisted RESOLVED PATH
+	// (not basename -- two distinct objects can share a basename, see
+	// execHoldMarkExecedBinary), the execHoldKey that was marked there. The
+	// stored key, not just presence, is what lets a repeat exec of the same
+	// path be told apart from a REPLACED binary at that path (a different
+	// (dev, ino) since the first mark -- FAN_MARK_ADD marks the inode, not
+	// the path, so a replacement leaves the old mark orphaned on content that
+	// may not even be reachable anymore, with the new inode never marked at
+	// all). Entries are dropped on container termination (execHoldForget).
+	execHoldMarked   map[uint64]map[string]execHoldKey
 	execHoldMarkedMu sync.Mutex
 	// execHoldContainerMarks retains the still-open marking fd for every
 	// create-time (markExecHoldCandidates) and first-exec
@@ -1420,14 +1436,44 @@ func (n *ContainerNotifier) Close() {
 		n.pidFileDirNotify.File.Close()
 	}
 	if n.execHoldNotify != nil {
-		// Unblocks watchExecHold, and drops every mark this group carries.
+		// execHoldNotifyMu.Lock() waits for every fanotify_mark(2) call already
+		// in flight through execHoldMark to finish (n.closed is already set
+		// above, so none of them touch the fd after this point) before the fd
+		// is actually closed -- see execHoldNotifyMu's own doc comment for the
+		// unjoined-goroutine/external-caller race this closes. Unblocks
+		// watchExecHold, and drops every mark this group carries.
+		n.execHoldNotifyMu.Lock()
 		n.execHoldNotify.File.Close()
+		n.execHoldNotifyMu.Unlock()
 	}
 	if n.execReader != nil {
 		// Unblocks watchExecEvents (Read returns ringbuf.ErrClosed).
 		n.execReader.Close()
 	}
 	n.wg.Wait()
+
+	// Every fd still retained in execHoldContainerMarks (markExecHoldPath kept
+	// it open, per mntnsID, so execHoldForget could later remove that mark on
+	// container termination) belongs to a container that may never actually
+	// terminate from this notifier's point of view -- the notifier itself is
+	// closing instead. Close's own execHoldNotify.File close above already
+	// dropped every kernel mark; these are just the local fds still-alive
+	// containers' marks were retaining, now drained so they don't leak until
+	// GC. Taking the lock here, after execHoldNotifyMu.Lock() above already
+	// closed the fd, is still needed: execHoldMark's closed check prevents any
+	// LATE install (an unjoined callbackAddContainerBounded goroutine, or an
+	// external MarkExecHoldCandidate call racing this Close) from reaching
+	// its own append to this map at all, but a call that was already PAST
+	// that check and mid-append when Close reached here could still be
+	// running concurrently with this drain.
+	n.execHoldContainerMarksMu.Lock()
+	for _, marks := range n.execHoldContainerMarks {
+		for _, m := range marks {
+			m.file.Close()
+		}
+	}
+	n.execHoldContainerMarks = nil
+	n.execHoldContainerMarksMu.Unlock()
 
 	for _, l := range n.links {
 		gadgets.CloseLink(l)
