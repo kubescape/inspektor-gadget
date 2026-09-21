@@ -719,7 +719,13 @@ func (n *ContainerNotifier) watchExecEvents() {
 			select {
 			case n.execHoldOnExecCh <- execHoldOnExecTask{mntnsID: mntnsID, pid: pid}:
 			default:
-				log.Debugf("container-hook: exec-hold worker channel full, dropping mark attempt for pid %d", pid)
+				// A counter, not a per-drop log line: under a genuine exec
+				// storm -- exactly the condition that fills this channel --
+				// logging every single drop adds hot-path string formatting
+				// and logger-internal lock contention on top of the
+				// overload it would be describing. See
+				// ExecHoldStats.OnExecDropped.
+				n.execHold.onExecDropped.Add(1)
 			}
 		}
 		n.callback(ContainerEvent{

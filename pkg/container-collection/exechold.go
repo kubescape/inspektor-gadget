@@ -61,17 +61,22 @@ func (cc *ContainerCollection) SetExecHoldHooks(crediter containerhook.ExecHoldC
 	if cc.containerNotifier == nil {
 		// A log line, not a silent return: this branch is reachable by a
 		// genuinely normal sequencing case (calling this before
-		// Initialize(WithContainerFanotifyEbpf()) has run), but a caller
-		// that gates this call on its own feature-active check first (the
-		// intended pattern -- see e.g. armosec/private-node-agent's
-		// ExecHoldWirer, which only calls here once it has already found a
-		// live crediter) should never hit it in steady state. If it does,
-		// the crediter/attacher this call carried are silently discarded
-		// with no retry, and exec-hold provides zero uprobe-attach
-		// protection for this process's lifetime despite appearing
-		// configured -- a warning here is the only thing that can ever
-		// surface that, since nothing else observes the drop.
-		log.Warn("container-collection: SetExecHoldHooks called before the container-hook notifier exists (or exec-hold is not enabled); crediter/attacher discarded, exec-hold provides no protection until this is called again after the notifier exists")
+		// Initialize(WithContainerFanotifyEbpf()) has run), so it logs at
+		// Debug rather than Warn -- this function's own doc comment already
+		// tells callers "calling this before or after that state is both a
+		// normal, expected sequencing outcome", and warning-level noise for
+		// something explicitly documented as normal risks being read as a
+		// malfunction at startup. A caller that gates this call on its own
+		// feature-active check first (the intended pattern -- see e.g.
+		// armosec/private-node-agent's ExecHoldWirer, which only calls here
+		// once it has already found a live crediter) should never hit it in
+		// steady state; if it does, the crediter/attacher this call carried
+		// are silently discarded with no retry, and exec-hold provides zero
+		// uprobe-attach protection for this process's lifetime despite
+		// appearing configured -- this log line is the only thing that can
+		// ever surface that, so it is worth enabling debug logging for when
+		// investigating exactly this kind of gap.
+		log.Debug("container-collection: SetExecHoldHooks called before the container-hook notifier exists (or exec-hold is not enabled); crediter/attacher discarded, exec-hold provides no protection until this is called again after the notifier exists")
 		return
 	}
 	cc.containerNotifier.SetExecHoldHooks(crediter, attacher)

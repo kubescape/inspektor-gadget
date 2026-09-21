@@ -735,6 +735,50 @@ func TestExecHoldMarkExecedBinaryRemarksReplacedFile(t *testing.T) {
 	require.False(t, n.execHoldMarkExecedBinary(7, root, "/usr/bin/allowed"))
 }
 
+// TestExecHoldMarkExecedBinaryDedupHandlesDoubledLeadingSlash is the
+// regression test for a real path-normalization bug: execedPath values with
+// more than one leading slash (e.g. "//usr/bin/allowed") used to have only
+// ONE slash trimmed before the cheap dedup stat, leaving an absolute path.
+// unix.Fstatat treats an absolute path as ignoring dirfd entirely and
+// resolving from the process's real root, so the dedup check would silently
+// stat the HOST's copy of the path instead of the container's -- basing the
+// "did this change?" decision on the wrong object (or, as pinned here,
+// failing outright since the host has no such path, forcing an unnecessary
+// re-mark on every repeat exec). A doubled slash reaching execedPath is
+// implausible from execHoldExecedPath's own readlink (kernel-normalized),
+// but this pins the normalization is correct regardless of the input's shape.
+func TestExecHoldMarkExecedBinaryDedupHandlesDoubledLeadingSlash(t *testing.T) {
+	n := newExecHoldTestNotifier(t, []string{"allowed"})
+
+	rootPath := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
+	binPath := filepath.Join(rootPath, "usr/bin/allowed")
+	require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	var stat unix.Stat_t
+	require.NoError(t, unix.Stat(binPath, &stat))
+
+	root := openRoot(t, rootPath)
+	const doubled = "//usr/bin/allowed"
+
+	require.True(t, n.execHoldMarkExecedBinary(7, root, doubled))
+	require.Contains(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd), stat.Ino)
+
+	// The second exec of the SAME (unchanged) doubled-slash path must be
+	// recognized as a genuine repeat via the container's own copy, not
+	// re-marked because the cheap stat silently resolved somewhere else (or
+	// failed) and fell through to the full resolve+mark path.
+	require.False(t, n.execHoldMarkExecedBinary(7, root, doubled),
+		"a repeat exec at an unchanged path must be deduplicated even when the path has a doubled leading slash")
+
+	var count int
+	for _, ino := range fanotifyMarkedInodes(t, n.execHoldNotify.Fd) {
+		if ino == stat.Ino {
+			count++
+		}
+	}
+	require.Equal(t, 1, count, "the group must hold exactly one mark, not a second one from a spurious re-mark")
+}
+
 // TestExecHoldMarkExecedBinaryRejectsBindMountedHostBinary confirms this new
 // call site is behind the same st_dev control as the create-time enumeration:
 // a container that bind-mounts a host binary over an allowlisted name and execs

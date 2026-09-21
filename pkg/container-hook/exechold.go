@@ -717,14 +717,27 @@ func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os
 		// mismatch (or the stat itself failing, e.g. deleted) fall through
 		// to the full, hardened resolve+mark path below, exactly as a
 		// never-before-seen path would take.
-		var stat unix.Stat_t
-		rel := strings.TrimPrefix(execedPath, "/")
-		if err := unix.Fstatat(int(rootDir.Fd()), rel, &stat, 0); err == nil {
-			if (execHoldKey{dev: uint64(stat.Dev), ino: stat.Ino}) == lastKey {
-				return false
+		// filepath.Clean collapses a repeated leading slash ("//usr/bin/x")
+		// down to a single one before TrimLeft strips it -- TrimPrefix alone
+		// only removes ONE leading slash, so "//usr/bin/x" would still start
+		// with "/" afterwards. Fstatat treats an absolute path as ignoring
+		// dirfd entirely and resolving from the process's real root, so an
+		// un-normalized rel here would stat the HOST's copy of the path
+		// instead of the container's, silently basing the dedup decision (and
+		// this cheap check's whole reason to exist off rootDir) on the wrong
+		// object. rel=="" (execedPath was "/" or empty) or somehow still
+		// absolute after cleaning both fall through to the full, hardened
+		// resolve+mark path below rather than calling Fstatat at all.
+		rel := strings.TrimLeft(filepath.Clean(execedPath), "/")
+		if rel != "" && !filepath.IsAbs(rel) {
+			var stat unix.Stat_t
+			if err := unix.Fstatat(int(rootDir.Fd()), rel, &stat, 0); err == nil {
+				if (execHoldKey{dev: uint64(stat.Dev), ino: stat.Ino}) == lastKey {
+					return false
+				}
+				log.Debugf("container-hook: exec-hold: %s in mntns %d changed identity since its last mark (dev=%d ino=%d -> dev=%d ino=%d); re-marking",
+					execedPath, mntnsID, lastKey.dev, lastKey.ino, stat.Dev, stat.Ino)
 			}
-			log.Debugf("container-hook: exec-hold: %s in mntns %d changed identity since its last mark (dev=%d ino=%d -> dev=%d ino=%d); re-marking",
-				execedPath, mntnsID, lastKey.dev, lastKey.ino, stat.Dev, stat.Ino)
 		}
 	}
 

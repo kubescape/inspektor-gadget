@@ -205,6 +205,13 @@ type execHoldDispatch struct {
 	shed          atomic.Uint64
 	guardMisses   atomic.Uint64
 	watchdogTrips atomic.Uint64
+	// onExecDropped counts execHoldOnExecCh sends that lost the race against a
+	// full channel (see watchExecEvents' send site). A plain counter rather
+	// than a per-drop log line: under a genuine exec storm -- exactly the
+	// condition that fills the channel in the first place -- logging every
+	// single drop adds hot-path string formatting and logger-internal lock
+	// contention on top of the overload it is trying to describe.
+	onExecDropped atomic.Uint64
 }
 
 // ExecHoldStats is a point-in-time view of the exec-hold dispatcher.
@@ -240,6 +247,11 @@ type ExecHoldStats struct {
 	// WatchdogTrips counts read-loop stalls that closed the group. It is 0 or 1:
 	// tripping is one-way.
 	WatchdogTrips uint64
+	// OnExecDropped counts first-exec mark attempts dropped because
+	// execHoldOnExecCh was full (execHoldOnExecWorker falling behind an exec
+	// burst). Each drop is a fail-open, not a lost mark: the NEXT exec of the
+	// same binary in that container gets another chance.
+	OnExecDropped uint64
 }
 
 // ExecHoldAvailable reports whether this notifier actually created the
@@ -267,6 +279,7 @@ func (n *ContainerNotifier) ExecHoldStats() ExecHoldStats {
 		Shed:          n.execHold.shed.Load(),
 		GuardMisses:   n.execHold.guardMisses.Load(),
 		WatchdogTrips: n.execHold.watchdogTrips.Load(),
+		OnExecDropped: n.execHold.onExecDropped.Load(),
 	}
 }
 
