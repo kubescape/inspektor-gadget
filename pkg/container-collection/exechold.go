@@ -19,35 +19,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// MarkExecHoldCandidateByMntns asks the container-hook to install an exec-hold
-// mark on candidatePath — a path as seen INSIDE the container — for the tracked
-// container whose mount namespace is mntnsID.
-//
-// It exists for consumers that observe container activity the container-hook
-// does not. The container-hook marks exec-hold candidates from two places, both
-// driven by events it sees itself: the enumeration at container create, which
-// only sees what already existed in the rootfs, and the first exec of an
-// allowlisted binary, which is one exec too late for that binary's first run. A
-// consumer whose own tracer watched the binary being WRITTEN can close that gap
-// by calling here before it is ever executed.
-//
-// The mount namespace id is the identity used because it is what the
-// collection already resolves containers by for exactly this kind of caller
-// (LookupContainerByMntns, EnrichByMntNs), and it is the identity the
-// container-hook itself keys its per-container exec-hold bookkeeping on, so
-// nothing has to be translated between the two.
-//
-// Every refusal is reported as an ExecHoldMarkResult rather than an error, and
-// ExecHoldMarkNotApplicable covers both "exec-hold was never enabled" and "that
-// container is not (or no longer) tracked" — a caller driven by a live event
-// stream races container lifecycle by construction and must not treat losing
-// that race as a failure.
-//
-// The candidate is resolved and validated entirely inside the container-hook,
-// under the same openat2 RESOLVE_IN_ROOT and st_dev hardening as every other
-// exec-hold mark, and against the container-hook's own allowlist: a path whose
-// basename is not allowlisted is a cheap no-op here, not a mark attempt.
-
 // ExecHoldStats returns the exec-hold fanotify gate's current counters, and
 // whether they are available at all.
 //
@@ -99,6 +70,35 @@ func (cc *ContainerCollection) SetExecHoldHooks(crediter containerhook.ExecHoldC
 	cc.containerNotifier.SetExecHoldHooks(crediter, attacher)
 }
 
+// MarkExecHoldCandidateByMntns asks the container-hook to install an exec-hold
+// mark on candidatePath — a path as seen INSIDE the container — for the tracked
+// container whose mount namespace is mntnsID.
+//
+// It exists for consumers that observe container activity the container-hook
+// does not. The container-hook marks exec-hold candidates from two places, both
+// driven by events it sees itself: the enumeration at container create, which
+// only sees what already existed in the rootfs, and the first exec of an
+// allowlisted binary, which is one exec too late for that binary's first run. A
+// consumer whose own tracer watched the binary being WRITTEN can close that gap
+// by calling here before it is ever executed.
+//
+// The mount namespace id is the identity used because it is what the
+// collection already resolves containers by for exactly this kind of caller
+// (LookupContainerByMntns, EnrichByMntNs), and it is the identity the
+// container-hook itself keys its per-container exec-hold bookkeeping on, so
+// nothing has to be translated between the two.
+//
+// Every refusal is reported as an ExecHoldMarkResult rather than an error, and
+// ExecHoldMarkNotApplicable covers both "exec-hold was never enabled" and "that
+// container is not (or no longer) tracked" — a caller driven by a live event
+// stream races container lifecycle by construction and must not treat losing
+// that race as a failure.
+//
+// The candidate is resolved and validated entirely inside the container-hook,
+// under the same openat2 RESOLVE_IN_ROOT and st_dev hardening as every other
+// exec-hold mark, and against the container-hook's own allowlist: a path whose
+// basename is not allowlisted is a cheap no-op here, not a mark attempt.
+//
 // It is safe to call from any goroutine.
 func (cc *ContainerCollection) MarkExecHoldCandidateByMntns(mntnsID uint64, candidatePath string) containerhook.ExecHoldMarkResult {
 	if cc.containerNotifier == nil {

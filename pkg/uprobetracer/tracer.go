@@ -1090,8 +1090,17 @@ func (t *Tracer[Event]) CreditIfAttached(containerPid uint32, file *os.File) (ui
 	}
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	defer t.muHoldCredit.ObserveSince(time.Now())
+	// muHoldCredit measures how long t.mu was held, so it must be observed
+	// AFTER the unlock, not before: two plain defers run LIFO, which would
+	// observe before unlocking (inflating the measured hold time and
+	// extending the critical section by the observation itself). start is
+	// captured right after Lock so it still measures only the hold, not
+	// time spent waiting to acquire it.
+	start := time.Now()
+	defer func() {
+		t.mu.Unlock()
+		t.muHoldCredit.ObserveSince(start)
+	}()
 
 	if t.closed {
 		return 0, false, errors.New("uprobetracer has been closed")
@@ -1167,13 +1176,38 @@ func (t *Tracer[Event]) CreditIfAttached(containerPid uint32, file *os.File) (ui
 // FILE OWNERSHIP: this function CONSUMES file and closes it on EVERY return
 // path, exactly as CreditIfAttached and attachOneOpenFile do.
 func (t *Tracer[Event]) AttachOpenFile(containerPid uint32, file *os.File, label string) (uint64, bool, error) {
+	// Cheap early-exit check BEFORE the expensive resolve below: closed or
+	// untracked means resolveAttachOffsets' ELF parse and resolver I/O would
+	// be guaranteed wasted work. Re-checked again after resolving (below),
+	// under t.mu a second time, since DetachContainer can run concurrently
+	// with the off-lock resolve window and change either answer.
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		file.Close()
+		return 0, false, errors.New("uprobetracer has been closed")
+	}
+	if _, tracked := t.containerPid2Inodes[containerPid]; !tracked {
+		t.mu.Unlock()
+		file.Close()
+		return 0, false, nil
+	}
+	t.mu.Unlock()
+
 	// Off-lock, same reasoning as openTargets/CreditIfAttached: the ELF parse
 	// and resolver I/O below must not run under t.mu.
 	offsets := t.resolveAttachOffsets(file, containerPid)
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	defer t.muHold.ObserveSince(time.Now())
+	// muHold measures how long t.mu was held; observed AFTER unlock (not via
+	// a second plain defer, which would run LIFO before the unlock and both
+	// inflate the measurement and extend the critical section) -- same fix
+	// as CreditIfAttached's muHoldCredit above.
+	start := time.Now()
+	defer func() {
+		t.mu.Unlock()
+		t.muHold.ObserveSince(start)
+	}()
 
 	if t.closed {
 		file.Close()

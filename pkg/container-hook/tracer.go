@@ -202,6 +202,18 @@ type ContainerNotifier struct {
 	execHold execHoldDispatch
 	callback ContainerNotifyFunc
 
+	// execHoldOnExecCh feeds execHoldOnExecWorker, the single long-lived
+	// goroutine that runs execHoldOnExec. watchExecEvents sends into it
+	// instead of spawning a goroutine per exec event: see
+	// execHoldOnExecWorker for why a per-event n.wg.Add(1) is unsafe here.
+	// Buffered and drop-on-full (fail-open, same posture as the hold
+	// dispatcher's own timeout): losing a mark attempt under an exec burst
+	// only means the NEXT exec of that binary gets marked instead, whereas
+	// blocking watchExecEvents on a full channel would back up the ringbuf
+	// drain, which is the exact ordering bug this dispatch already works
+	// around (see the comment above the send site).
+	execHoldOnExecCh chan execHoldOnExecTask
+
 	// containers is the set of containers that are being watched for
 	// termination. This prevents duplicate calls to
 	// AddWatchContainerTermination.
@@ -342,6 +354,7 @@ func NewContainerNotifier(callback ContainerNotifyFunc) (*ContainerNotifier, err
 		futureContainers:  make(map[string]*futureContainer),
 		pendingContainers: make(map[string]*pendingContainer),
 		done:              make(chan bool),
+		execHoldOnExecCh:  make(chan execHoldOnExecTask, execHoldOnExecChanCap),
 	}
 
 	if err := n.install(); err != nil {
@@ -510,8 +523,9 @@ func (n *ContainerNotifier) install() error {
 	go n.watchPendingContainers()
 	go n.checkTimeout()
 	if n.execReader != nil {
-		n.wg.Add(1)
+		n.wg.Add(2)
 		go n.watchExecEvents()
+		go n.execHoldOnExecWorker()
 	}
 	if n.execHoldNotify != nil {
 		n.wg.Add(2)
@@ -522,6 +536,40 @@ func (n *ContainerNotifier) install() error {
 	}
 
 	return nil
+}
+
+// execHoldOnExecChanCap bounds execHoldOnExecCh. Sized generously above any
+// realistic per-tick exec burst; the send site drops on overflow rather than
+// blocking, so this only trades memory for how large a burst can be absorbed
+// without a dropped mark attempt.
+const execHoldOnExecChanCap = 256
+
+// execHoldOnExecTask is one execHoldOnExecCh entry: the mount namespace and
+// pid watchExecEvents observed for a single execve.
+type execHoldOnExecTask struct {
+	mntnsID uint64
+	pid     uint32
+}
+
+// execHoldOnExecWorker is the single long-lived goroutine that calls
+// execHoldOnExec for every task watchExecEvents sends. Centralizing the work
+// here (instead of a goroutine per exec event) is what makes n.wg.Add(1)
+// safe: it is called exactly once, in install(), before n.wg.Wait() can ever
+// run, never concurrently with it.
+func (n *ContainerNotifier) execHoldOnExecWorker() {
+	defer n.wg.Done()
+
+	for {
+		select {
+		case <-n.done:
+			return
+		case task := <-n.execHoldOnExecCh:
+			if n.closed.Load() {
+				return
+			}
+			n.execHoldOnExec(task.mntnsID, task.pid)
+		}
+	}
 }
 
 // watchExecEvents drains the exec_events ringbuf and emits an
@@ -564,27 +612,20 @@ func (n *ContainerNotifier) watchExecEvents() {
 		// any amount worth the name; it just gives the readlink a chance to
 		// run while the pid is still what fired it, instead of queued behind
 		// however long every OTHER subscriber of every OTHER record takes.
-		// n.wg-tracked, like every other long-lived goroutine this notifier
-		// spawns: Close() closes n.execHoldNotify.File and then calls
-		// n.wg.Wait() BEFORE n.objs.Close() releases the underlying eBPF
-		// objects. An untracked goroutine here could still be running when
-		// objs.Close() frees those objects out from under it. The
-		// n.closed.Load() check right before calling into execHoldOnExec
-		// narrows (it cannot fully close, the same as any check-then-act
-		// race) the separate, smaller window against execHoldNotify.File
-		// itself already being closed by the time this goroutine actually
-		// runs -- markExecHoldPath's Mark() call already treats a mark
-		// failure as a routine, logged-and-skipped outcome, not a crash, so
-		// closing that window further is a hardening, not a requirement for
-		// safety.
-		n.wg.Add(1)
-		go func() {
-			defer n.wg.Done()
-			if n.closed.Load() {
-				return
-			}
-			n.execHoldOnExec(mntnsID, pid)
-		}()
+		// Handed to execHoldOnExecWorker, the single long-lived goroutine
+		// that actually calls execHoldOnExec -- not a goroutine spawned
+		// here per event. A per-event n.wg.Add(1) in this hot path races
+		// Close()'s n.wg.Wait(): WaitGroup.Add occurring concurrently with
+		// (or after) Wait has begun can panic, and an unbounded number of
+		// spawned goroutines is its own operational risk under exec
+		// storms. The channel send is non-blocking and drops on overflow
+		// (fail-open, same posture as the hold dispatcher's own timeout):
+		// see execHoldOnExecCh's doc comment.
+		select {
+		case n.execHoldOnExecCh <- execHoldOnExecTask{mntnsID: mntnsID, pid: pid}:
+		default:
+			log.Debugf("container-hook: exec-hold worker channel full, dropping mark attempt for pid %d", pid)
+		}
 		n.callback(ContainerEvent{
 			Type:         EventTypeExecContainer,
 			ContainerPID: pid,
