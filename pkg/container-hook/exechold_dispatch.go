@@ -149,9 +149,9 @@ func execHoldKeyOfFd(fd int) (execHoldKey, error) {
 
 // execHoldDispatch is the dispatcher's own state. It lives on the notifier but
 // is owned exclusively by this file: exechold.go reaches it only through
-// execHoldRememberHold/execHoldForgetHold, which is the hook markExecHoldPath
-// calls so that recording hold-state and installing the mark stay in the same
-// code path, in that order.
+// execHoldInstallMark (which markExecHoldPath calls, so recording hold-state
+// and installing the mark stay in the same code path, in that order, under
+// the same lock) and execHoldReleaseHeldMark (via execHoldForget).
 type execHoldDispatch struct {
 	// holds counts, per object, how many install attempts this dispatcher
 	// currently believes contributed to that object's kernel mark. A key
@@ -170,12 +170,15 @@ type execHoldDispatch struct {
 	// This is NOT reconciled against the kernel's own idempotent
 	// FAN_MARK_ADD folding (a second ADD for an object already marked is a
 	// harmless no-op at the kernel level) -- it only has to stay consistent
-	// with itself: execHoldForgetHold (called from execHoldSettle, paired
-	// with the unconditional kernel-level FAN_MARK_REMOVE a settle performs)
-	// deletes the entry outright rather than decrementing, because once a
-	// hold settles the kernel mark is gone regardless of how many local
-	// installs contributed to it, and any nonzero count left behind would
-	// be untrue.
+	// with itself: execHoldReleaseHeldMark (called from execHoldSettle and
+	// execHoldForget, each paired with an unconditional kernel-level
+	// FAN_MARK_REMOVE) deletes the entry outright rather than decrementing,
+	// because once a hold settles the kernel mark is gone regardless of how
+	// many local installs contributed to it, and any nonzero count left
+	// behind would be untrue. Both execHoldInstallMark and
+	// execHoldReleaseHeldMark hold holdsMu across their own mark/unmark
+	// syscall, not just the map update, so an install and a release for the
+	// SAME key can never interleave -- see execHoldInstallMark's comment.
 	holds   map[execHoldKey]int
 	holdsMu sync.Mutex
 
@@ -237,6 +240,17 @@ type ExecHoldStats struct {
 	// WatchdogTrips counts read-loop stalls that closed the group. It is 0 or 1:
 	// tripping is one-way.
 	WatchdogTrips uint64
+}
+
+// ExecHoldAvailable reports whether this notifier actually created the
+// exec-hold fanotify group -- NOT merely whether the notifier itself exists.
+// WithContainerFanotifyEbpf always creates a ContainerNotifier, even when the
+// exec-hold allowlist is empty and no fanotify group for it was ever created
+// (see install's len(n.execHoldBinaries) > 0 gate); a caller that only checks
+// "is there a notifier" cannot tell that case apart from exec-hold genuinely
+// being active with zero current counters.
+func (n *ContainerNotifier) ExecHoldAvailable() bool {
+	return n.execHoldNotify != nil
 }
 
 // ExecHoldStats returns a snapshot. It takes no lock and never blocks a hold.
@@ -302,16 +316,12 @@ func (n *ContainerNotifier) execHoldRememberHold(key execHoldKey) (rollback func
 	}
 }
 
-// execHoldForgetHold drops hold-state for key, called when the mark it belongs
-// to has been removed, so the guard stays an accurate picture of what this
-// dispatcher marked.
-//
-// Deletes outright rather than decrementing: it is called from execHoldSettle
-// paired with an unconditional kernel-level FAN_MARK_REMOVE (see
-// execHoldEventRef.unmark), so once a hold settles the kernel mark is gone
-// regardless of how many local installs (execHoldRememberHold calls)
-// contributed to it, and any nonzero count left behind here would no longer
-// describe reality.
+// execHoldForgetHold drops hold-state for key without touching the kernel
+// mark. Production code releases a mark through execHoldReleaseHeldMark
+// instead, which pairs this same deletion with the FAN_MARK_REMOVE syscall
+// under one holdsMu span; this standalone form exists so tests can seed and
+// inspect hold-state without a real mark/unmark call (see
+// execHoldRememberHold, its counterpart).
 func (n *ContainerNotifier) execHoldForgetHold(key execHoldKey) {
 	n.execHold.holdsMu.Lock()
 	defer n.execHold.holdsMu.Unlock()
@@ -361,12 +371,25 @@ type execHoldHold struct {
 	finished  chan struct{}
 }
 
+// execHoldReleaseHeldMark removes the kernel mark for key via unmarkSyscall
+// and drops its hold-state, both under the SAME holdsMu critical section --
+// the release-side counterpart to execHoldInstallMark's own lock span (see
+// its comment for the race this closes). Used by execHoldSettle (a held
+// exec's mark resolving) and execHoldForget (a container terminating with
+// marks still outstanding): the two places a kernel mark's lifetime actually
+// ends.
+func (n *ContainerNotifier) execHoldReleaseHeldMark(key execHoldKey, unmarkSyscall func()) {
+	n.execHold.holdsMu.Lock()
+	unmarkSyscall()
+	delete(n.execHold.holds, key)
+	n.execHold.holdsMu.Unlock()
+}
+
 // execHoldSettle resolves a hold: mark removed, hold-state dropped, exec
 // allowed. Idempotent by construction.
 func (n *ContainerNotifier) execHoldSettle(h *execHoldHold, reason string) {
 	h.once.Do(func() {
-		h.ref.unmark()
-		n.execHoldForgetHold(h.ref.key)
+		n.execHoldReleaseHeldMark(h.ref.key, h.ref.unmark)
 		h.ref.allow()
 		log.Debugf("container-hook: exec-hold: released exec of %s (pid %d): %s", h.ref.key, h.ref.pid, reason)
 	})

@@ -29,8 +29,15 @@ import (
 // is enabled but reporting failed". A caller wiring this into a metrics
 // exporter (see armosec/private-node-agent's execholdmetrics package) should
 // treat ok=false as "nothing to export yet", not as a warning.
+//
+// Checked via ExecHoldAvailable, not just cc.containerNotifier == nil:
+// WithContainerFanotifyEbpf always creates a notifier, even when the
+// allowlist is empty and no exec-hold fanotify group was ever created, so a
+// nil-notifier-only check would report ok=true (with all-zero counters) for
+// an exec-hold subsystem that is not actually available, indistinguishable
+// to a metrics caller from real zero counts.
 func (cc *ContainerCollection) ExecHoldStats() (containerhook.ExecHoldStats, bool) {
-	if cc.containerNotifier == nil {
+	if cc.containerNotifier == nil || !cc.containerNotifier.ExecHoldAvailable() {
 		return containerhook.ExecHoldStats{}, false
 	}
 	return cc.containerNotifier.ExecHoldStats(), true

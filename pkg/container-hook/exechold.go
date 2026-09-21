@@ -53,8 +53,14 @@ var execHoldBinaries []string
 // SetExecHoldBinaries sets the exec-hold allowlist. It must be called before
 // NewContainerNotifier, which copies it into the notifier; changing it
 // afterwards does not affect an existing notifier.
+//
+// Clones basenames rather than aliasing it: NewContainerNotifier clones this
+// package-level slice again for the same reason (see its own doc comment), so
+// this clone's only job is to stop a caller's later mutation of basenames'
+// backing array from being visible here even before a notifier is
+// constructed.
 func SetExecHoldBinaries(basenames []string) {
-	execHoldBinaries = basenames
+	execHoldBinaries = append([]string(nil), basenames...)
 }
 
 // initExecHoldFanotify creates the fanotify group used to hold execs of
@@ -91,8 +97,44 @@ func initExecHoldFanotify() (*fanotify.NotifyFD, error) {
 	return fanotify.Initialize(fanotifyFlags, openFlags)
 }
 
+// execHoldRootIdentity is the device and (kernel permitting) unique mount
+// identity of a container rootfs, resolved once per enumeration/mark call and
+// checked against every candidate execHoldOpenCandidate opens under it.
+type execHoldRootIdentity struct {
+	dev uint64
+	// mntID and mntIDValid: see execHoldStatObject. mntIDValid is false on a
+	// pre-5.8 kernel, where mount identity cannot be checked at all and
+	// rootDev is the only signal execHoldOpenCandidate has.
+	mntID      uint64
+	mntIDValid bool
+}
+
+// execHoldStatObject reports fd's device and, on a kernel that supports it
+// (Linux >= 5.8 for STATX_MNT_ID, preferring the reuse-proof
+// STATX_MNT_ID_UNIQUE from Linux >= 6.8), its unique mount identity. fd may be
+// an O_PATH descriptor: AT_EMPTY_PATH means no second path resolution is
+// involved, so this cannot itself become a TOCTOU window.
+func execHoldStatObject(fd int) (execHoldRootIdentity, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return execHoldRootIdentity{}, fmt.Errorf("fstat: %w", err)
+	}
+	id := execHoldRootIdentity{dev: uint64(stat.Dev)}
+
+	var stx unix.Statx_t
+	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH, unix.STATX_MNT_ID_UNIQUE, &stx); err == nil && stx.Mask&uint32(unix.STATX_MNT_ID_UNIQUE) != 0 {
+		id.mntID, id.mntIDValid = stx.Mnt_id, true
+	} else if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH, unix.STATX_MNT_ID, &stx); err == nil && stx.Mask&uint32(unix.STATX_MNT_ID) != 0 {
+		id.mntID, id.mntIDValid = stx.Mnt_id, true
+	}
+	// Neither statx call reporting the mask bit means a pre-5.8 kernel: leave
+	// mntIDValid false rather than treating that as an error, since st_dev
+	// alone is still a real (if narrower) check.
+	return id, nil
+}
+
 // execHoldOpenCandidate resolves unsafePath strictly inside the container
-// rootfs referred to by rootFd and returns an open O_PATH fd for it, or an
+// rootfs referred to by rootFd and returns an open O_RDONLY fd for it, or an
 // error if the candidate must not be marked.
 //
 // rootFd is used as the resolution root for openat2 with
@@ -100,7 +142,7 @@ func initExecHoldFanotify() (*fanotify.NotifyFD, error) {
 // secureopen.OpenInContainer applies; it is taken as an already-open fd rather
 // than a /proc/<pid>/root path so the root is pinned once and the candidate is
 // returned as an fd the caller can act on without resolving the path again.
-func execHoldOpenCandidate(rootFd int, rootDev uint64, unsafePath string) (*os.File, error) {
+func execHoldOpenCandidate(rootFd int, root execHoldRootIdentity, unsafePath string) (*os.File, error) {
 	// O_PATH avoids blocking on opening the candidate if it turns out to be a
 	// pipe or a device, and is enough for fstat. It is NOT enough for
 	// fanotify_mark: the kernel's NULL-pathname mark-by-fd form resolves the
@@ -137,30 +179,63 @@ func execHoldOpenCandidate(rootFd int, rootDev uint64, unsafePath string) (*os.F
 	// RESOLVE_IN_ROOT confines symlinks to the rootfs, but it cannot see through
 	// a bind mount: a container can mount a host path over /usr/bin/<name> and
 	// have a perfectly in-root resolution land on a HOST binary. Requiring the
-	// candidate's st_dev to match the rootfs' st_dev rejects exactly that, since
-	// a bind mount from another filesystem carries a different device. This is a
+	// candidate's st_dev to match the rootfs' st_dev rejects a bind mount from a
+	// DIFFERENT filesystem, since that carries a different device. This is a
 	// security control, not a heuristic: marking a host binary would hold every
 	// exec of it on the node, container or not.
 	//
 	// The cost is that a binary living on a filesystem legitimately mounted
 	// inside the container (e.g. /usr as a separate volume) is skipped rather
 	// than marked. Refusing to mark is the safe direction of that trade.
-	if uint64(stat.Dev) != rootDev {
+	if uint64(stat.Dev) != root.dev {
 		return nil, fmt.Errorf("%q in container rootfs is on device %d, not the rootfs device %d: refusing to mark",
-			unsafePath, uint64(stat.Dev), rootDev)
+			unsafePath, uint64(stat.Dev), root.dev)
+	}
+
+	// st_dev alone is not enough: a bind mount of a HOST path that happens to
+	// live on the SAME filesystem as the rootfs (a same-device bind mount, e.g.
+	// bind-mounting another directory from the node's root filesystem into the
+	// container) carries the same st_dev and passes the check above untouched,
+	// even though the candidate is not actually part of the container's own
+	// rootfs mount. Comparing the candidate's mount identity against the
+	// rootfs's closes that gap; see execHoldStatObject for why this is
+	// kernel-version-gated (pre-5.8: mntIDValid is false and this check is
+	// skipped, same posture as before this hardening existed).
+	if root.mntIDValid {
+		candID, err := execHoldStatObject(pathFd)
+		if err == nil && candID.mntIDValid && candID.mntID != root.mntID {
+			return nil, fmt.Errorf("%q in container rootfs is on mount %d, not the rootfs mount %d: refusing to mark (bind mount)",
+				unsafePath, candID.mntID, root.mntID)
+		}
 	}
 
 	// Re-open the exact object behind pathFd -- not unsafePath again -- via
 	// /proc/self/fd, so there is no second path resolution and therefore no
 	// window for the container to swap the target between validation and this
-	// re-open. Safe to use a real, readable open now: S_ISREG and st_dev are
-	// already confirmed, so this can no longer land on a device, pipe, or
-	// cross-device target the O_PATH open was specifically avoiding.
+	// re-open. Safe to use a real, readable open now: S_ISREG, st_dev and (where
+	// the kernel supports it) mount identity are already confirmed, so this can
+	// no longer land on a device, pipe, or cross-device/cross-mount target the
+	// O_PATH open was specifically avoiding. The fd this function returns is
+	// therefore O_RDONLY, not O_PATH -- fanotify_mark's NULL-pathname mark-by-fd
+	// form requires it (see the O_PATH comment above), so callers must not
+	// assume the returned fd is O_PATH-restricted.
 	fd, err := unix.Openat(unix.AT_FDCWD, fmt.Sprintf("/proc/self/fd/%d", pathFd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("re-opening validated candidate %q for marking: %w", unsafePath, err)
 	}
 	return os.NewFile(uintptr(fd), unsafePath), nil
+}
+
+// execHoldMarkedFile pairs a still-OPEN marking fd with the key it marked.
+// markExecHoldPath retains it (per mntnsID, in
+// ContainerNotifier.execHoldContainerMarks) instead of closing it, because
+// removing a specific object's fanotify mark later (execHoldForget, on
+// container termination) needs a live fd on that SAME object, and by
+// termination time /proc/<pid>/root is gone: there is no path left to
+// re-resolve it from.
+type execHoldMarkedFile struct {
+	key  execHoldKey
+	file *os.File
 }
 
 // markExecHoldPath resolves candidatePath under the container rootfs referred
@@ -169,19 +244,26 @@ func execHoldOpenCandidate(rootFd int, rootDev uint64, unsafePath string) (*os.F
 //
 // It is the single place where an exec-hold mark is installed, so every call
 // site — the create-time enumeration and the first-exec path alike — is
-// necessarily behind the same openat2 RESOLVE_IN_ROOT and st_dev controls.
-func (n *ContainerNotifier) markExecHoldPath(rootFd int, rootDev uint64, candidatePath string) error {
-	file, err := execHoldOpenCandidate(rootFd, rootDev, candidatePath)
+// necessarily behind the same openat2 RESOLVE_IN_ROOT/st_dev/mount-identity
+// controls.
+//
+// mntnsID scopes the mark to a container for later removal (execHoldForget):
+// 0 means the caller could not resolve one, in which case the mark is
+// installed exactly as before this scoping existed (fire-and-forget, closed
+// immediately, never explicitly removed) rather than refused -- refusing
+// would give up real protection over a bookkeeping gap.
+func (n *ContainerNotifier) markExecHoldPath(rootFd int, root execHoldRootIdentity, mntnsID uint64, candidatePath string) error {
+	file, err := execHoldOpenCandidate(rootFd, root, candidatePath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
 	// The dispatcher's hold-state is keyed on the object's (dev, ino), which is
 	// read from the very fd about to be marked, so the state and the mark can
 	// never describe different objects.
 	key, err := execHoldKeyOfFd(int(file.Fd()))
 	if err != nil {
+		file.Close()
 		return fmt.Errorf("identifying %q for marking: %w", candidatePath, err)
 	}
 
@@ -194,8 +276,20 @@ func (n *ContainerNotifier) markExecHoldPath(rootFd int, rootDev uint64, candida
 		return n.execHoldNotify.Mark(unix.FAN_MARK_ADD, unix.FAN_OPEN_EXEC_PERM, int(file.Fd()), "")
 	})
 	if err != nil {
+		file.Close()
 		return fmt.Errorf("marking %q: %w", candidatePath, err)
 	}
+
+	if mntnsID == 0 {
+		file.Close()
+		return nil
+	}
+	n.execHoldContainerMarksMu.Lock()
+	if n.execHoldContainerMarks == nil {
+		n.execHoldContainerMarks = make(map[uint64][]execHoldMarkedFile)
+	}
+	n.execHoldContainerMarks[mntnsID] = append(n.execHoldContainerMarks[mntnsID], execHoldMarkedFile{key: key, file: file})
+	n.execHoldContainerMarksMu.Unlock()
 
 	return nil
 }
@@ -208,11 +302,35 @@ func (n *ContainerNotifier) markExecHoldPath(rootFd int, rootDev uint64, candida
 // an event for the object, because an event with no hold-state is allowed
 // immediately by the dispatcher's guard. State recorded after fanotify_mark
 // returned would leave a window in which a genuine hold looks unrecognised.
+//
+// holdsMu is held across BOTH the state update and the mark() syscall itself
+// -- not delegated to execHoldRememberHold, which releases the lock
+// immediately and exists for tests that want to seed hold-state without a
+// real mark call. Spanning the syscall is what makes this mutually exclusive
+// with execHoldReleaseHeldMark (used by execHoldSettle and execHoldForget)
+// for the SAME key: without it, a settle racing between this call's
+// increment and its mark() syscall could delete key's hold-state believing
+// the kernel mark it just removed was the only one, just before mark()
+// installs a NEW kernel mark nothing tracks any more -- future events for key
+// would then fail the F10 guard and be waved through unheld, with the mark
+// itself silently orphaned (present in the kernel, absent from this
+// dispatcher's bookkeeping) until this notifier closes.
+//
 // mark is injected so that ordering is observable in a test.
 func (n *ContainerNotifier) execHoldInstallMark(key execHoldKey, mark func() error) error {
-	rollback := n.execHoldRememberHold(key)
+	n.execHold.holdsMu.Lock()
+	defer n.execHold.holdsMu.Unlock()
+
+	if n.execHold.holds == nil {
+		n.execHold.holds = make(map[execHoldKey]int)
+	}
+	n.execHold.holds[key]++
+
 	if err := mark(); err != nil {
-		rollback()
+		n.execHold.holds[key]--
+		if n.execHold.holds[key] <= 0 {
+			delete(n.execHold.holds, key)
+		}
 		return err
 	}
 	return nil
@@ -220,30 +338,30 @@ func (n *ContainerNotifier) execHoldInstallMark(key execHoldKey, mark func() err
 
 // markExecHoldCandidatesInRoot marks every allowlisted binary it can safely
 // resolve under the already-open container rootfs rootDir, and returns the
-// paths it marked.
+// paths it marked. mntnsID scopes the marks for later removal; see
+// markExecHoldPath.
 //
 // It deliberately performs NO real-inode lookup and consults no attachment
 // state: every safely-resolved candidate is marked unconditionally. Deciding
 // whether a given exec is actually of interest belongs to the event consumer,
 // which sees the exec'd fd itself.
-func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File) []string {
+func (n *ContainerNotifier) markExecHoldCandidatesInRoot(rootDir *os.File, mntnsID uint64) []string {
 	if n.execHoldNotify == nil || len(n.execHoldBinaries) == 0 {
 		return nil
 	}
 
-	var rootStat unix.Stat_t
-	if err := unix.Fstat(int(rootDir.Fd()), &rootStat); err != nil {
+	root, err := execHoldStatObject(int(rootDir.Fd()))
+	if err != nil {
 		log.Errorf("container-hook: exec-hold: fstat of container rootfs: %s", err)
 		return nil
 	}
-	rootDev := uint64(rootStat.Dev)
 
 	var marked []string
 	for _, basename := range n.execHoldBinaries {
 		for _, dir := range execHoldSearchPaths {
 			candidatePath := filepath.Join(dir, basename)
 
-			if err := n.markExecHoldPath(int(rootDir.Fd()), rootDev, candidatePath); err != nil {
+			if err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, candidatePath); err != nil {
 				// Expected for every search path the binary is not in, so this
 				// stays at debug level: the rejection cases are logged by the
 				// error text they carry.
@@ -313,7 +431,7 @@ func (n *ContainerNotifier) markExecHoldCandidates(containerPID uint32, expected
 		}
 	}
 
-	for _, path := range n.markExecHoldCandidatesInRoot(rootDir) {
+	for _, path := range n.markExecHoldCandidatesInRoot(rootDir, expectedMntnsID) {
 		log.Debugf("container-hook: exec-hold: marked %s in container pid %d", path, containerPID)
 	}
 }
@@ -361,37 +479,40 @@ func (n *ContainerNotifier) execHoldAllowlisted(basename string) bool {
 // exec'd path already resolved, exactly as markExecHoldCandidatesInRoot is the
 // testable core of markExecHoldCandidates.
 //
-// Marks are deduplicated per (container mount namespace, basename). The kernel
-// would fold a repeated FAN_MARK_ADD on the same inode into the existing mark
-// anyway, so the set is about not paying for the resolution on every exec of a
-// busy binary, not about correctness of the mark itself.
+// Marks are deduplicated per (container mount namespace, resolved path) --
+// NOT per (mount namespace, basename): a container can have two distinct
+// allowlisted objects sharing one basename (e.g. /opt/a/foo and /opt/b/foo),
+// and deduplicating by basename alone would record the first one seen and
+// permanently skip marking the second. The kernel would fold a repeated
+// FAN_MARK_ADD on the same inode into the existing mark anyway, so this set
+// is about not paying for the resolution on every exec of a busy binary, not
+// about correctness of the mark itself.
 func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os.File, execedPath string) bool {
 	if n.execHoldNotify == nil || len(n.execHoldBinaries) == 0 {
 		return false
 	}
 
-	basename := filepath.Base(execedPath)
-	if !n.execHoldAllowlisted(basename) {
+	if !n.execHoldAllowlisted(filepath.Base(execedPath)) {
 		return false
 	}
 
 	// Held across the resolve-and-mark so a container cannot be marked twice
-	// for one basename by two execs observed concurrently. The only other
-	// holder is execHoldForget on container termination, which just deletes.
+	// for one path by two execs observed concurrently. The only other holder
+	// is execHoldForget on container termination, which just deletes.
 	n.execHoldMarkedMu.Lock()
 	defer n.execHoldMarkedMu.Unlock()
 
-	if _, ok := n.execHoldMarked[mntnsID][basename]; ok {
+	if _, ok := n.execHoldMarked[mntnsID][execedPath]; ok {
 		return false
 	}
 
-	var rootStat unix.Stat_t
-	if err := unix.Fstat(int(rootDir.Fd()), &rootStat); err != nil {
+	root, err := execHoldStatObject(int(rootDir.Fd()))
+	if err != nil {
 		log.Debugf("container-hook: exec-hold: fstat of container rootfs for mntns %d: %s", mntnsID, err)
 		return false
 	}
 
-	if err := n.markExecHoldPath(int(rootDir.Fd()), uint64(rootStat.Dev), execedPath); err != nil {
+	if err := n.markExecHoldPath(int(rootDir.Fd()), root, mntnsID, execedPath); err != nil {
 		log.Debugf("container-hook: exec-hold: not marking exec'd %s in mntns %d: %s", execedPath, mntnsID, err)
 		return false
 	}
@@ -402,7 +523,7 @@ func (n *ContainerNotifier) execHoldMarkExecedBinary(mntnsID uint64, rootDir *os
 	if n.execHoldMarked[mntnsID] == nil {
 		n.execHoldMarked[mntnsID] = make(map[string]struct{})
 	}
-	n.execHoldMarked[mntnsID][basename] = struct{}{}
+	n.execHoldMarked[mntnsID][execedPath] = struct{}{}
 
 	return true
 }
@@ -437,6 +558,32 @@ func (n *ContainerNotifier) execHoldOnExec(mntnsID uint64, execPid uint32) {
 		return
 	}
 
+	// execPid was observed by watchExecEvents and handed to this worker
+	// through execHoldOnExecCh, which can sit queued behind other tasks for an
+	// unbounded amount of wall-clock time (it is bounded only in SIZE, not in
+	// how long an admitted entry may wait -- see the channel's own doc
+	// comment). If the process has since exited, the kernel is free to have
+	// recycled execPid for an UNRELATED host process by the time this runs.
+	// Re-validate that execPid still has the mount namespace the ORIGINAL
+	// event actually carried before trusting /proc/<execPid>/root any
+	// further: a mismatch means execPid no longer names the process this
+	// event was about, and opening its root would resolve and potentially
+	// mark an unrelated -- possibly HOST -- process's binary instead. This is
+	// the same TOCTOU class markExecHoldCandidates's expectedMntnsID
+	// revalidation closes for the create-time path; narrows rather than fully
+	// closes the window (this is still a second, independent /proc/<pid>
+	// read), same as that one.
+	currentMntNs, err := containerutils.GetMntNs(int(execPid))
+	if err != nil {
+		log.Debugf("container-hook: exec-hold: checking mnt namespace of pid %d before marking: %s", execPid, err)
+		return
+	}
+	if currentMntNs != mntnsID {
+		log.Debugf("container-hook: exec-hold: pid %d no longer has the expected mount namespace (want %d, got %d); not marking, likely pid reuse",
+			execPid, mntnsID, currentMntNs)
+		return
+	}
+
 	// /proc/<pid>/root of the exec'ing process IS the container rootfs, and
 	// unlike the container's init pid it is known to be alive right now.
 	root := filepath.Join(host.HostProcFs, strconv.Itoa(int(execPid)), "root")
@@ -453,11 +600,43 @@ func (n *ContainerNotifier) execHoldOnExec(mntnsID uint64, execPid uint32) {
 }
 
 // execHoldForget drops the per-container first-exec mark bookkeeping when a
-// container terminates, so the set cannot grow with the node's container churn.
+// container terminates, so the set cannot grow with the node's container
+// churn, and releases every kernel mark and dispatcher hold-state this
+// notifier installed for that container: the FAN_OPEN_EXEC_PERM marks
+// markExecHoldCandidates (create-time enumeration) and
+// execHoldMarkExecedBinary (first-exec) installed are otherwise never removed
+// -- neither map they update represents them, so without this a marked
+// binary that is never actually re-executed leaves its mark, its retained
+// marking fd, and its dispatcher execHold.holds entry alive for this
+// notifier's entire lifetime, growing with container churn and potentially
+// gating a later, unrelated container's exec on a reused (dev, ino).
 func (n *ContainerNotifier) execHoldForget(mntnsID uint64) {
 	n.execHoldMarkedMu.Lock()
-	defer n.execHoldMarkedMu.Unlock()
 	delete(n.execHoldMarked, mntnsID)
+	n.execHoldMarkedMu.Unlock()
+
+	n.execHoldContainerMarksMu.Lock()
+	marks := n.execHoldContainerMarks[mntnsID]
+	delete(n.execHoldContainerMarks, mntnsID)
+	n.execHoldContainerMarksMu.Unlock()
+
+	// Unmark and drop dispatcher state off the lock above: these are
+	// syscalls plus execHold.holdsMu, and execHoldContainerMarksMu must stay
+	// free for markExecHoldPath's own (different-mntnsID) appends while this
+	// runs. execHoldReleaseHeldMark pairs the removal syscall with the
+	// holds-map deletion under execHold.holdsMu, same as execHoldSettle,
+	// so this cannot interleave with a concurrent execHoldInstallMark for
+	// the same key either.
+	for _, m := range marks {
+		key := m.key
+		file := m.file
+		n.execHoldReleaseHeldMark(key, func() {
+			if err := n.execHoldNotify.Mark(unix.FAN_MARK_REMOVE, unix.FAN_OPEN_EXEC_PERM, int(file.Fd()), ""); err != nil {
+				log.Debugf("container-hook: exec-hold: removing mark for %s (mntns %d, container terminated): %s", key, mntnsID, err)
+			}
+		})
+		file.Close()
+	}
 }
 
 // watchExecHold drains the exec-hold group.
@@ -477,6 +656,23 @@ func (n *ContainerNotifier) watchExecHold() {
 		}
 		if err != nil {
 			log.Errorf("container-hook: exec-hold: watching marked binaries: %v", err)
+			// A non-Close GetEvent error (anything reaching here: the
+			// closed.Load() check above already returned on the expected
+			// Close-triggered case) still leaves the group's marks in place
+			// with this loop now gone -- the ONLY reader for it. Any
+			// outstanding or future FAN_OPEN_EXEC_PERM event would then block
+			// its process indefinitely with nothing to answer it, which is
+			// exactly the hang watchExecHoldWatchdog exists to catch, except
+			// the watchdog only trips on a STALLED iteration (busySince set),
+			// never on the loop having exited cleanly. Close explicitly here,
+			// same action watchExecHoldWatchdog takes on a stall: fanotify(7)
+			// documents that closing a group's fd resolves every outstanding
+			// permission event as allowed, so this fails open exactly like
+			// every other exec-hold error path, rather than leaving the
+			// group open with silent, permanent hangs waiting to happen.
+			if n.execHoldNotify != nil {
+				n.execHoldNotify.File.Close()
+			}
 			return
 		}
 	}

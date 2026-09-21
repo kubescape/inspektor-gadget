@@ -74,7 +74,7 @@ func TestExecHoldOpenCandidateRejectsForeignDevice(t *testing.T) {
 	}
 	root := openRoot(t, "/")
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), rootDev, crossDevicePath)
+	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: rootDev}, crossDevicePath)
 	if file != nil {
 		file.Close()
 	}
@@ -91,7 +91,7 @@ func TestExecHoldOpenCandidateAcceptsRootfsBinary(t *testing.T) {
 
 	root := openRoot(t, rootPath)
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), statDev(t, rootPath), "/usr/bin/allowed")
+	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, "/usr/bin/allowed")
 	require.NoError(t, err)
 	require.NotNil(t, file)
 	defer file.Close()
@@ -112,7 +112,7 @@ func TestExecHoldOpenCandidateRejectsSymlinkEscape(t *testing.T) {
 
 	root := openRoot(t, rootPath)
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), statDev(t, rootPath), "/usr/bin/allowed")
+	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, "/usr/bin/allowed")
 	if file != nil {
 		file.Close()
 	}
@@ -162,7 +162,7 @@ func TestExecHoldOpenCandidateRejectsBindMountedHostBinary(t *testing.T) {
 	rootPath := stageBindMountEscape(t)
 	root := openRoot(t, rootPath)
 
-	file, err := execHoldOpenCandidate(int(root.Fd()), statDev(t, rootPath), "/usr/bin/allowed")
+	file, err := execHoldOpenCandidate(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, "/usr/bin/allowed")
 	if file != nil {
 		file.Close()
 	}
@@ -235,7 +235,7 @@ func TestMarkExecHoldCandidatesInRootMarksRootfsBinary(t *testing.T) {
 
 	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd), "group must start with no marks")
 
-	marked := n.markExecHoldCandidatesInRoot(openRoot(t, rootPath))
+	marked := n.markExecHoldCandidatesInRoot(openRoot(t, rootPath), 0)
 	require.Equal(t, []string{"/usr/bin/allowed"}, marked)
 
 	require.Contains(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd), binStat.Ino,
@@ -250,7 +250,7 @@ func TestMarkExecHoldCandidatesInRootRejectsBindMount(t *testing.T) {
 	n := newExecHoldTestNotifier(t, []string{"allowed"})
 	rootPath := stageBindMountEscape(t)
 
-	marked := n.markExecHoldCandidatesInRoot(openRoot(t, rootPath))
+	marked := n.markExecHoldCandidatesInRoot(openRoot(t, rootPath), 0)
 	require.Empty(t, marked, "a bind-mounted host binary must never be marked")
 	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd),
 		"no fanotify mark may be installed when the st_dev check rejects the candidate")
@@ -262,7 +262,7 @@ func TestMarkExecHoldCandidatesInRootRejectsBindMount(t *testing.T) {
 func TestMarkExecHoldCandidatesNoAllowlist(t *testing.T) {
 	n := &ContainerNotifier{}
 	n.markExecHoldCandidates(uint32(os.Getpid()), 0)
-	require.Nil(t, n.markExecHoldCandidatesInRoot(openRoot(t, t.TempDir())))
+	require.Nil(t, n.markExecHoldCandidatesInRoot(openRoot(t, t.TempDir()), 0))
 }
 
 // TestMarkExecHoldCandidatesMntnsMismatchSkipsEnumeration pins the pid-reuse
@@ -382,7 +382,7 @@ func TestExecHoldAbsentBinaryIsNotMarkedAtCreate(t *testing.T) {
 	rootPath := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(rootPath, "usr/bin"), 0o755))
 
-	require.Empty(t, n.markExecHoldCandidatesInRoot(openRoot(t, rootPath)),
+	require.Empty(t, n.markExecHoldCandidatesInRoot(openRoot(t, rootPath), 0),
 		"nothing may be marked for a rootfs that does not contain the binary")
 	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd))
 
@@ -404,7 +404,7 @@ func TestExecHoldMarkExecedBinaryMarksBinaryAddedAfterCreate(t *testing.T) {
 	root := openRoot(t, rootPath)
 
 	// Container-create time: nothing to mark.
-	require.Empty(t, n.markExecHoldCandidatesInRoot(root))
+	require.Empty(t, n.markExecHoldCandidatesInRoot(root, 0))
 	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd))
 
 	// The workload drops the binary in, at a path that is not even one of the
@@ -545,12 +545,19 @@ func TestExecHoldOnExecMarksRealExecedProcess(t *testing.T) {
 
 	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd))
 
-	const mntnsID = uint64(12345)
+	// The REAL mount namespace of cmd.Process.Pid, not a fabricated value:
+	// execHoldOnExec now revalidates the mntns it is handed against the one
+	// the pid actually has (see TestExecHoldOnExecMntnsMismatchDoesNotMark for
+	// the negative case), matching the guarantee watchExecEvents' real exec
+	// event record actually provides -- a mismatch here would no longer mark
+	// anything.
+	mntnsID, err := containerutils.GetMntNs(cmd.Process.Pid)
+	require.NoError(t, err)
 	n.execHoldOnExec(mntnsID, uint32(cmd.Process.Pid))
 
 	require.Contains(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd), binStat.Ino,
 		"observing the exec must install a mark for subsequent execs of that binary")
-	require.Contains(t, n.execHoldMarked[mntnsID], basename)
+	require.Contains(t, n.execHoldMarked[mntnsID], filepath.Join(dir, basename))
 
 	// Idempotent through the full path too, not just its core.
 	n.execHoldOnExec(mntnsID, uint32(cmd.Process.Pid))
@@ -561,4 +568,49 @@ func TestExecHoldOnExecMarksRealExecedProcess(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, count)
+}
+
+// TestExecHoldOnExecMntnsMismatchDoesNotMark is the security regression test
+// for the PID-recycle hardening added to execHoldOnExec: if the mount
+// namespace execPid actually has no longer matches the mntnsID the caller
+// (the original exec event) carried, nothing may be marked -- opening
+// /proc/<execPid>/root and marking under it would otherwise resolve an
+// UNRELATED process's (potentially the HOST's) filesystem, not the container
+// the event was really about.
+//
+// Uses the same real, allowlisted subprocess as
+// TestExecHoldOnExecMarksRealExecedProcess (so this exercises the mntns check
+// specifically, not just the earlier allowlist filter), but hands
+// execHoldOnExec a mntnsID that does not match its real one.
+func TestExecHoldOnExecMntnsMismatchDoesNotMark(t *testing.T) {
+	const basename = "ig-exechold-allowed"
+
+	n := newExecHoldTestNotifier(t, []string{basename})
+	dir := sameDeviceDir(t)
+
+	src, err := exec.LookPath("sleep")
+	require.NoError(t, err)
+	payload, err := os.ReadFile(src)
+	require.NoError(t, err)
+	binPath := filepath.Join(dir, basename)
+	require.NoError(t, os.WriteFile(binPath, payload, 0o755))
+
+	cmd := exec.Command(binPath, "60")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	realMntNs, err := containerutils.GetMntNs(cmd.Process.Pid)
+	require.NoError(t, err)
+
+	// Any value that is not the process's real mntns simulates the pid
+	// having been recycled for an unrelated process since the exec event
+	// that named mntnsID was observed.
+	n.execHoldOnExec(realMntNs+1, uint32(cmd.Process.Pid))
+
+	require.Empty(t, fanotifyMarkedInodes(t, n.execHoldNotify.Fd),
+		"a mount-namespace mismatch must refuse to mark, not resolve an unrelated process's root")
+	require.Empty(t, n.execHoldMarked)
 }

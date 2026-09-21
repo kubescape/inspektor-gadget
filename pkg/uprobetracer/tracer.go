@@ -1192,7 +1192,26 @@ func (t *Tracer[Event]) AttachOpenFile(containerPid uint32, file *os.File, label
 		file.Close()
 		return 0, false, nil
 	}
+	// Snapshotted under the lock, same as attachContainerWork's own dispatch
+	// site: the worker must never read t.attachSem concurrently with
+	// SetAttachSemaphore.
+	sem := t.attachSem
 	t.mu.Unlock()
+
+	// Applies the SAME process-wide heavy-resolve budget attachContainerWork
+	// uses, before doing any of the work it bounds: resolveAttachOffsets is a
+	// real ELF parse that can consume tens of megabytes, and this path can
+	// run up to execHoldMaxInFlight (32, PER NOTIFIER) of those concurrently
+	// from the exec-hold dispatcher alone -- multiplied again across every
+	// tracer/gadget/notifier in the process. Without acquiring attachSem
+	// here, exec-hold's own bound does nothing to protect the process-wide
+	// memory budget attachSem exists to enforce; a hold's own hard timeout
+	// (execHoldWorkerHardBound) still releases the EXEC even if this blocks
+	// on the semaphore for a while, so blocking here costs latency, not
+	// correctness -- the same trade attachContainerWork's callers already
+	// accept.
+	sem <- struct{}{}
+	defer func() { <-sem }()
 
 	// Off-lock, same reasoning as openTargets/CreditIfAttached: the ELF parse
 	// and resolver I/O below must not run under t.mu.

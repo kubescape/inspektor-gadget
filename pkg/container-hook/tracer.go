@@ -190,12 +190,22 @@ type ContainerNotifier struct {
 	// execHoldBinaries is this notifier's copy of the exec-hold allowlist, taken
 	// at construction so it cannot change under the callback goroutines.
 	execHoldBinaries []string
-	// execHoldMarked records which allowlisted basenames already got a
-	// first-exec mark in a given container, keyed by the container's mount
-	// namespace id — the only container identity an exec event carries. See
-	// execHoldMarkExecedBinary; entries are dropped on container termination.
+	// execHoldMarked records which allowlisted RESOLVED PATHS (not basenames --
+	// two distinct objects can share a basename, see execHoldMarkExecedBinary)
+	// already got a first-exec mark in a given container, keyed by the
+	// container's mount namespace id — the only container identity an exec
+	// event carries. See execHoldMarkExecedBinary; entries are dropped on
+	// container termination (execHoldForget).
 	execHoldMarked   map[uint64]map[string]struct{}
 	execHoldMarkedMu sync.Mutex
+	// execHoldContainerMarks retains the still-open marking fd for every
+	// create-time (markExecHoldCandidates) and first-exec
+	// (execHoldMarkExecedBinary) mark this notifier installed, keyed by the
+	// container's mount namespace id, so execHoldForget can remove them (and
+	// their dispatcher hold-state) when the container terminates. See
+	// markExecHoldPath and execHoldMarkedFile.
+	execHoldContainerMarks   map[uint64][]execHoldMarkedFile
+	execHoldContainerMarksMu sync.Mutex
 	// execHold is the hold-event dispatcher's own state: what this notifier
 	// marked, how many holds are running, and the counters. Owned entirely by
 	// exechold_dispatch.go.
@@ -348,8 +358,14 @@ func Supported() bool {
 // - the container runtime must be installed in one of the paths listed by runtimePaths
 func NewContainerNotifier(callback ContainerNotifyFunc) (*ContainerNotifier, error) {
 	n := &ContainerNotifier{
-		callback:          callback,
-		execHoldBinaries:  execHoldBinaries,
+		callback: callback,
+		// Cloned, not aliased: execHoldBinaries is a package-level var a
+		// caller could keep a reference to and mutate after
+		// SetExecHoldBinaries returns (e.g. reuse the same backing array for
+		// a later, unrelated call) -- this notifier's copy must not move
+		// under the callback/marking goroutines reading it for this
+		// notifier's entire lifetime.
+		execHoldBinaries:  append([]string(nil), execHoldBinaries...),
 		containers:        make(map[string]*watchedContainer),
 		futureContainers:  make(map[string]*futureContainer),
 		pendingContainers: make(map[string]*pendingContainer),
@@ -386,7 +402,16 @@ func (n *ContainerNotifier) installEbpf(fanotifyFd int) error {
 		return err
 	}
 
-	execEventsEnabled := collectExecEvents.Load()
+	// Exec-hold's first-exec path (execHoldOnExec) is driven entirely by the
+	// exec_events ringbuf: without it, AddWatchContainerTermination never
+	// records a container's mount namespace, execHoldContainerPid can map no
+	// held pid to a container, and every hold fails open through Unresolved.
+	// SetExecEventsCollection is a SEPARATE opt-in a consumer must remember to
+	// call for an unrelated reason (re-attaching to statically-linked
+	// runtimes) -- forcing it on here means exec-hold cannot be silently
+	// non-functional just because a caller enabled SetExecHoldBinaries without
+	// also calling SetExecEventsCollection(true).
+	execEventsEnabled := collectExecEvents.Load() || len(n.execHoldBinaries) > 0
 	collectExecEventsVal := uint8(0)
 	if execEventsEnabled {
 		collectExecEventsVal = 1
@@ -396,11 +421,16 @@ func (n *ContainerNotifier) installEbpf(fanotifyFd int) error {
 	}
 
 	// Raise exec_args map capacity from 128 to 512 entries to provide headroom
-	// for the exec-hold feature's concurrent hold pressure (see #607).
-	// On kernels >= 5.11, this preallocated map's memory (roughly 512 * 5152 bytes
-	// ≈ 2.6 MB, where struct record in execruntime.h is 5152 bytes) is charged to
-	// the loading process's cgroup memory limit, which operators should be aware of.
-	execSpec.ExecArgs.MaxEntries = 512
+	// for the exec-hold feature's concurrent hold pressure (see #607) -- but
+	// only when exec-hold is actually enabled. On kernels >= 5.11, this
+	// preallocated map's memory (roughly 512 * 5152 bytes ≈ 2.6 MB, where
+	// struct record in execruntime.h is 5152 bytes) is charged to the loading
+	// process's cgroup memory limit; a default (exec-hold-disabled) consumer
+	// that only wants EventTypeExecContainer (e.g. a uprobe reattach stream)
+	// should not pay that charge for a feature it never opted into.
+	if len(n.execHoldBinaries) > 0 {
+		execSpec.ExecArgs.MaxEntries = 512
+	}
 
 	opts := ebpf.CollectionOptions{
 		Programs: ebpf.ProgramOptions{
@@ -523,16 +553,25 @@ func (n *ContainerNotifier) install() error {
 	go n.watchPendingContainers()
 	go n.checkTimeout()
 	if n.execReader != nil {
-		n.wg.Add(2)
+		n.wg.Add(1)
 		go n.watchExecEvents()
-		go n.execHoldOnExecWorker()
 	}
 	if n.execHoldNotify != nil {
-		n.wg.Add(2)
+		// execHoldOnExecWorker belongs here, gated on exec-hold specifically,
+		// not on n.execReader != nil above: execReader is also used by
+		// consumers that only want EventTypeExecContainer (e.g. a uprobe
+		// reattach stream) with exec-hold disabled, and starting this worker
+		// for them would add a goroutine, channel traffic, and an
+		// execHoldOnExec call on every exec for a feature they never opted
+		// into. installEbpf forces execEventsEnabled whenever
+		// n.execHoldBinaries is non-empty (see its own comment), so
+		// n.execHoldNotify != nil here implies n.execReader != nil too.
+		n.wg.Add(3)
 		go n.watchExecHold()
 		// Separate from the loop it watches, on purpose: it has to stay live
 		// exactly when that loop does not.
 		go n.watchExecHoldWatchdog()
+		go n.execHoldOnExecWorker()
 	}
 
 	return nil

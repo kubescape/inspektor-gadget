@@ -292,13 +292,22 @@ func TestExecHoldUnresolvedContainerFailsOpen(t *testing.T) {
 // fails. The injected mark function observes the map at exactly the moment the
 // kernel call would happen, which is the only way to assert the ORDER rather
 // than just the end state.
+//
+// The injected closure reads n.execHold.holds directly rather than through
+// execHoldHasHold: execHoldInstallMark now holds holdsMu across the ENTIRE
+// call, including this closure (see its own comment, added to serialize
+// install against execHoldSettle for the same key), so calling the
+// lock-acquiring accessor from inside it would self-deadlock. The direct read
+// is race-free here specifically because it runs on the SAME goroutine that
+// already holds holdsMu -- no other goroutine can be touching the map at this
+// exact moment.
 func TestExecHoldInstallMarkOrdersStateBeforeMark(t *testing.T) {
 	n := &ContainerNotifier{}
 	key := execHoldKey{dev: 7, ino: 99}
 
 	var observed bool
 	require.NoError(t, n.execHoldInstallMark(key, func() error {
-		observed = n.execHoldHasHold(key)
+		observed = n.execHold.holds[key] > 0
 		return nil
 	}))
 	require.True(t, observed, "hold state must already be recorded when the mark is installed")
@@ -309,7 +318,7 @@ func TestExecHoldInstallMarkOrdersStateBeforeMark(t *testing.T) {
 	failed := execHoldKey{dev: 7, ino: 100}
 	markErr := errors.New("mark failed")
 	err := n.execHoldInstallMark(failed, func() error {
-		require.True(t, n.execHoldHasHold(failed))
+		require.True(t, n.execHold.holds[failed] > 0)
 		return markErr
 	})
 	require.ErrorIs(t, err, markErr)
@@ -342,7 +351,7 @@ func TestMarkExecHoldPathRollsBackHoldStateOnMarkFailure(t *testing.T) {
 	}
 
 	root := openRoot(t, rootPath)
-	require.Error(t, n.markExecHoldPath(int(root.Fd()), statDev(t, rootPath), "/usr/bin/allowed"))
+	require.Error(t, n.markExecHoldPath(int(root.Fd()), execHoldRootIdentity{dev: statDev(t, rootPath)}, 0, "/usr/bin/allowed"))
 
 	n.execHold.holdsMu.Lock()
 	defer n.execHold.holdsMu.Unlock()

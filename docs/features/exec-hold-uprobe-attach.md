@@ -37,8 +37,18 @@ after it has been resolved with the same hardening in every code path:
 - `execHoldOpenCandidate` resolves the candidate under a container's rootfs
   via `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)`, confirms it's a
   regular file, and confirms its `st_dev` matches the container root's
-  device — rejecting anything reached via a bind mount or symlink escape
-  to a host path. **A container cannot get a host binary marked this way.**
+  device — rejecting a symlink escape to a host path, and a bind mount from
+  a *different* filesystem. On a kernel that reports `STATX_MNT_ID`/
+  `STATX_MNT_ID_UNIQUE` (Linux >= 5.8, preferring the reuse-proof
+  `_UNIQUE` variant from >= 6.8), it additionally compares the candidate's
+  unique mount identity against the rootfs's own, which also rejects a
+  **same-device** bind mount (e.g. bind-mounting another directory from the
+  node's own root filesystem into the container) — `st_dev` alone cannot
+  tell that case apart from a legitimate file inside the rootfs's own
+  mount, since both share the same device. **On a kernel that supports the
+  mount-identity check, a container cannot get a host binary marked this
+  way at all; on an older kernel (< 5.8), a same-device bind mount of a
+  host binary is the one residual gap `st_dev` alone cannot close.**
 - The candidate is validated via an `O_PATH` open (cheap, doesn't block on
   special files), then re-opened via `/proc/self/fd/<pathfd>` as `O_RDONLY`
   before being marked — `fanotify_mark`'s NULL-pathname mark-by-fd form
