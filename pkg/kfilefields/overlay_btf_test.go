@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/moby/moby/pkg/parsers/kernel"
 )
 
 func TestCheckOverlayModuleBTF(t *testing.T) {
@@ -41,7 +43,7 @@ func TestCheckOverlayModuleBTF(t *testing.T) {
 			if tc.btf {
 				root["sys/kernel/btf/overlay"] = &fstest.MapFile{Data: []byte("btf")}
 			}
-			err := checkOverlayModuleBTF(root)
+			err := checkOverlayModuleBTFForKernel(root, kernel.VersionInfo{Kernel: 6, Major: 13})
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatal(err)
@@ -61,7 +63,7 @@ func TestCheckOverlayModuleBTF(t *testing.T) {
 }
 
 func TestCheckOverlayModuleBTFWithoutModuleSupport(t *testing.T) {
-	if err := checkOverlayModuleBTF(fstest.MapFS{}); err != nil {
+	if err := checkOverlayModuleBTFForKernel(fstest.MapFS{}, kernel.VersionInfo{Kernel: 6, Major: 13}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -85,8 +87,40 @@ func TestCheckOverlayModuleBTFUnreadable(t *testing.T) {
 				FS:   fstest.MapFS{"proc/modules": {Data: []byte("overlay 1 0 - Live 0\n")}},
 				path: path,
 			}
-			if err := checkOverlayModuleBTF(root); !errors.Is(err, fs.ErrPermission) {
+			if err := checkOverlayModuleBTFForKernel(root, kernel.VersionInfo{Kernel: 6, Major: 13}); !errors.Is(err, fs.ErrPermission) {
 				t.Fatalf("expected permission error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckOverlayModuleBTFKernelVersion(t *testing.T) {
+	for _, tc := range []struct {
+		release string
+		wantErr bool
+	}{
+		{release: "5.15.0-107-generic"},
+		{release: "6.1.140"},
+		{release: "6.12.99-custom"},
+		{release: "6.13", wantErr: true},
+		{release: "6.13.0-rc1", wantErr: true},
+		{release: "6.13.0-custom", wantErr: true},
+		{release: "6.14.2", wantErr: true},
+		{release: "7.0.0", wantErr: true},
+	} {
+		t.Run(tc.release, func(t *testing.T) {
+			version, err := kernel.ParseRelease(tc.release)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := fstest.MapFS{"proc/modules": {Data: []byte("overlay 1 0 - Live 0\n")}}
+			err = checkOverlayModuleBTFForKernel(root, *version)
+			if tc.wantErr {
+				if !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("expected missing BTF error, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("legacy kernel should not require module BTF: %v", err)
 			}
 		})
 	}

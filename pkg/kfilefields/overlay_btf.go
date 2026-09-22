@@ -19,11 +19,27 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+
+	"github.com/moby/moby/pkg/parsers/kernel"
 )
 
 // checkOverlayModuleBTF diagnoses missing BTF for a loaded overlay module.
 // Built-in overlayfs has its BTF in vmlinux and is absent from /proc/modules.
 func checkOverlayModuleBTF(root fs.FS) error {
+	version, err := kernel.GetKernelVersion()
+	if err != nil {
+		return fmt.Errorf("checking overlay module BTF: getting kernel version: %w", err)
+	}
+	return checkOverlayModuleBTFForKernel(root, *version)
+}
+
+func checkOverlayModuleBTFForKernel(root fs.FS, version kernel.VersionInfo) error {
+	// Older kernels use the legacy private_data layout, which does not
+	// require overlay module BTF for real-inode resolution.
+	if kernel.CompareKernelVersion(version, kernel.VersionInfo{Kernel: 6, Major: 13}) < 0 {
+		return nil
+	}
+
 	modules, err := fs.ReadFile(root, "proc/modules")
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil // Kernels without CONFIG_MODULES do not expose /proc/modules.
