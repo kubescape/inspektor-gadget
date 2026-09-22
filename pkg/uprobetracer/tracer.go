@@ -213,6 +213,14 @@ type Tracer[Event any] struct {
 	// breach logs alone -- those only appear once the damage is done.
 	muHold histogram.Recorder
 
+	// muHoldCredit records how long CreditIfAttached spends holding t.mu, kept
+	// separate from muHold on purpose: muHold is create-time attach contention
+	// (commitOpenedTargets, gating runc's create→start), while this is hold-time
+	// credit contention (the already-attached fast path). Folding both into one
+	// recorder would make it impossible to tell which of the two is responsible
+	// for a budget breach.
+	muHoldCredit histogram.Recorder
+
 	// resolverFailOpen counts how many times a registered resolver declined a
 	// candidate (error or no offsets) and the tracer fell back to symbol-name
 	// attach. Non-zero is normal -- the resolver is consulted for every candidate
@@ -943,7 +951,7 @@ func (t *Tracer[Event]) openTargets(ctx context.Context, containerPid uint32, pa
 			openFailed = true
 			continue
 		}
-		opened = append(opened, openedTarget{file: file, label: filePath, offsets: t.resolveAttachOffsets(file, containerPid)})
+		opened = append(opened, openedTarget{file: file, label: filePath, offsets: t.resolveAttachOffsets(file, containerPid, false)})
 	}
 	return opened, openFailed
 }
@@ -963,6 +971,10 @@ type TracerStats struct {
 	// MuHold describes how long commitOpenedTargets held t.mu. This is the
 	// budgeted quantity: t.mu serializes the attach that gates container starts.
 	MuHold histogram.Stats
+	// MuHoldCredit describes how long CreditIfAttached held t.mu -- the
+	// already-attached fast-path's hold time, kept distinct from MuHold (the
+	// create-time attach path) so the two contention sources can be told apart.
+	MuHoldCredit histogram.Stats
 	// ResolverFailOpen counts fall-backs to symbol-name attach after a resolver
 	// declined a candidate.
 	ResolverFailOpen uint64
@@ -989,6 +1001,7 @@ type TracerStats struct {
 func (t *Tracer[Event]) Stats() TracerStats {
 	return TracerStats{
 		MuHold:                     t.muHold.Stats(),
+		MuHoldCredit:               t.muHoldCredit.Stats(),
 		ResolverFailOpen:           t.resolverFailOpen.Load(),
 		AttachRollbacks:            t.attachRollbacks.Load(),
 		LinksAttached:              t.linksAttached.Load(),
@@ -1026,6 +1039,232 @@ func (t *Tracer[Event]) commitOpenedTargets(containerPid uint32, opened []opened
 	}
 	t.containerPid2Inodes[containerPid] = attachedRealInodes
 	return attachFailed
+}
+
+// CreditIfAttached is the atomic check-and-credit fast path for a caller that
+// already holds an open candidate file and wants to know -- without paying for
+// an ELF parse, an offset resolution or a uprobe attach -- whether this tracer
+// is ALREADY attached to that file's real inode, and if so have the reference
+// credited to containerPid in the same step.
+//
+// It performs BOTH halves of a credit, which the normal attach path splits
+// between attachOneOpenFile (the inodeRefCount bump) and its callers
+// commitOpenedTargets/commitMappedLibraries (the containerPid2Inodes[pid]
+// append), inside ONE t.mu critical section. Doing only the first half would
+// leak permanently: DetachContainer releases a pid's references by walking
+// containerPid2Inodes[pid], so a refcount bump with no matching entry there can
+// never be decremented again and the inode's links would outlive every
+// container referencing it.
+//
+// Returns (realInodePtr, credited, error):
+//   - credited=true: the inode is attached AND is now recorded for containerPid.
+//     Either it was just credited (refcount bumped + appended), or it was already
+//     recorded for THIS pid, in which case the call is an idempotent no-op and
+//     nothing is double-counted. The caller must NOT attach.
+//   - credited=false, err=nil: nothing is attached for this inode yet, or
+//     containerPid is not (or no longer) tracked. No tracer state was mutated;
+//     the caller owns the decision to run the full resolve+attach path, which
+//     applies its own tracked-pid guard.
+//   - err != nil: the real inode could not be resolved (the kfilefields
+//     kprobe/socketpair round trip failed or timed out), or the tracer is closed.
+//     realInodePtr is 0 and this is never conflated with either success case.
+//
+// FILE OWNERSHIP: this function CONSUMES file and closes it on EVERY return
+// path, including the error path, exactly as attachOneOpenFile does. Callers
+// must not read from, re-use or close the file afterwards, whatever the outcome.
+//
+// containerPid2Inodes[containerPid] is treated as a SET (one reference per
+// (pid, realInode) pair), matching the invariant DetachContainer's
+// decrement-once-per-inode loop relies on.
+func (t *Tracer[Event]) CreditIfAttached(containerPid uint32, file *os.File) (uint64, bool, error) {
+	defer file.Close()
+
+	// Resolve the inode BEFORE taking t.mu: the kfilefields round trip is exactly
+	// the kind of I/O that must stay off the lock that serializes the attach
+	// gating container starts. readRealInode is write-once (NewTracer; tests
+	// override it before any container is attached), so reading it lock-free is
+	// safe -- openTargets reads the openInContainer seam the same way.
+	realInodePtr, err := t.readRealInode(int(file.Fd()))
+	if err != nil {
+		return 0, false, fmt.Errorf("getting inode info for credit to container %d: %w", containerPid, err)
+	}
+
+	t.mu.Lock()
+	// muHoldCredit measures how long t.mu was held, so it must be observed
+	// AFTER the unlock, not before: two plain defers run LIFO, which would
+	// observe before unlocking (inflating the measured hold time and
+	// extending the critical section by the observation itself). start is
+	// captured right after Lock so it still measures only the hold, not
+	// time spent waiting to acquire it.
+	start := time.Now()
+	defer func() {
+		t.mu.Unlock()
+		t.muHoldCredit.ObserveSince(start)
+	}()
+
+	if t.closed {
+		return 0, false, errors.New("uprobetracer has been closed")
+	}
+
+	// A pid that AttachContainer never recorded, or that DetachContainer already
+	// cleaned up, must not gain an entry here: nothing would ever release it.
+	attachedRealInodes, tracked := t.containerPid2Inodes[containerPid]
+	if !tracked {
+		return realInodePtr, false, nil
+	}
+
+	// Already credited for THIS pid -- idempotent, do not double-count. Checked
+	// BEFORE the refcount bump, mirroring commitOpenedTargets' per-pid `existing`
+	// set.
+	for _, inode := range attachedRealInodes {
+		if inode == realInodePtr {
+			return realInodePtr, true, nil
+		}
+	}
+
+	keeper, exists := t.inodeRefCount[realInodePtr]
+	if !exists {
+		// Not attached anywhere: nothing to credit, and this function
+		// deliberately never attaches.
+		return realInodePtr, false, nil
+	}
+
+	// Both halves, same critical section.
+	keeper.counter++
+	t.containerPid2Inodes[containerPid] = append(attachedRealInodes, realInodePtr)
+	t.logger.Debugf("uprobe %q already attached for inode %#x; credited refcount to container %d", t.progName, realInodePtr, containerPid)
+	return realInodePtr, true, nil
+}
+
+// AttachOpenFile resolves attach offsets for an already-open candidate file and
+// attaches under t.mu, applying the same
+// readRealInode → inodeRefCount dedup → containerPid2Inodes bookkeeping used by
+// commitOpenedTargets. It is the exec-hold resolve+attach entrypoint: unlike
+// the container-create and reattach paths, exec-hold's caller already holds an
+// open, hardened fd to the EXACT binary being held at exec — there is nothing
+// to re-resolve and no execPid to readlink through /proc for, so this attaches
+// directly to the file it is given rather than routing through
+// ReattachContainerExecPid.
+//
+// label is used only for logging (matching attachOneOpenFile's other callers);
+// pass the candidate path if known, or any stable descriptive string otherwise.
+//
+// Returns (realInodePtr, added, error), matching attachOneOpenFile's own
+// return contract exactly (this is a thin, single-candidate wrapper around
+// it, not a redefinition):
+//   - added=true: containerPid gained a fresh reference to this real inode
+//     this call (a fresh attach, or a refcount bump onto an inode another pid
+//     already holds).
+//   - added=false, err=nil: no NEW reference was recorded. This covers three
+//     distinct, equally non-fatal cases the caller does not need to tell
+//     apart (the production caller only checks err — see
+//     pkg/exechold.tracerAttacher in armosec/private-node-agent): containerPid
+//     not being (or no longer) tracked by this tracer; the inode already
+//     credited to containerPid from an earlier call (idempotent no-op); and
+//     the tracked case where the binary does not export the attach symbol.
+//   - err != nil: a hard failure (inode read failed, or the tracer is closed).
+//
+// Deliberately does NOT pre-check "already credited to this pid" before
+// calling attachOneOpenFile (unlike CreditIfAttached, which resolves the
+// inode once up front for exactly this check): that would cost a second
+// kfilefields.tracerMu round trip on every real attach, which is precisely
+// the cost R5's capacity/timeout benchmark bounds this path by. A caller that
+// needs to distinguish "already attached" from "genuinely nothing to attach"
+// should call CreditIfAttached first, as the exec-hold dispatcher already
+// does — AttachOpenFile is reached only on ITS miss.
+//
+// FILE OWNERSHIP: this function CONSUMES file -- the caller must not use or
+// close it after calling this -- but does NOT always close it: it delegates
+// entirely to attachOneOpenFile, which closes file on every path EXCEPT a
+// fresh successful attach (added=true, no prior reference for this inode),
+// where ownership instead transfers to the new inodeKeeper that keeps it
+// open for as long as the attach is live (see attachOneOpenFile and
+// TestAttachOpenFileFreshAttach). This differs from CreditIfAttached, a pure
+// check that never takes a new attach and so genuinely does close file on
+// every return path; do not assume the two behave identically here.
+func (t *Tracer[Event]) AttachOpenFile(containerPid uint32, file *os.File, label string) (uint64, bool, error) {
+	// Cheap early-exit check BEFORE the expensive resolve below: closed or
+	// untracked means resolveAttachOffsets' ELF parse and resolver I/O would
+	// be guaranteed wasted work. Re-checked again after resolving (below),
+	// under t.mu a second time, since DetachContainer can run concurrently
+	// with the off-lock resolve window and change either answer.
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		file.Close()
+		return 0, false, errors.New("uprobetracer has been closed")
+	}
+	if _, tracked := t.containerPid2Inodes[containerPid]; !tracked {
+		t.mu.Unlock()
+		file.Close()
+		return 0, false, nil
+	}
+	// Snapshotted under the lock, same as attachContainerWork's own dispatch
+	// site: the worker must never read t.attachSem concurrently with
+	// SetAttachSemaphore.
+	sem := t.attachSem
+	t.mu.Unlock()
+
+	// Applies the SAME process-wide heavy-resolve budget attachContainerWork
+	// uses, before doing any of the work it bounds: resolveAttachOffsets is a
+	// real ELF parse that can consume tens of megabytes, and this path can
+	// run up to execHoldMaxInFlight (32, PER NOTIFIER) of those concurrently
+	// from the exec-hold dispatcher alone -- multiplied again across every
+	// tracer/gadget/notifier in the process. Without acquiring attachSem
+	// here, exec-hold's own bound does nothing to protect the process-wide
+	// memory budget attachSem exists to enforce; a hold's own hard timeout
+	// (execHoldWorkerHardBound) still releases the EXEC even if this blocks
+	// on the semaphore for a while, so blocking here costs latency, not
+	// correctness -- the same trade attachContainerWork's callers already
+	// accept.
+	sem <- struct{}{}
+	defer func() { <-sem }()
+
+	// Off-lock, same reasoning as openTargets/CreditIfAttached: the ELF parse
+	// and resolver I/O below must not run under t.mu. holdPath=true: this IS
+	// the exec-hold hand-off, the one caller AttachRequest.HoldPath exists to
+	// mark, so a resolver may pay extra latency here that it must not pay on
+	// openTargets/discoverAndOpenMappedLibraries's synchronous paths.
+	offsets := t.resolveAttachOffsets(file, containerPid, true)
+
+	t.mu.Lock()
+	// muHold measures how long t.mu was held; observed AFTER unlock (not via
+	// a second plain defer, which would run LIFO before the unlock and both
+	// inflate the measurement and extend the critical section) -- same fix
+	// as CreditIfAttached's muHoldCredit above.
+	start := time.Now()
+	defer func() {
+		t.mu.Unlock()
+		t.muHold.ObserveSince(start)
+	}()
+
+	if t.closed {
+		file.Close()
+		return 0, false, errors.New("uprobetracer has been closed")
+	}
+
+	attachedRealInodes, tracked := t.containerPid2Inodes[containerPid]
+	if !tracked {
+		// Not (or no longer) tracked by this tracer: nothing to attach, and no
+		// bookkeeping entry exists to append to. Same fail-open outcome as
+		// CreditIfAttached's own untracked case.
+		file.Close()
+		return 0, false, nil
+	}
+
+	existing := make(map[uint64]bool, len(attachedRealInodes))
+	for _, inode := range attachedRealInodes {
+		existing[inode] = true
+	}
+
+	realInodePtr, added, err := t.attachOneOpenFile(containerPid, file, label, offsets, existing)
+	if err != nil {
+		return 0, false, err
+	}
+	if added {
+		t.containerPid2Inodes[containerPid] = append(attachedRealInodes, realInodePtr)
+	}
+	return realInodePtr, added, nil
 }
 
 // try attaching to a container, will update `containerPid2Inodes`.
@@ -1486,7 +1725,7 @@ func (t *Tracer[Event]) discoverAndOpenMappedLibraries(containerPid, execPid uin
 		// attachOffsetsResolver (resolver.go:161-164). Passing execPid here would
 		// change only log/error text, and would make those diagnostics disagree with
 		// every other pid field on this attach.
-		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: t.resolveAttachOffsets(file, containerPid)})
+		opened = append(opened, mappedOpen{file: file, path: lib.path, rangeKey: lib.rangeKey, offsets: t.resolveAttachOffsets(file, containerPid, false)})
 	}
 	return opened, nil
 }
