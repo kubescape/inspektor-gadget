@@ -22,14 +22,16 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/utils"
 )
 
 // findTwoDistinctFilesOnOverlayfs scans /proc/mounts for an overlay mount
-// and returns the paths of two distinct regular files under it. It returns
+// and returns open descriptors for two distinct regular files on it. It returns
 // ok == false if no overlay mount with at least two regular files could be
 // found.
-func findTwoDistinctFilesOnOverlayfs(t *testing.T) (a, b string, ok bool) {
+func findTwoDistinctFilesOnOverlayfs(t *testing.T) (a, b *os.File, ok bool) {
 	t.Helper()
 
 	f, err := os.Open("/proc/mounts")
@@ -54,25 +56,57 @@ func findTwoDistinctFilesOnOverlayfs(t *testing.T) (a, b string, ok bool) {
 	}
 
 	for _, mnt := range overlayMountpoints {
-		var found []string
-		_ = filepath.WalkDir(mnt, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil //nolint:nilerr // best-effort scan, skip unreadable entries
-			}
-			if len(found) >= 2 {
-				return filepath.SkipAll
-			}
-			if d.Type().IsRegular() {
-				found = append(found, path)
-			}
-			return nil
-		})
-		if len(found) >= 2 {
-			return found[0], found[1], true
+		if a, b, ok := findTwoDistinctFilesOnFilesystem(mnt, unix.OVERLAYFS_SUPER_MAGIC); ok {
+			return a, b, true
 		}
 	}
 
-	return "", "", false
+	return nil, nil, false
+}
+
+func findTwoDistinctFilesOnFilesystem(root string, fsType int64) (a, b *os.File, ok bool) {
+	var firstInfo os.FileInfo
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return nil //nolint:nilerr // best-effort scan, skip unreadable entries
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil //nolint:nilerr // skip files we cannot open
+		}
+		keep := false
+		defer func() {
+			if !keep {
+				f.Close()
+			}
+		}()
+		// Check the opened file: WalkDir can cross into nested mounts, and
+		// overlay files need not have the same st_dev as their mountpoint.
+		var statfs unix.Statfs_t
+		if err := unix.Fstatfs(int(f.Fd()), &statfs); err != nil || int64(statfs.Type) != fsType {
+			return nil //nolint:nilerr // skip files outside the requested filesystem type
+		}
+		info, err := f.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil //nolint:nilerr // the file may have changed during traversal
+		}
+		if a == nil {
+			a, firstInfo, keep = f, info, true
+			return nil
+		}
+		if os.SameFile(firstInfo, info) {
+			return nil
+		}
+		b, keep = f, true
+		return filepath.SkipAll
+	})
+	if b != nil {
+		return a, b, true
+	}
+	if a != nil {
+		a.Close()
+	}
+	return nil, nil, false
 }
 
 // TestReadRealInodeFromFdDistinctOnOverlayfs is a regression test for the
@@ -86,16 +120,14 @@ func findTwoDistinctFilesOnOverlayfs(t *testing.T) (a, b string, ok bool) {
 func TestReadRealInodeFromFdDistinctOnOverlayfs(t *testing.T) {
 	utils.RequireRoot(t)
 
-	pathA, pathB, ok := findTwoDistinctFilesOnOverlayfs(t)
+	fdA1, fdB, ok := findTwoDistinctFilesOnOverlayfs(t)
 	if !ok {
 		t.Skip("no overlayfs mount with two distinct regular files found; skipping")
 	}
 
-	fdA1, err := os.Open(pathA)
-	if err != nil {
-		t.Fatalf("opening %q: %v", pathA, err)
-	}
 	defer fdA1.Close()
+	defer fdB.Close()
+	pathA, pathB := fdA1.Name(), fdB.Name()
 
 	// A second, independent fd for the same underlying file as pathA. The
 	// production use case (uprobetracer's per-pid dedup set) relies on this
@@ -110,12 +142,6 @@ func TestReadRealInodeFromFdDistinctOnOverlayfs(t *testing.T) {
 		t.Fatalf("opening %q a second time: %v", pathA, err)
 	}
 	defer fdA2.Close()
-
-	fdB, err := os.Open(pathB)
-	if err != nil {
-		t.Fatalf("opening %q: %v", pathB, err)
-	}
-	defer fdB.Close()
 
 	realInodeA1, err := ReadRealInodeFromFd(int(fdA1.Fd()))
 	if err != nil {
@@ -144,4 +170,65 @@ func TestReadRealInodeFromFdDistinctOnOverlayfs(t *testing.T) {
 		t.Fatalf("distinct overlayfs files %q and %q resolved to the same real inode 0x%x; "+
 			"this is the dedup-poisoning bug from issue #4", pathA, pathB, realInodeA1)
 	}
+}
+
+func TestFindTwoDistinctFilesOnFilesystem(t *testing.T) {
+	root := t.TempDir()
+	pathA := filepath.Join(root, "a")
+	pathB := filepath.Join(root, "b-hardlink")
+	pathC := filepath.Join(root, "c")
+	if err := os.WriteFile(pathA, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(pathA, pathB); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathC, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var statfs unix.Statfs_t
+	if err := unix.Statfs(root, &statfs); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("skips hardlinks", func(t *testing.T) {
+		a, b, ok := findTwoDistinctFilesOnFilesystem(root, int64(statfs.Type))
+		if !ok {
+			t.Fatal("expected two distinct files")
+		}
+		defer a.Close()
+		defer b.Close()
+		if a.Name() != pathA || b.Name() != pathC {
+			t.Fatalf("selected %q and %q; want %q and %q", a.Name(), b.Name(), pathA, pathC)
+		}
+	})
+
+	t.Run("rejects other filesystem types", func(t *testing.T) {
+		a, b, ok := findTwoDistinctFilesOnFilesystem(root, -1)
+		if a != nil {
+			defer a.Close()
+		}
+		if b != nil {
+			defer b.Close()
+		}
+		if ok || a != nil || b != nil {
+			t.Fatal("selected files from the wrong filesystem type")
+		}
+	})
+
+	t.Run("hardlinks alone are not a pair", func(t *testing.T) {
+		if err := os.Remove(pathC); err != nil {
+			t.Fatal(err)
+		}
+		a, b, ok := findTwoDistinctFilesOnFilesystem(root, int64(statfs.Type))
+		if a != nil {
+			defer a.Close()
+		}
+		if b != nil {
+			defer b.Close()
+		}
+		if ok || a != nil || b != nil {
+			t.Fatal("selected hardlinks as distinct files")
+		}
+	})
 }
