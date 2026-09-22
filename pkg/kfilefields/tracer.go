@@ -23,6 +23,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/btfgen"
@@ -126,6 +127,10 @@ func (t *Tracer) close() {
 }
 
 func (t *Tracer) install() error {
+	if err := checkOverlayModuleBTF(os.DirFS("/")); err != nil {
+		log.Errorf("kfilefields: %v", err)
+	}
+
 	// Create a socket pair
 	var err error
 	t.sock, err = unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)

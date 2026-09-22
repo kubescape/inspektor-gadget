@@ -55,6 +55,7 @@ SEC("kretprobe/fget_raw")
 int BPF_KRETPROBE(ig_fget_x, struct file *ret)
 {
 	u64 current_pid_tgid;
+	u64 private_data;
 	struct file_fields *ff;
 	struct file *real_file;
 	int zero = 0;
@@ -71,13 +72,30 @@ int BPF_KRETPROBE(ig_fget_x, struct file *ret)
 	if (!ff)
 		return 0;
 
-	ff->private_data = (u64)BPF_CORE_READ(ret, private_data);
+	private_data = (u64)BPF_CORE_READ(ret, private_data);
+	ff->private_data = private_data;
 	ff->f_op = (u64)BPF_CORE_READ(ret, f_op);
 
 	real_file = ret;
 	if (BPF_CORE_READ(ret, f_inode, i_sb, s_magic) ==
 	    OVERLAYFS_SUPER_MAGIC) {
-		real_file = (struct file *)ff->private_data;
+		// Since Linux 6.13, file->private_data for an overlayfs file no
+		// longer points directly to the underlying struct file. It points
+		// to a small wrapper, struct ovl_file { struct file *realfile;
+		// struct file *upperfile; }, and the underlying file is its first
+		// member. Before that, private_data itself was the underlying
+		// struct file*. Use CO-RE to stay correct across both layouts.
+		//
+		// The cast reads from the local "private_data" variable rather
+		// than ff->private_data (a map value): reading it back out of the
+		// map here confuses clang's CO-RE relocation generation for this
+		// nested BPF_CORE_READ and produces an unresolvable relocation.
+		if (bpf_core_type_exists(struct ovl_file)) {
+			real_file = BPF_CORE_READ(
+				(struct ovl_file *)private_data, realfile);
+		} else {
+			real_file = (struct file *)private_data;
+		}
 	}
 	ff->real_inode = (u64)BPF_CORE_READ(real_file, f_inode);
 
