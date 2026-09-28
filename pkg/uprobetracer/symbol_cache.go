@@ -84,7 +84,7 @@ func (r symbolResult) offset(name string) (uint64, error) {
 		return 0, fmt.Errorf("symbol %s: %w", name, link.ErrNoSymbol)
 	}
 	if r.address == 0 {
-		return 0, fmt.Errorf("cannot resolve library call %q: %w", name, link.ErrNotSupported)
+		return 0, fmt.Errorf("resolving library call %q: %w", name, link.ErrNotSupported)
 	}
 	if r.size == 0 {
 		return 0, fmt.Errorf("offset 0 is out of range of symbol %s", name)
