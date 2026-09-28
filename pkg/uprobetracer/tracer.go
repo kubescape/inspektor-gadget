@@ -675,43 +675,10 @@ func (t *Tracer[Event]) executableFromOCIConfig(containerPid uint32, ociConfig s
 
 // attachUprobe attaches the uprobe program to the inode of the file passed in.
 //
-// +x gate mitigation (spike note finding): cilium link.OpenExecutable gates on
-// info.Mode()&0111 != 0 ("file is not executable"). netty-tcnative extracts its
-// .so at mode 0600 (no execute bit), so the normal path rejects it. The Linux
-// kernel's uprobe PMU does NOT require the execute bit — bpftrace attaches fine
-// without it (proven on the Phase-0 droplet). When the file lacks any execute
-// bit, we add +x via unix.Fchmod on the already-open fd (mutates the
-// deleted-inode safely; no path, no container-visible change), call
-// OpenExecutable, then RESTORE the original mode. This is flagged for architect
-// review; the alternative (a cilium fork without the userspace mode gate) avoids
-// the mutation entirely but requires a larger diff.
-//
-// offset, when non-nil, is a file offset resolved during the lock-free open
-// phase; the uprobe is then bound there instead of by symbol lookup. No ELF or
-// pread work happens here — the caller holds t.mu.
+// Custom offsets are resolved during the lock-free open phase. Ordinary names
+// use the bounded shared symbol cache; a cache miss reads ELF under t.mu, as
+// cilium's ordinary-name attachment previously did.
 func (t *Tracer[Event]) attachUprobe(file *os.File, offsets []uint64) ([]link.Link, error) {
-	// Detect and temporarily add the execute bit if the file lacks it.
-	fi, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat before attach: %w", err)
-	}
-	origMode := fi.Mode().Perm()
-	needsExecFix := origMode&0o111 == 0
-	if needsExecFix {
-		if err := unix.Fchmod(int(file.Fd()), uint32(origMode)|0o111); err != nil {
-			return nil, fmt.Errorf("fchmod +x on map_files fd (cilium mode gate): %w", err)
-		}
-		// Restore original mode after we are done with OpenExecutable, whether
-		// or not the attach itself succeeds. Accepted: between the two fchmods the
-		// (deleted, container-private) inode transiently carries +x — a sub-ms
-		// window with no filesystem path, so it cannot be exec'd by name.
-		defer func() {
-			if err := unix.Fchmod(int(file.Fd()), uint32(origMode)); err != nil {
-				t.logger.Debugf("uprobetracer: fchmod restore after attach: %v", err)
-			}
-		}()
-	}
-
 	attachPath := path.Join(host.HostProcFs, "self/fd/", fmt.Sprint(file.Fd()))
 	ex, err := link.OpenExecutable(attachPath)
 	if err != nil {
@@ -742,7 +709,7 @@ func (t *Tracer[Event]) attachUprobe(file *os.File, offsets []uint64) ([]link.Li
 		return []link.Link{l}, nil
 	}
 
-	return t.bindSites(offsets, func(offset *uint64) (link.Link, error) {
+	return t.bindOrdinarySites(file, offsets, func(offset *uint64) (link.Link, error) {
 		return t.bindProbe(ex, offset)
 	})
 }
