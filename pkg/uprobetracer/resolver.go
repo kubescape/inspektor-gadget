@@ -84,6 +84,16 @@ type AttachRequest struct {
 	// stacks make unsafe to reach with a uretprobe. Without ProgName a resolver
 	// receives identical requests for both and cannot tell them apart.
 	ProgName string
+	// HoldPath is true only when this request comes from AttachOpenFile --
+	// the exec-hold dispatcher's resolve+attach hand-off, where the caller is
+	// already blocking a held exec inside its own bounded budget. It is false
+	// for every other resolveAttachOffsets call site (openTargets,
+	// discoverAndOpenMappedLibraries), which run on the synchronous
+	// container-create/library-mmap paths and must stay fast: a resolver that
+	// pays extra latency (e.g. a real-inode lookup) ONLY because HoldPath is
+	// true, and skips it otherwise, keeps that cost off the paths that were
+	// never meant to carry it.
+	HoldPath bool
 }
 
 // AttachOffsetsResolver maps an attach candidate to the file offsets at which
@@ -143,12 +153,20 @@ func adaptSingleOffsetResolver(resolver AttachOffsetResolver) AttachOffsetsResol
 // resolveAttachOffset asks the registered resolver for a file offset for the
 // tracer's attach symbol in the already-open candidate file.
 //
-// It MUST only be called from the lock-free open phase (openTargets,
-// discoverAndOpenMappedLibraries). The ELF parse and the resolver's own pread
+// It MUST only be called off-lock: from the lock-free open phase (openTargets,
+// discoverAndOpenMappedLibraries) or from AttachOpenFile, which already runs
+// off t.mu for the same reason. The ELF parse and the resolver's own pread
 // work are exactly the kind of slow I/O that commits f4ef5cd8f and 7344ac379
 // moved off t.mu: an exec storm holding the lock across it starves the
 // create-time attach on the synchronous container-start path and wedges
 // container starts.
+//
+// holdPath must be true ONLY for the AttachOpenFile caller, which is already
+// blocking inside a held exec's own bounded budget -- it is threaded straight
+// into AttachRequest.HoldPath so a resolver can pay extra latency (e.g. a
+// real-inode lookup for exec-hold's cross-container single-flight collapse)
+// ONLY on that path, never on openTargets/discoverAndOpenMappedLibraries's
+// synchronous container-create/library-mmap paths, which must stay fast.
 //
 // A nil return means "attach by symbol name", today's behaviour — this is the
 // fail-open path taken for a missing resolver, an unparseable ELF, a binary with
@@ -157,7 +175,7 @@ func adaptSingleOffsetResolver(resolver AttachOffsetResolver) AttachOffsetsResol
 // Reading t.attachSymbol off-lock is race-free: it is written once in AttachProg
 // under t.mu, and every caller of this function has already observed
 // t.prog != nil under t.mu, which orders that write before this read.
-func (t *Tracer[Event]) resolveAttachOffsets(file *os.File, containerPid uint32) []uint64 {
+func (t *Tracer[Event]) resolveAttachOffsets(file *os.File, containerPid uint32, holdPath bool) []uint64 {
 	resolver := t.attachOffsetsResolver
 	if resolver == nil {
 		return nil
@@ -194,6 +212,7 @@ func (t *Tracer[Event]) resolveAttachOffsets(file *os.File, containerPid uint32)
 		Machine:      ef.Machine,
 		Symbol:       t.attachSymbol,
 		ProgName:     t.progName,
+		HoldPath:     holdPath,
 	})
 	if err != nil {
 		t.resolverFailOpen.Add(1)
