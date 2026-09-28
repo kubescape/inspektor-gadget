@@ -8,6 +8,7 @@ on:
       - 'go.sum'
       - '.github/workflows/uprobetracer.yml'
   push:
+    branches: [main]
     paths:
       - 'pkg/uprobetracer/**'
       - 'go.mod'
