@@ -23,6 +23,7 @@ type fakeFileManager struct {
 	reject      bool
 	updateError error
 	starts      int
+	active      string
 }
 
 func (m *fakeFileManager) RunGadget(*api.GadgetInstance) { m.starts++ }
@@ -37,7 +38,8 @@ func (m *fakeFileManager) ReconcileGadget(_ context.Context, instance *api.Gadge
 		return m.updateError
 	}
 	m.updateError = nil
-	m.applied = append(m.applied, instance.GadgetConfig.ParamValues["policy"])
+	m.active = instance.GadgetConfig.ParamValues["policy"]
+	m.applied = append(m.applied, m.active)
 	return nil
 }
 
@@ -112,4 +114,44 @@ func TestFileRestoreClearsRejectedUpdate(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(store.directory, "instance.gadget")))
 	require.NoError(t, store.reconcileFiles(context.Background()))
 	require.Equal(t, []string{"instance"}, manager.removed)
+}
+
+func TestRestoreAfterInvalidFileRequiresAcknowledgement(t *testing.T) {
+	for name, invalid := range map[string]string{
+		"malformed":          "{",
+		"missing instance":   "{}",
+		"different identity": `{"gadgetInstance":{"id":"other","gadgetConfig":{"imageName":"enforce"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			manager := &fakeFileManager{}
+			store := &FileStore{instanceMgr: manager, directory: t.TempDir(), observed: make(map[string]string)}
+			path := filepath.Join(store.directory, "instance.gadget")
+			writeInstance(t, store.directory, "instance", "initial")
+			require.NoError(t, store.reconcileFiles(context.Background()))
+			manager.active = "direct" // Another producer bypasses the stored desired file.
+			require.NoError(t, os.WriteFile(path, []byte(invalid), 0o600))
+			require.NoError(t, store.reconcileFiles(context.Background()))
+			require.Equal(t, "direct", manager.active)
+			require.Len(t, manager.applied, 1)
+			_, tracked := store.observed["instance"]
+			require.True(t, tracked)
+			writeInstance(t, store.directory, "instance", "initial")
+			manager.reject = true
+			require.NoError(t, store.reconcileFiles(context.Background()))
+			require.Error(t, manager.updateError, "restoration must reach the manager")
+			require.Equal(t, "direct", manager.active)
+			manager.reject = false
+			require.NoError(t, store.reconcileFiles(context.Background()))
+			require.Equal(t, "initial", manager.active)
+			require.Equal(t, []string{"initial", "initial"}, manager.applied)
+			require.NoError(t, manager.updateError)
+			require.Zero(t, manager.starts)
+			require.Empty(t, manager.removed)
+			require.NoError(t, os.WriteFile(path, []byte(invalid), 0o600))
+			require.NoError(t, store.reconcileFiles(context.Background()))
+			require.NoError(t, os.Remove(path))
+			require.NoError(t, store.reconcileFiles(context.Background()))
+			require.Equal(t, []string{"instance"}, manager.removed, "invalid edits retain deletion ownership")
+		})
+	}
 }

@@ -86,6 +86,12 @@ func (s *FileStore) reconcileFiles(ctx context.Context) error {
 		if previous, ok := s.observed[id]; ok && previous == string(raw) {
 			continue
 		}
+		// A changed file invalidates the successful-content cache even when it
+		// cannot be parsed. Restoring it must obtain a fresh acknowledgement.
+		// Retain existing ownership so deletion still removes the instance.
+		if _, tracked := s.observed[id]; tracked {
+			s.observed[id] = ""
+		}
 		request := &api.CreateGadgetInstanceRequest{}
 		if err := protojson.Unmarshal(raw, request); err != nil {
 			log.Warnf("parsing gadget file %q: %v", file.Name(), err)
