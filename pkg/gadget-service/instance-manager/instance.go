@@ -73,6 +73,7 @@ type GadgetInstance struct {
 	cancel               func()
 	state                gadgetState
 	error                error
+	runCompleted         bool // protected by mu; set only after Run and its cleanup return
 	ready                chan struct{}
 }
 

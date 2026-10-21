@@ -18,12 +18,16 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/params"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/runtime"
 )
 
 type fakeUpdateContext struct {
@@ -134,7 +138,7 @@ func TestLegacyConfigurationRestarts(t *testing.T) {
 func TestFailedStartupAcceptsCorrectedConfiguration(t *testing.T) {
 	cancelled := false
 	current := &api.GadgetRunRequest{ImageName: "failed"}
-	gi := &GadgetInstance{id: "instance", request: current, state: stateError, error: errors.New("initial validation failed"), cancel: func() { cancelled = true }}
+	gi := &GadgetInstance{id: "instance", request: current, state: stateError, runCompleted: true, error: errors.New("initial validation failed"), cancel: func() { cancelled = true }}
 	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
 	// Duplicate notifications do not retry a failed configuration indefinitely.
 	require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", GadgetConfig: current}))
@@ -167,4 +171,71 @@ func TestRestoreLastGoodClearsUpdateError(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, status.Message)
 	require.Equal(t, api.GadgetInstanceStatus_StatusRunning, status.Status)
+}
+
+// completingRuntime uses the real gadget context lifecycle and a timeout, then
+// holds the return to model runtime cleanup that must finish before replacement.
+type completingRuntime struct {
+	runtime.Runtime
+	cleaned chan error
+	release chan struct{}
+}
+
+func (r *completingRuntime) ParamDescs() params.ParamDescs { return nil }
+func (r *completingRuntime) RunGadget(ctx runtime.GadgetContext, _ *params.Params, values api.ParamValues) error {
+	gadgetcontext.WithTimeout(time.Millisecond)(ctx.(*gadgetcontext.GadgetContext))
+	err := ctx.Run(values)
+	r.cleaned <- err
+	<-r.release
+	return err
+}
+
+type emptyService struct{}
+
+func (emptyService) GetOperatorMap() map[operators.DataOperator]*params.Params { return nil }
+
+func TestCompletedRunAcceptsChangedConfiguration(t *testing.T) {
+	rt := &completingRuntime{cleaned: make(chan error, 1), release: make(chan struct{})}
+	defer close(rt.release)
+	mgr, err := New(rt)
+	require.NoError(t, err)
+	mgr.Service = emptyService{}
+	desired := &api.GadgetInstance{Id: "instance", Name: "original", GadgetConfig: &api.GadgetRunRequest{Version: api.VersionGadgetRunProtocol, ImageName: "old"}}
+	mgr.RunGadget(desired)
+	gi := mgr.LookupInstance("instance")
+	t.Cleanup(func() { _ = mgr.RemoveGadget("instance") })
+	select {
+	case err := <-rt.cleaned:
+		require.NoError(t, err, "real gadget context timeout and cleanup succeed")
+	case <-time.After(5 * time.Second):
+		t.Fatal("gadget did not finish")
+	}
+	// A stopped context alone is insufficient: runtime cleanup is still pending.
+	changed := proto.Clone(desired).(*api.GadgetInstance)
+	changed.GadgetConfig.ImageName = "new"
+	require.Error(t, mgr.ReconcileGadget(context.Background(), changed))
+	require.Same(t, gi, mgr.LookupInstance("instance"))
+	gi.mu.Lock()
+	completed := gi.runCompleted
+	gi.mu.Unlock()
+	require.False(t, completed)
+	rt.release <- struct{}{}
+	require.Eventually(t, func() bool {
+		gi.mu.Lock()
+		defer gi.mu.Unlock()
+		return gi.runCompleted
+	}, 5*time.Second, time.Millisecond)
+	gi.mu.Lock()
+	runErr := gi.error
+	gi.mu.Unlock()
+	require.NoError(t, runErr)
+	// Duplicate notifications do not rerun a successfully completed gadget.
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), desired))
+	require.Same(t, gi, mgr.LookupInstance("instance"))
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), changed))
+	replacement := mgr.LookupInstance("instance")
+	require.NotSame(t, gi, replacement)
+	replacement.mu.Lock()
+	require.True(t, proto.Equal(changed.GadgetConfig, replacement.request))
+	replacement.mu.Unlock()
 }

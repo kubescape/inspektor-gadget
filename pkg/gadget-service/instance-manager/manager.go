@@ -129,12 +129,15 @@ func (m *Manager) RunGadget(instance *api.GadgetInstance) {
 			"gadget":       instance.GadgetConfig.ImageName,
 		}), logLevel: logger.Level(instance.GadgetConfig.LogLevel)}
 		err := gi.Run(ctx, m.runtime, lwr)
+		gi.mu.Lock()
+		gi.runCompleted = true
 		if err != nil {
-			log.Errorf("running gadget: %v", err)
-			gi.mu.Lock()
 			gi.state = stateError
 			gi.error = err
-			gi.mu.Unlock()
+		}
+		gi.mu.Unlock()
+		if err != nil {
+			log.Errorf("running gadget: %v", err)
 		}
 		gi.RemoveClients()
 	}()

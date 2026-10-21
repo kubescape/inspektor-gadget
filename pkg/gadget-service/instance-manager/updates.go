@@ -49,15 +49,15 @@ func (m *Manager) ReconcileGadget(ctx context.Context, desired *api.GadgetInstan
 	current := gi.request
 	currentName := gi.name
 	updater := gi.updateContext
-	runErr := gi.error
+	runCompleted := gi.runCompleted
 	gi.mu.Unlock()
 	if currentName == desired.Name && proto.Equal(current, desired.GadgetConfig) {
 		gi.setUpdateError(nil)
 		return nil
 	}
-	if runErr != nil {
-		// Run has returned and completed operator cleanup. A corrected initial
-		// configuration may safely start a fresh instance.
+	if runCompleted {
+		// Run has returned and completed operator cleanup, whether it failed
+		// or finished normally. A changed configuration may start a fresh instance.
 		if err := m.RemoveGadget(desired.Id); err != nil {
 			return err
 		}
