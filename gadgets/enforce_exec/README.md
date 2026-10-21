@@ -193,10 +193,26 @@ the persisted desired configuration again.
 
 The `verdict` datasource reports generation, cgroup, deny decision, mode,
 path-resolution result and resolved path. `deny=1` in audit mode means would-deny;
-only enforce mode blocks for ordinary policy decisions. One resource-failure
-exception applies to process identity: if BPF cannot allocate task storage to
-carry the binding through a nonleader's exec, it returns ENOMEM even in audit or
-off mode. This prevents a successful exec from silently losing the binding.
+only enforce mode blocks for ordinary policy decisions. If transferring a process
+marker to an executing nonleader thread fails, enforce mode rejects the execution
+with ENOMEM to preserve process selection. Audit and off permit execution; subsequent
+process tracking may be lost. The helper does not identify the precise failure
+cause; ENOMEM is the error chosen for the enforce-mode rejection.
+
+The fixed-size `process_health` array stores cumulative `failures` and a sticky
+`degraded` flag, independent of event delivery and policy generations. Degradation
+means marker continuity is no longer guaranteed; it does not prove the execution
+ultimately succeeded. Status includes `tracking_failures` and `tracking_degraded`
+snapshots on lifecycle and update activity, rather than periodic notifications.
+The map remains the persistent source when event buffers are full.
+
+Process policy transitions from audit or off to enforce require explicitly removing
+the instance and creating a new one, which validates identity and binds under the
+exclusive activation pause again. This applies even when health is clean: a prior
+audit/off execution could still be in flight when an update reads health. Live
+updates within enforce, from enforce to audit/off, and between audit/off remain
+supported. Rejected promotions leave the active generation unchanged. Container
+mode changes retain their existing behavior.
 A shared 4 KiB ring buffer bounds pending reports.
 At most 100 report attempts per CPU per second are permitted, independently of
 verdict evaluation. Per-CPU kernel counters track denied/allowed decisions,

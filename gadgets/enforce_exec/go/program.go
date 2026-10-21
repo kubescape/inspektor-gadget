@@ -20,6 +20,7 @@ var (
 	entries                         [policy.KernelMaxRules + 1]policy.KernelEntry
 	bindings, candidate             api.Map
 	processBindings, processTargets api.Map
+	processHealth                   api.Map
 	processBound                    bool
 	requestID                       uint64
 	updateRequest                   api.Field
@@ -44,7 +45,7 @@ func gadgetInit() int32 {
 			return failed(err)
 		}
 	}
-	for _, name := range []string{"generation", "cgroup_id", "request_id", "host_pid"} {
+	for _, name := range []string{"generation", "cgroup_id", "request_id", "host_pid", "tracking_failures", "tracking_degraded"} {
 		statusF[name], err = status.AddField(name, api.Kind_Uint64)
 		if err != nil {
 			return failed(err)
@@ -120,7 +121,34 @@ func newGeneration(values [policy.KernelMaxRules + 1]policy.KernelEntry) (api.Ma
 	return m, nil
 }
 
+type trackingHealth struct {
+	Failures uint64
+	Degraded uint64
+}
+
+func readTrackingHealth() (trackingHealth, error) {
+	var health trackingHealth
+	if processHealth == 0 {
+		return health, fmt.Errorf("process tracking health unavailable")
+	}
+	err := processHealth.Lookup(uint32(0), &health)
+	return health, err
+}
+
 func emitStatus(state, message string) {
+	var health trackingHealth
+	if document.Binding.Process != nil && state != "stopped" {
+		var err error
+		health, err = readTrackingHealth()
+		if err != nil {
+			health.Degraded = 1
+			message += "; process tracking health unknown: " + err.Error()
+			// The generation may already be committed. Keep its acknowledgement
+			// successful while reporting unknown health explicitly in the message.
+		} else if health.Degraded != 0 {
+			message += "; process tracking degraded; recreate the instance to enable enforcement"
+		}
+	}
 	packet, err := status.NewPacketSingle()
 	if err == nil {
 		data := api.Data(packet)
@@ -128,7 +156,7 @@ func emitStatus(state, message string) {
 		if document.Binding.Process != nil {
 			pid = uint64(document.Binding.Process.HostPID)
 		}
-		err = errors.Join(statusF["request_id"].SetUint64(data, requestID), statusF["host_pid"].SetUint64(data, pid), statusF["state"].SetString(data, state), statusF["revision"].SetString(data, document.Hash()), statusF["message"].SetString(data, message), statusF["generation"].SetUint64(data, generation), statusF["cgroup_id"].SetUint64(data, cgroup))
+		err = errors.Join(statusF["tracking_failures"].SetUint64(data, health.Failures), statusF["tracking_degraded"].SetUint64(data, health.Degraded), statusF["request_id"].SetUint64(data, requestID), statusF["host_pid"].SetUint64(data, pid), statusF["state"].SetString(data, state), statusF["revision"].SetString(data, document.Hash()), statusF["message"].SetString(data, message), statusF["generation"].SetUint64(data, generation), statusF["cgroup_id"].SetUint64(data, cgroup))
 		if err == nil {
 			err = status.EmitAndRelease(api.Packet(packet))
 		} else {
@@ -260,6 +288,13 @@ func subscribeContainers() error {
 
 func bindProcess() error {
 	var err error
+	processHealth, err = api.GetMap("process_health")
+	if err != nil {
+		return err
+	}
+	if _, err := readTrackingHealth(); err != nil {
+		return fmt.Errorf("reading process tracking health: %w", err)
+	}
 	processBindings, err = api.GetMap("process_bindings")
 	if err != nil {
 		return err
@@ -330,6 +365,23 @@ func replace(raw string, expected uint64) error {
 	if !reflect.DeepEqual(doc.Binding, document.Binding) {
 		return fmt.Errorf("target changes require a new gadget instance")
 	}
+	if doc.Binding.Process != nil {
+		if !processBound {
+			return fmt.Errorf("selected process exited; target changes require a new gadget instance")
+		}
+		// An audit/off hook can still be running when this update is handled.
+		// Even a clean health snapshot cannot prove it will preserve the marker.
+		if doc.Policy.Mode == "enforce" && document.Policy.Mode != "enforce" {
+			return fmt.Errorf("enabling process enforcement from audit/off requires a new gadget instance and validated process binding")
+		}
+		health, err := readTrackingHealth()
+		if err != nil {
+			return fmt.Errorf("reading process tracking health: %w", err)
+		}
+		if doc.Policy.Mode == "enforce" && health.Degraded != 0 {
+			return fmt.Errorf("process tracking degraded; enforcement requires a new gadget instance")
+		}
+	}
 	m, err := newGeneration(values)
 	if err != nil {
 		return err
@@ -362,14 +414,14 @@ func gadgetStop() int32 {
 		}
 		processBound = false
 	}
-	for _, m := range []api.Map{processBindings, processTargets} {
+	for _, m := range []api.Map{processBindings, processTargets, processHealth} {
 		if m != 0 {
 			if err := api.ReleaseHandle(m); err != nil {
 				return failed(err)
 			}
 		}
 	}
-	processBindings, processTargets = 0, 0
+	processBindings, processTargets, processHealth = 0, 0, 0
 	if cgroup != 0 {
 		if err := bindings.Delete(cgroup); err != nil {
 			return failed(err)

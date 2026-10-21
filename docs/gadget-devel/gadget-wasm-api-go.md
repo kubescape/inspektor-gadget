@@ -59,12 +59,19 @@ startup failure, or shutdown. One process binding is supported per gadget
 instance. Children do not inherit task storage; an enforcement program must
 explicitly preserve the marker when a nonleader thread performs `execve`.
 
-The `enforce_exec` gadget transfers the marker before a nonleader exec in every
-policy mode. If the kernel cannot allocate that task-storage entry, the exec
-fails with `ENOMEM`, including in `audit` and `off` modes. This preserves the
-selected process identity for later policy updates; allowing the exec without
-its marker would silently remove the process from enforcement. This resource
-failure is an exception to those modes' normal allow behavior.
+The `enforce_exec` gadget attempts marker transfer before a nonleader exec in
+every policy mode. On failure, enforce mode returns the chosen error `ENOMEM` to
+preserve process selection; audit and off allow execution and record that tracking
+may be lost. The fixed-size `process_health` map retains a cumulative failure count
+and sticky degradation flag independently of reporting. Gadget status exposes
+`tracking_failures` and `tracking_degraded` snapshots on lifecycle/update activity.
+
+Process transitions from audit/off to enforce require removing the gadget instance
+and creating a fresh instance with validated process binding, even when tracking
+appears healthy. A prior nonblocking execution can still be in flight, so a health
+snapshot cannot safely authorize promotion. Live updates within enforce, from
+enforce to audit/off, and between audit/off remain supported. These are gadget
+policy semantics, rather than requirements imposed by `BindProcess` itself.
 
 This API imports `ig.bindProcess`; runtimes without the host function reject
 modules importing it during initialization.

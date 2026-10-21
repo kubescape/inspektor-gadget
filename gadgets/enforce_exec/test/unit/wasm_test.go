@@ -59,6 +59,15 @@ func TestWasmPreStart(t *testing.T) {
 		t.Fatal("metadata must declare the guest parameter")
 	}
 	t.Run("lifecycle", func(t *testing.T) { runLifecycle(t, wasm, policy) })
+	processPolicy, err := os.ReadFile(filepath.Join(root, "examples", "process.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"enforce", "audit", "off"} {
+		t.Run("process-lifecycle-"+mode, func(t *testing.T) {
+			runLifecycle(t, wasm, []byte(strings.Replace(string(processPolicy), "mode: enforce", "mode: "+mode, 1)))
+		})
+	}
 	t.Run("IG-local-runtime", func(t *testing.T) { runThroughIG(t, wasm, metadata, policy) })
 
 	for _, tc := range []struct {

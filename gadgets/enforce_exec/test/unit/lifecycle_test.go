@@ -45,8 +45,11 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 	input := map[string]string{}
 	var inputGeneration, inputCgroup, bound, boundCgroup uint64
 	var next uint64 = 100
-	var failFreeze, failBind bool
-	var state string
+	var failFreeze, failBind, failHealth bool
+	var failures, degraded, reportedFailures, reportedDegraded uint64
+	var binds int
+	failHealthAfterReads := -1
+	var state, message string
 	var reportedGeneration uint64
 	alloc := func() uint64 { next++; return next }
 	read := func(m api.Module, ptr uint64) []byte {
@@ -96,8 +99,14 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 				switch fields[s[0]] {
 				case "state":
 					state = string(read(m, s[3]))
+				case "message":
+					message = string(read(m, s[3]))
 				case "generation":
 					reportedGeneration = s[3]
+				case "tracking_failures":
+					reportedFailures = s[3]
+				case "tracking_degraded":
+					reportedDegraded = s[3]
 				}
 			case "fieldGetBuffer":
 				value := []byte(input[fields[s[0]]])
@@ -119,12 +128,45 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 					result = inputGeneration
 				case "request_id":
 					result = 0
+				case "host_pid":
+					result = uint64(doc.Binding.Process.HostPID)
+				case "start_time_ticks":
+					result = doc.Binding.Process.StartTimeTicks
 				default:
 					panic("unexpected scalar")
 				}
 			case "getMap":
-				if string(read(m, s[0])) == "bindings" {
+				switch string(read(m, s[0])) {
+				case "bindings":
 					result = 7
+				case "process_bindings":
+					result = 8
+				case "process_targets":
+					result = 9
+				case "process_health":
+					result = 10
+				}
+			case "bindProcess":
+				if s[0] != 9 || bound == 0 {
+					panic("process marked before publishing policy")
+				}
+				binds++
+			case "mapLookup":
+				if s[0] != 10 {
+					panic("unexpected lookup")
+				}
+				if failHealth || failHealthAfterReads == 0 {
+					result = 1
+				} else {
+					if failHealthAfterReads > 0 {
+						failHealthAfterReads--
+					}
+					value := make([]byte, 16)
+					binary.LittleEndian.PutUint64(value, failures)
+					binary.LittleEndian.PutUint64(value[8:], degraded)
+					if !m.Memory().Write(uint32(s[2]), value) {
+						panic("invalid health buffer")
+					}
 				}
 			case "newMap":
 				if s[1] != 2 || s[2] != 4 || s[3] != 288 || s[4] != 9 {
@@ -133,7 +175,7 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 				result = alloc()
 				maps[result] = &generationMap{values: map[uint32][]byte{}}
 			case "mapUpdate":
-				if s[0] == 7 {
+				if s[0] == 7 || s[0] == 8 {
 					candidate := uint64(binary.LittleEndian.Uint32(read(m, s[2])))
 					if maps[candidate] == nil || !maps[candidate].frozen || maps[candidate].closed {
 						panic("binding unpublished generation")
@@ -142,7 +184,9 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 						result = 1
 					} else {
 						bound = candidate
-						boundCgroup = binary.LittleEndian.Uint64(read(m, s[1]))
+						if s[0] == 7 {
+							boundCgroup = binary.LittleEndian.Uint64(read(m, s[1]))
+						}
 					}
 				} else {
 					gm := maps[s[0]]
@@ -168,7 +212,7 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 				}
 				gm.closed = true
 			case "mapDelete":
-				if s[0] != 7 || binary.LittleEndian.Uint64(read(m, s[1])) != boundCgroup {
+				if (s[0] != 7 && s[0] != 8) || (s[0] == 7 && binary.LittleEndian.Uint64(read(m, s[1])) != boundCgroup) {
 					panic("deleting wrong binding")
 				}
 				bound = 0
@@ -223,6 +267,90 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 	call("gadgetInit")
 	call("gadgetPreStart")
 	call("gadgetStart")
+	if doc.Binding.Process != nil {
+		if binds != 1 || bound == 0 {
+			t.Fatal("process not bound")
+		}
+		assertActive(1)
+		modePolicy := func(mode string) string {
+			return strings.Replace(string(raw), "mode: "+doc.Policy.Mode, "mode: "+mode, 1)
+		}
+		wantState := map[string]string{"enforce": "enforcing", "audit": "auditing", "off": "off"}[doc.Policy.Mode]
+		if state != wantState {
+			t.Fatalf("initial state %s", state)
+		}
+		gen := uint64(1)
+		reject := func(raw string) {
+			t.Helper()
+			old, allocated := bound, len(maps)
+			update(raw, gen)
+			if state != "update-rejected" || bound != old || len(maps) != allocated {
+				t.Fatalf("rejected update mutated policy: state=%s bound=%d maps=%d", state, bound, len(maps))
+			}
+			assertActive(gen)
+		}
+		if doc.Policy.Mode == "enforce" {
+			update(modePolicy("enforce"), gen)
+			gen++
+			assertActive(gen)
+			update(modePolicy("audit"), gen)
+			gen++
+			assertActive(gen)
+		}
+		// Reject escalation even with a clean health snapshot: an older hook
+		// can still lose the marker after this snapshot is read.
+		reject(modePolicy("enforce"))
+		failures, degraded = 3, 1
+		reject(modePolicy("enforce"))
+		if reportedFailures != 3 || reportedDegraded != 1 {
+			t.Fatal("tracking health missing from rejection")
+		}
+		for _, mode := range []string{"off", "audit", "off"} {
+			update(modePolicy(mode), gen)
+			gen++
+			assertActive(gen)
+			want := map[string]string{"audit": "auditing", "off": "off"}[mode]
+			if state != want || reportedFailures != 3 || reportedDegraded != 1 {
+				t.Fatal("nonblocking update lost degraded status")
+			}
+		}
+		// The preflight read succeeds and the generation commits, but the
+		// status read fails. Its acknowledgement must still describe success.
+		failHealthAfterReads = 1
+		update(modePolicy("audit"), gen)
+		gen++
+		assertActive(gen)
+		if state != "auditing" || reportedDegraded != 1 || !strings.Contains(message, "health unknown") {
+			t.Fatal("committed update lost acknowledgement on health read failure")
+		}
+		failHealthAfterReads = -1
+		failHealth = true
+		reject(modePolicy("audit"))
+		if reportedDegraded != 1 {
+			t.Fatal("unreadable health reported healthy")
+		}
+		failHealth = false
+		input = map[string]string{"event_type": "EXITED"}
+		emit("process_lifecycle")
+		if state != "target-removed" || bound != 0 {
+			t.Fatal("exit retained process binding")
+		}
+		allocated := len(maps)
+		update(modePolicy("enforce"), gen)
+		if state != "update-rejected" || len(maps) != allocated || reportedGeneration != gen {
+			t.Fatal("exited process accepted enforcement")
+		}
+		call("gadgetStop")
+		for id, gm := range maps {
+			if !gm.closed {
+				t.Fatalf("stop leaked generation %d", id)
+			}
+		}
+		if binds != 1 {
+			t.Fatal("live update silently rebound process")
+		}
+		return
+	}
 	if state != "waiting-for-target" || bound != 0 {
 		t.Fatalf("unexpected initial state %s", state)
 	}

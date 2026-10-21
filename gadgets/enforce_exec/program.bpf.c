@@ -9,6 +9,12 @@
 #define MAX_RULES 8
 #define PATH_SIZE 256
 
+// Tests override only marker creation; production always calls the real helper.
+#ifndef EXEC_PROCESS_MARKER_CREATE
+#define EXEC_PROCESS_MARKER_CREATE(task, value) \
+    bpf_task_storage_get(&process_targets, task, value, BPF_LOCAL_STORAGE_GET_F_CREATE)
+#endif
+
 extern int bpf_path_d_path(struct path *path, char *buf, size_t buf__sz) __ksym;
 
 // Slot 0 contains the generation header; remaining slots contain path rules.
@@ -49,6 +55,15 @@ struct {
     __array(values, struct policy_map);
 } process_bindings SEC(".maps");
 
+
+// Persistent health is independent of event delivery and policy generations.
+struct process_health_value { __u64 failures; __u64 degraded; };
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct process_health_value);
+} process_health SEC(".maps");
 
 struct exec_path_scratch { char path[PATH_SIZE]; };
 struct {
@@ -154,18 +169,30 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
         policy = bpf_map_lookup_elem(&bindings, &cgroup);
     if (!policy)
         return 0;
-    // A successful exec by a nonleader becomes the new leader (de_thread).
-    // Transfer the marker before exec so subsequent decisions remain scoped.
-    // Child processes do not inherit task storage.
-    if (marked && task != leader) {
-        __u64 one = 1;
-        if (!bpf_task_storage_get(&process_targets, task, &one, BPF_LOCAL_STORAGE_GET_F_CREATE))
-            return -12; // Cannot safely preserve the selected process identity.
-    }
     struct exec_policy_entry *header = bpf_map_lookup_elem(policy, &zero);
     if (!header)
         return -1;
     __u32 mode = header->mode;
+    // A nonleader exec replaces the leader (de_thread). Preserve the marker
+    // even while off, so a later policy update can still address this process.
+    if (marked && task != leader) {
+        __u64 one = 1;
+        if (!EXEC_PROCESS_MARKER_CREATE(task, &one)) {
+            struct process_health_value *health = bpf_map_lookup_elem(&process_health, &zero);
+            if (health) {
+                __sync_fetch_and_add(&health->failures, 1);
+                if (mode != 2)
+                    __sync_fetch_and_or(&health->degraded, 1);
+            }
+            // NULL does not identify a precise errno. Choose ENOMEM when
+            // enforcing to avoid silently losing the selected process.
+            // Audit and off must never block solely to preserve tracking.
+            volatile long result = 0;
+            if (mode == 2)
+                result = -12;
+            return result;
+        }
+    }
     if (!mode)
         return 0;
     __u64 generation = header->generation;

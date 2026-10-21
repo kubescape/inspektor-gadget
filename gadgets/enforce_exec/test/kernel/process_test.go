@@ -105,6 +105,10 @@ func TestExecProcessKernel(t *testing.T) {
 	send("t", ready)
 	send("d", "DENIED")
 	send("f", "CHILD_ALLOWED")
+	var health struct{ Failures, Degraded uint64 }
+	require.NoError(t, collection.Maps["process_health"].Lookup(uint32(0), &health))
+	require.Zero(t, health.Failures)
+	require.Zero(t, health.Degraded)
 	send("e", ready)
 	send("d", "DENIED")
 	_, err = input.Write([]byte("q"))

@@ -42,6 +42,23 @@ IG_EXEC_KERNEL_TEST=1 IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
   go test -v -run '^TestExecProcessKernel$' -timeout=2m ./gadgets/enforce_exec/test/kernel
 ```
 
+`TestExecProcessMarkerFailure` uses a test-only wrapper that forces process marker
+creation to fail. The production gadget has no runtime fault-injection parameter:
+
+```sh
+clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
+  -Iinclude/gadget/amd64 -Iinclude \
+  -c gadgets/enforce_exec/test/kernel/bpf/process_failure.bpf.c \
+  -o /tmp/enforce-exec-process-failure.bpf.o
+IG_EXEC_KERNEL_TEST=1 \
+IG_EXEC_PROCESS_FAILURE_OBJECT=/tmp/enforce-exec-process-failure.bpf.o \
+  go test -v -run '^TestExecProcessMarkerFailure$' -timeout=2m ./gadgets/enforce_exec/test/kernel
+```
+
+It verifies audit/off permit nonleader exec and mark tracking degraded; enforce
+rejects with ENOMEM and retains selection. Persistent health survives a full
+reporting ring and is recorded even while off, when ordinary reports are disabled.
+
 `TestExecTraceLSMCoexistence` loads the production execution hook from `trace_lsm`
 in both attachment orders, with tracing enabled, disabled and filtered:
 
@@ -170,3 +187,27 @@ generations if an update occurs between their separate decisions.
 
 See the [gadget README](../../README.md) for the supported interface, reporting
 limits, readiness semantics and remaining production work.
+
+## Process marker failure validation — 2026-10-21
+
+A fresh disposable Debian 13 amd64 droplet on Linux `6.12.111+deb13-amd64` ran:
+
+- `TestExecProcessMarkerFailure`: forced marker-creation failure in enforce,
+  audit and off; enforce returns ENOMEM without losing selection; audit/off
+  execute successfully and retain sticky degraded health after marker loss.
+  Health remains readable with the ordinary reporting ring full or reporting off.
+- `TestExecProcessKernel`: production-object thread-group selection, successful
+  nonleader exec continuity, child exclusion and exit cleanup.
+- `TestExecProcessFailureRuntime`: actual OCI/WASM guest and exclusive host process
+  binding, in both audit and off. Forced failure allows exec; status snapshots
+  report degradation; attempted enforcement promotion is rejected at the same
+  generation. A new instance validates and rebinds the same live process, then
+  blocks denied executions before and after a subsequent leader exec.
+- Existing container `TestExecRuntime`, full `TestExecKernel`, and all six
+  `TestExecTraceLSMCoexistence` cases pass with the changed production program.
+
+Run the new runtime test with `IG_EXEC_PROCESS_FAILURE_OBJECT`, `IG_EXEC_WASM`,
+`IG_EXEC_METADATA`, and `IG_EXEC_KERNEL_TEST=1`. The failure object is compiled
+using the wrapper command above. This exercises a deterministic helper-failure
+substitute, not induced host-wide memory exhaustion. Production amd64 and arm64
+objects compile; only amd64 has been exercised on a running kernel here.

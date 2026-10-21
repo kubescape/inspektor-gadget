@@ -639,9 +639,12 @@ and delete operations reject task storage. See the [Go API process binding
 section](./gadget-wasm-api-go.md#binding-a-process) for identity precision and
 nonleader-exec semantics.
 
-The `enforce_exec` program denies a nonleader exec with `ENOMEM` if marker
-propagation cannot allocate task storage, even in audit/off modes, to preserve
-the binding for future policy updates.
+The `enforce_exec` program rejects a nonleader exec with the chosen error `ENOMEM`
+if marker propagation fails in enforce mode. Audit/off permit the exec and record
+possible tracking loss in persistent `process_health` state. Process policy
+transitions from audit/off to enforce require a fresh gadget instance and validated
+binding, including when health appears clean. See the Go API section above for
+health reporting and transition semantics; these belong to the gadget policy.
 
 This function is exported as `ig.bindProcess`. Runtimes without the function
 reject modules importing it during initialization.
