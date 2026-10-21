@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	log "github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/logger"
@@ -96,7 +97,7 @@ func (m *Manager) RunGadget(instance *api.GadgetInstance) {
 		id:              instance.Id,
 		name:            instance.Name,
 		mgr:             m,
-		request:         instance.GadgetConfig,
+		request:         proto.Clone(instance.GadgetConfig).(*api.GadgetRunRequest),
 		eventBuffer:     make([]*bufferedEvent, 1024),
 		eventBufferOffs: 0,
 		cancel:          cancel,
@@ -170,7 +171,12 @@ func (m *Manager) InstanceState(gadgetInstanceID string) (*api.GadgetInstanceSta
 	if gi == nil {
 		return nil, ErrNotFound
 	}
+	gi.mu.Lock()
+	defer gi.mu.Unlock()
 	var msg string
+	if gi.updateError != nil {
+		msg = gi.updateError.Error()
+	}
 	if gi.error != nil {
 		msg = gi.error.Error()
 	}

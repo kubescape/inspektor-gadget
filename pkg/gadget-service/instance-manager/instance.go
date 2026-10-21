@@ -61,6 +61,9 @@ type GadgetInstance struct {
 	mgr                  *Manager
 	request              *api.GadgetRunRequest
 	mu                   sync.Mutex
+	updateMu             sync.Mutex
+	updateContext        parameterUpdateContext
+	updateError          error
 	gadgetInfoSerialized *api.GadgetEvent
 	gadgetInfo           *api.GadgetInfo
 	eventBuffer          []*bufferedEvent
@@ -225,6 +228,7 @@ func (p *GadgetInstance) Run(
 
 	p.mu.Lock()
 	p.state = stateRunning
+	p.updateContext = gadgetCtx
 	p.mu.Unlock()
 
 	return runtime.RunGadget(gadgetCtx, runtimeParams, p.request.ParamValues)

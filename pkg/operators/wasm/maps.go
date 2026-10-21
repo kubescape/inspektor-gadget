@@ -100,6 +100,11 @@ func isMapTypeSupportedForAccess(typ ebpf.MapType) error {
 		return fmt.Errorf("unknown map type %v", typ)
 	}
 
+	// Task-storage keys are host pidfds, not guest-visible integer keys.
+	if typ == ebpf.TaskStorage {
+		return fmt.Errorf("task storage requires BindProcess; raw pidfd keys are not exposed")
+	}
+
 	// We do not support map taking FD different than map FD to avoid leaking them
 	// in guest wasm.
 	if isMapTypeFDArray(typ) {

@@ -106,6 +106,14 @@ type DataOperatorInstance interface {
 	Close(gadgetCtx GadgetContext) error
 }
 
+// ParameterUpdater implements acknowledged, atomic updates of a running gadget's
+// complete parameter set. An error must leave the last accepted configuration
+// active. Only one operator may own parameter updates for an instance.
+type ParameterUpdater interface {
+	SupportsParameterUpdates() bool
+	UpdateParameters(context.Context, api.ParamValues) error
+}
+
 type ExtraParams interface {
 	// ExtraParams can return dynamically created params
 	ExtraParams(gadgetCtx GadgetContext) api.Params

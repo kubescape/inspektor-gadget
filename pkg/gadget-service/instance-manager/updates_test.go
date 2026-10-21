@@ -1,0 +1,123 @@
+// Copyright 2024-2025 The Inspektor Gadget authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package instancemanager
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+
+	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
+)
+
+type fakeUpdateContext struct {
+	supported bool
+	readyErr  error
+	updateErr error
+	calls     int
+	values    api.ParamValues
+}
+
+func (f *fakeUpdateContext) ParameterUpdatesSupported() (bool, error) { return f.supported, f.readyErr }
+
+func (f *fakeUpdateContext) UpdateParameters(_ context.Context, values api.ParamValues) error {
+	f.calls++
+	f.values = values
+	return f.updateErr
+}
+
+func TestReconcileLiveParameters(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		updateErr error
+		readyErr  error
+		image     string
+		unchanged bool
+		wantErr   bool
+		calls     int
+	}{
+		{name: "acknowledged", calls: 1},
+		{name: "rejected", updateErr: errors.New("invalid policy"), wantErr: true, calls: 1},
+		{name: "starting", readyErr: gadgetcontext.ErrNotRunning, wantErr: true},
+		{name: "image change", image: "other-image", wantErr: true},
+		{name: "duplicate notification", unchanged: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			updater := &fakeUpdateContext{supported: true, updateErr: tc.updateErr, readyErr: tc.readyErr}
+			cancelled := false
+			current := &api.GadgetRunRequest{ImageName: "enforce", ParamValues: map[string]string{"operator.oci.wasm.exec-policy": "old"}}
+			gi := &GadgetInstance{id: "instance", request: current, updateContext: updater, state: stateRunning, cancel: func() { cancelled = true }}
+			mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
+			desired := &api.GadgetInstance{Id: "instance", GadgetConfig: proto.Clone(current).(*api.GadgetRunRequest)}
+			if !tc.unchanged {
+				desired.GadgetConfig.ParamValues["operator.oci.wasm.exec-policy"] = "new"
+			}
+			if tc.image != "" {
+				desired.GadgetConfig.ImageName = tc.image
+			}
+			err := mgr.ReconcileGadget(context.Background(), desired)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Same(t, current, gi.request)
+			} else {
+				require.NoError(t, err)
+				require.True(t, proto.Equal(desired.GadgetConfig, gi.request))
+			}
+			require.Equal(t, tc.calls, updater.calls)
+			require.False(t, cancelled)
+			require.Same(t, gi, mgr.LookupInstance("instance"))
+			status, err := mgr.InstanceState("instance")
+			require.NoError(t, err)
+			require.Equal(t, api.GadgetInstanceStatus_StatusRunning, status.Status)
+			require.Equal(t, tc.wantErr, status.Message != "")
+			// A failed desired configuration can subsequently be corrected.
+			if tc.updateErr != nil {
+				updater.updateErr = nil
+				require.NoError(t, mgr.ReconcileGadget(context.Background(), desired))
+				require.Nil(t, gi.updateError)
+			}
+		})
+	}
+}
+
+func TestLegacyConfigurationRestarts(t *testing.T) {
+	cancelled := false
+	gi := &GadgetInstance{id: "instance", request: &api.GadgetRunRequest{ImageName: "old"}, updateContext: &fakeUpdateContext{}, cancel: func() { cancelled = true }}
+	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
+	// The deliberately invalid protocol version makes the replacement exit before
+	// runtime initialization; this test concerns the restart decision only.
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", GadgetConfig: &api.GadgetRunRequest{ImageName: "new"}}))
+	require.True(t, cancelled)
+	require.NotSame(t, gi, mgr.LookupInstance("instance"))
+}
+
+func TestFailedStartupAcceptsCorrectedConfiguration(t *testing.T) {
+	cancelled := false
+	current := &api.GadgetRunRequest{ImageName: "failed"}
+	gi := &GadgetInstance{id: "instance", request: current, state: stateError, error: errors.New("initial validation failed"), cancel: func() { cancelled = true }}
+	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
+	// Duplicate notifications do not retry a failed configuration indefinitely.
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", GadgetConfig: current}))
+	require.Same(t, gi, mgr.LookupInstance("instance"))
+	require.False(t, cancelled)
+	// Invalid protocol makes the replacement exit before requiring a real runtime.
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", GadgetConfig: &api.GadgetRunRequest{ImageName: "corrected"}}))
+	require.True(t, cancelled)
+	require.NotSame(t, gi, mgr.LookupInstance("instance"))
+}

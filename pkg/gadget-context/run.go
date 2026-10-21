@@ -251,8 +251,17 @@ func (c *GadgetContext) Run(paramValues api.ParamValues) error {
 		return fmt.Errorf("starting operators: %w", err)
 	}
 
+	c.updateMu.Lock()
+	c.updatesReady = true
+	c.updateMu.Unlock()
+
 	c.Logger().Debugf("running...")
 	WaitForTimeoutOrDone(c)
+
+	// Wait for an acknowledged update before tearing down its operator.
+	c.updateMu.Lock()
+	defer c.updateMu.Unlock()
+	c.updatesReady = false
 
 	var errs []error
 

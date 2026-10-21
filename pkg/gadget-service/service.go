@@ -239,6 +239,9 @@ func (s *Service) Run(runConfig RunConfig, serverOptions ...grpc.ServerOption) e
 }
 
 func (s *Service) Close() {
+	if closer, ok := s.store.(interface{ Close() }); ok {
+		closer.Close()
+	}
 	for server := range s.servers {
 		server.Stop()
 		delete(s.servers, server)

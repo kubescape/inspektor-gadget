@@ -103,11 +103,20 @@ func (w *wasmOperator) InstantiateImageOperator(
 		instance.config, _ = configVar.(*viper.Viper)
 	}
 
+	var err error
+	instance.parameterUpdates, err = readUpdateProtocol(instance.config)
+	if err != nil {
+		return nil, err
+	}
 	if err := instance.init(gadgetCtx, target, desc, w.cache); err != nil {
 		instance.Close(gadgetCtx)
 		return nil, fmt.Errorf("initializing wasm: %w", err)
 	}
 
+	if err := instance.initParameterUpdates(); err != nil {
+		instance.Close(gadgetCtx)
+		return nil, err
+	}
 	if instance.config != nil {
 		extraParams := map[string]*api.Param{}
 		err := instance.config.UnmarshalKey("params.wasm", &extraParams)
@@ -137,13 +146,17 @@ type wasmOperatorInstance struct {
 	dataSourceCallbackLock sync.Mutex
 	dataSourceCallback     wapi.Function
 	guestStopped           atomic.Bool
+	processWatchActive     atomic.Bool
+	processWatchWG         sync.WaitGroup
+	processLifecycleReady  chan struct{}
 
 	// Golang objects are exposed to the wasm module by using a handleID
 	handleMap       map[uint32]any
 	lastHandleIndex uint32
 	handleLock      sync.RWMutex
 
-	config *viper.Viper
+	config           *viper.Viper
+	parameterUpdates *parameterUpdates
 
 	extraParams api.Params
 	paramValues map[string]string
@@ -258,6 +271,7 @@ func (i *wasmOperatorInstance) init(
 	i.addSyscallsDeclarationsFuncs(igModuleBuilder)
 	i.addPerfFuncs(igModuleBuilder)
 	i.addKallsymsFuncs(igModuleBuilder)
+	i.addProcessFuncs(igModuleBuilder)
 	i.addFilterFuncs(igModuleBuilder)
 
 	if _, err := igModuleBuilder.Instantiate(ctx); err != nil {
@@ -341,6 +355,7 @@ func (i *wasmOperatorInstance) PreStart(gadgetCtx operators.GadgetContext) error
 	// that gadgetInit uses the gadgetContext instead, which will be cancelled whenever the gadgetCtx is cancelled
 	// (and so are any callbacks registered in gadgetInit)
 	i.ctx, i.cancel = context.WithCancel(context.Background())
+	i.processLifecycleReady = make(chan struct{})
 	return i.callGuestFunction(i.ctx, "gadgetPreStart")
 }
 
@@ -353,6 +368,7 @@ func (i *wasmOperatorInstance) Start(gadgetCtx operators.GadgetContext) error {
 		i.mntNsIDMap, _ = mntnsVar.(*ebpf.Map)
 	}
 
+	defer close(i.processLifecycleReady)
 	return i.callGuestFunction(i.ctx, "gadgetStart")
 }
 
@@ -363,6 +379,7 @@ func (i *wasmOperatorInstance) Stop(gadgetCtx operators.GadgetContext) error {
 	if i.cancel != nil {
 		i.cancel()
 	}
+	i.processWatchWG.Wait()
 	i.dataSourceCallbackLock.Lock()
 	defer i.dataSourceCallbackLock.Unlock()
 	defer i.closeMaps()
@@ -386,6 +403,7 @@ func (i *wasmOperatorInstance) Close(gadgetCtx operators.GadgetContext) error {
 	if i.cancel != nil {
 		i.cancel()
 	}
+	i.processWatchWG.Wait()
 	i.dataSourceCallbackLock.Lock()
 	defer i.dataSourceCallbackLock.Unlock()
 	defer i.closeMaps()

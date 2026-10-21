@@ -102,3 +102,14 @@ func TestStoppedGuestIgnoresCallbacks(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTaskStorageRequiresProcessBinding(t *testing.T) {
+	if err := isMapTypeSupportedForAccess(ebpf.TaskStorage); err == nil {
+		t.Fatal("raw task-storage pidfd access accepted")
+	}
+	for _, typ := range []ebpf.MapType{ebpf.Hash, ebpf.Array, ebpf.ArrayOfMaps, ebpf.HashOfMaps} {
+		if err := isMapTypeSupportedForAccess(typ); err != nil {
+			t.Fatalf("ordinary map %s rejected: %v", typ, err)
+		}
+	}
+}
