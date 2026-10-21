@@ -238,7 +238,7 @@ cgroup exactly, not all descendant cgroups. Discovery/removal notification delay
 are possible. Links are unpinned, so daemon death ends enforcement. Policies from
 multiple gadget instances compose through LSM (a denial from any remains a denial).
 Generation atomicity is per hook, not across script/interpreter hooks. The
-`trace_lsm` execution hook preserve earlier denials; its other hooks have not
+`trace_lsm` execution hook preserves earlier denials; its other hooks have not
 been audited for other enforcement gadgets. Executable integrity, crash fail-closed semantics, the full
 SandboxPolicy vocabulary and a kernel compatibility/performance matrix remain
 outside this implementation.
