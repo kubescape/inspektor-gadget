@@ -13,6 +13,7 @@ metadata:
     k8s-app: gadget
   name: gadget
   namespace: gadget
+
 ---
 # Source: gadget/templates/configmap.yaml
 apiVersion: v1
@@ -92,6 +93,7 @@ rules:
     resources: ["securitycontextconstraints"]
     resourceNames: ["privileged"]
     verbs: ["use"]
+
 ---
 # Source: gadget/templates/clusterrolebinding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -108,6 +110,7 @@ subjects:
   - kind: ServiceAccount
     name: gadget
     namespace: gadget
+
 ---
 # Source: gadget/templates/role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -125,6 +128,7 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "watch", "list", "create", "delete", "patch", "update"]
+
 ---
 # Source: gadget/templates/rolebinding.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -141,6 +145,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: gadget
+
 ---
 # Source: gadget/templates/daemonset.yaml
 apiVersion: apps/v1
