@@ -126,9 +126,8 @@ func (i *wasmOperatorInstance) UpdateParameters(ctx context.Context, values api.
 	if !ok {
 		return fmt.Errorf("missing live parameter %q", p.parameter)
 	}
-	if raw == i.paramValues[p.parameter] {
-		return nil
-	}
+	// A direct datasource update can change the active policy without changing
+	// paramValues. Publish even a cached value and require a fresh acknowledgment.
 	p.mu.Lock()
 	gen := p.generation
 	if gen == 0 || gen == ^uint64(0) || p.nextID == ^uint64(0) {

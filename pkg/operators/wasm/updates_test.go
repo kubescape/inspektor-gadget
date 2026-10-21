@@ -18,7 +18,7 @@ import (
 )
 
 func TestParameterUpdateAcknowledgment(t *testing.T) {
-	for _, mode := range []string{"success", "rejected", "missing-ack", "wrong-request", "wrong-generation", "ambiguous-state", "subscriber-error"} {
+	for _, mode := range []string{"success", "rejected", "missing-ack", "wrong-request", "wrong-generation", "ambiguous-state", "subscriber-error", "restore-after-direct-update"} {
 		t.Run(mode, func(t *testing.T) {
 			gc := gadgetcontext.New(context.Background(), "test")
 			input, err := gc.RegisterDataSource(datasource.TypeSingle, "updates")
@@ -45,17 +45,27 @@ func TestParameterUpdateAcknowledgment(t *testing.T) {
 				require.NoError(t, status.EmitAndRelease(p))
 			}
 			emit(1, 0, "enforcing")
+			activePolicy, activeGeneration := "old", uint64(1)
+			publications := 0
 			require.NoError(t, input.Subscribe(func(_ datasource.DataSource, d datasource.Data) error {
 				gen, err := input.GetField("expected_generation").Uint64(d)
 				if err != nil {
 					return err
 				}
-				require.Equal(t, uint64(1), gen)
+				require.Equal(t, activeGeneration, gen)
+				publications++
 				id, err := input.GetField("request_id").Uint64(d)
 				if err != nil {
 					return err
 				}
 				switch mode {
+				case "restore-after-direct-update":
+					activePolicy, err = input.GetField("policy").String(d)
+					if err != nil {
+						return err
+					}
+					activeGeneration++
+					emit(activeGeneration, id, "enforcing")
 				case "subscriber-error":
 					emit(2, id, "enforcing")
 					return fmt.Errorf("later subscriber failed")
@@ -72,7 +82,30 @@ func TestParameterUpdateAcknowledgment(t *testing.T) {
 				}
 				return nil
 			}, 0))
-			err = i.UpdateParameters(context.Background(), api.ParamValues{"exec-policy": "new"})
+			desiredPolicy := "new"
+			if mode == "restore-after-direct-update" {
+				// Another producer commits a policy directly through the datasource.
+				packet, err := input.NewPacketSingle()
+				require.NoError(t, err)
+				require.NoError(t, input.GetField("policy").PutString(packet, "direct"))
+				require.NoError(t, input.GetField("expected_generation").PutUint64(packet, 1))
+				require.NoError(t, input.GetField("request_id").PutUint64(packet, 99))
+				require.NoError(t, input.EmitAndRelease(packet))
+				require.Equal(t, "direct", activePolicy)
+				require.Equal(t, uint64(2), i.parameterUpdates.generation)
+				require.Equal(t, "old", i.paramValues["exec-policy"])
+				desiredPolicy = "old"
+			}
+			err = i.UpdateParameters(context.Background(), api.ParamValues{"exec-policy": desiredPolicy})
+			if mode == "restore-after-direct-update" {
+				require.NoError(t, err)
+				require.Equal(t, 2, publications)
+				require.Equal(t, "old", activePolicy)
+				require.Equal(t, uint64(3), activeGeneration)
+				require.Equal(t, activeGeneration, i.parameterUpdates.generation)
+				require.Equal(t, "old", i.paramValues["exec-policy"])
+				return
+			}
 			if mode == "success" || mode == "subscriber-error" {
 				require.NoError(t, err)
 				require.Equal(t, "new", i.paramValues["exec-policy"])
