@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 
 	policy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
@@ -14,15 +15,19 @@ import (
 )
 
 var (
-	document             policy.Document
-	generation           uint64
-	entries              [policy.KernelMaxRules + 1]policy.KernelEntry
-	bindings, candidate  api.Map
-	cgroup               uint64
-	status, updates      api.DataSource
-	statusF              map[string]api.Field
-	updateRaw, updateCAS api.Field
-	stopping             bool
+	document                        policy.Document
+	generation                      uint64
+	entries                         [policy.KernelMaxRules + 1]policy.KernelEntry
+	bindings, candidate             api.Map
+	processBindings, processTargets api.Map
+	processBound                    bool
+	requestID                       uint64
+	updateRequest                   api.Field
+	cgroup                          uint64
+	status, updates                 api.DataSource
+	statusF                         map[string]api.Field
+	updateRaw, updateCAS            api.Field
+	stopping                        bool
 )
 
 //go:wasmexport gadgetInit
@@ -39,7 +44,7 @@ func gadgetInit() int32 {
 			return failed(err)
 		}
 	}
-	for _, name := range []string{"generation", "cgroup_id"} {
+	for _, name := range []string{"generation", "cgroup_id", "request_id", "host_pid"} {
 		statusF[name], err = status.AddField(name, api.Kind_Uint64)
 		if err != nil {
 			return failed(err)
@@ -56,6 +61,23 @@ func gadgetInit() int32 {
 	}
 	updateCAS, err = updates.AddField("expected_generation", api.Kind_Uint64)
 	if err != nil {
+		return failed(err)
+	}
+	updateRequest, err = updates.AddField("request_id", api.Kind_Uint64)
+	if err != nil {
+		return failed(err)
+	}
+	lifecycle, err := api.NewDataSource("process_lifecycle", api.DataSourceTypeSingle)
+	if err != nil {
+		return failed(err)
+	}
+	if _, err = lifecycle.AddField("event_type", api.Kind_String); err != nil {
+		return failed(err)
+	}
+	if _, err = lifecycle.AddField("host_pid", api.Kind_Uint32); err != nil {
+		return failed(err)
+	}
+	if _, err = lifecycle.AddField("start_time_ticks", api.Kind_Uint64); err != nil {
 		return failed(err)
 	}
 	return 0
@@ -102,7 +124,11 @@ func emitStatus(state, message string) {
 	packet, err := status.NewPacketSingle()
 	if err == nil {
 		data := api.Data(packet)
-		err = errors.Join(statusF["state"].SetString(data, state), statusF["revision"].SetString(data, document.Hash()), statusF["message"].SetString(data, message), statusF["generation"].SetUint64(data, generation), statusF["cgroup_id"].SetUint64(data, cgroup))
+		var pid uint64
+		if document.Binding.Process != nil {
+			pid = uint64(document.Binding.Process.HostPID)
+		}
+		err = errors.Join(statusF["request_id"].SetUint64(data, requestID), statusF["host_pid"].SetUint64(data, pid), statusF["state"].SetString(data, state), statusF["revision"].SetString(data, document.Hash()), statusF["message"].SetString(data, message), statusF["generation"].SetUint64(data, generation), statusF["cgroup_id"].SetUint64(data, cgroup))
 		if err == nil {
 			err = status.EmitAndRelease(api.Packet(packet))
 		} else {
@@ -116,7 +142,7 @@ func emitStatus(state, message string) {
 }
 
 func activeState() string {
-	if cgroup == 0 {
+	if cgroup == 0 && !processBound {
 		return "waiting-for-target"
 	}
 	switch document.Policy.Mode {
@@ -140,15 +166,51 @@ func gadgetStart() int32 {
 	if err != nil {
 		return failed(err)
 	}
+	if document.Binding.Process != nil {
+		if err := bindProcess(); err != nil {
+			return failed(err)
+		}
+	} else if err := subscribeContainers(); err != nil {
+		return failed(err)
+	}
+	if err := updates.Subscribe(func(_ api.DataSource, data api.Data) {
+		if stopping {
+			return
+		}
+		id, idErr := updateRequest.Uint64(data)
+		if idErr != nil {
+			emitStatus("update-rejected", idErr.Error())
+			return
+		}
+		requestID = id
+		defer func() { requestID = 0 }()
+		raw, e1 := updateRaw.String(data, uint32(policy.DefaultLimits().MaxBytes+1))
+		expected, e2 := updateCAS.Uint64(data)
+		if err := errors.Join(e1, e2); err != nil {
+			emitStatus("update-rejected", err.Error())
+			return
+		}
+		if err := replace(raw, expected); err != nil {
+			emitStatus("update-rejected", err.Error())
+		}
+	}, 0); err != nil {
+		return failed(err)
+	}
+	emitStatus(activeState(), "program attached; only resolved targets are protected; no first-execution guarantee")
+	return 0
+}
+
+func subscribeContainers() error {
+	var err error
 	containers, err := api.GetDataSource(api.DataSourceContainers)
 	if err != nil {
-		return failed(err)
+		return err
 	}
 	fields := make(map[string]api.Field)
 	for _, name := range []string{"event_type", "runtime", "container_id", "cgroup_id", "cgroup_v2_path"} {
 		fields[name], err = containers.GetField(name)
 		if err != nil {
-			return failed(err)
+			return err
 		}
 	}
 	if err := containers.Subscribe(func(_ api.DataSource, data api.Data) {
@@ -191,26 +253,66 @@ func gadgetStart() int32 {
 			emitStatus("target-removed", "binding removed")
 		}
 	}, 0); err != nil {
-		return failed(err)
+		return err
 	}
-	if err := updates.Subscribe(func(_ api.DataSource, data api.Data) {
+	return nil
+}
+
+func bindProcess() error {
+	var err error
+	processBindings, err = api.GetMap("process_bindings")
+	if err != nil {
+		return err
+	}
+	processTargets, err = api.GetMap("process_targets")
+	if err != nil {
+		return err
+	}
+	lifecycle, err := api.GetDataSource("process_lifecycle")
+	if err != nil {
+		return err
+	}
+	event, err := lifecycle.GetField("event_type")
+	if err != nil {
+		return err
+	}
+	pid, err := lifecycle.GetField("host_pid")
+	if err != nil {
+		return err
+	}
+	birth, err := lifecycle.GetField("start_time_ticks")
+	if err != nil {
+		return err
+	}
+	if err := lifecycle.Subscribe(func(_ api.DataSource, data api.Data) {
 		if stopping {
 			return
 		}
-		raw, e1 := updateRaw.String(data, uint32(policy.DefaultLimits().MaxBytes+1))
-		expected, e2 := updateCAS.Uint64(data)
-		if err := errors.Join(e1, e2); err != nil {
-			emitStatus("update-rejected", err.Error())
+		kind, e1 := event.String(data, 16)
+		hostpid, e2 := pid.Uint32(data)
+		ticks, e3 := birth.Uint64(data)
+		p := document.Binding.Process
+		if errors.Join(e1, e2, e3) != nil || kind != "EXITED" || hostpid != uint32(p.HostPID) || ticks != p.StartTimeTicks {
 			return
 		}
-		if err := replace(raw, expected); err != nil {
-			emitStatus("update-rejected", err.Error())
+		if err := processBindings.Delete(uint32(0)); err != nil {
+			emitStatus("error", err.Error())
+			return
 		}
+		processBound = false
+		emitStatus("target-removed", "selected process exited; task storage was reclaimed")
 	}, 0); err != nil {
-		return failed(err)
+		return err
 	}
-	emitStatus("waiting-for-target", "program attached with no active binding; no first-execution guarantee")
-	return 0
+	if err := processBindings.Put(uint32(0), candidate); err != nil {
+		return err
+	}
+	p := document.Binding.Process
+	if err := api.BindProcess(processTargets, p.Node, p.BootID, uint32(p.HostPID), p.StartTimeTicks); err != nil {
+		return errors.Join(err, processBindings.Delete(uint32(0)))
+	}
+	processBound = true
+	return nil
 }
 
 func replace(raw string, expected uint64) error {
@@ -225,14 +327,18 @@ func replace(raw string, expected uint64) error {
 	if err != nil {
 		return err
 	}
-	if *doc.Binding.Container != *document.Binding.Container {
+	if !reflect.DeepEqual(doc.Binding, document.Binding) {
 		return fmt.Errorf("target changes require a new gadget instance")
 	}
 	m, err := newGeneration(values)
 	if err != nil {
 		return err
 	}
-	if cgroup != 0 {
+	if processBound {
+		if err := processBindings.Put(uint32(0), m); err != nil {
+			return errors.Join(err, m.Close())
+		}
+	} else if cgroup != 0 {
 		if err := bindings.Put(cgroup, m); err != nil {
 			return errors.Join(err, m.Close())
 		}
@@ -250,6 +356,20 @@ func replace(raw string, expected uint64) error {
 //go:wasmexport gadgetStop
 func gadgetStop() int32 {
 	stopping = true
+	if processBound {
+		if err := processBindings.Delete(uint32(0)); err != nil {
+			return failed(err)
+		}
+		processBound = false
+	}
+	for _, m := range []api.Map{processBindings, processTargets} {
+		if m != 0 {
+			if err := api.ReleaseHandle(m); err != nil {
+				return failed(err)
+			}
+		}
+	}
+	processBindings, processTargets = 0, 0
 	if cgroup != 0 {
 		if err := bindings.Delete(cgroup); err != nil {
 			return failed(err)

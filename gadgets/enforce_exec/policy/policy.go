@@ -107,7 +107,7 @@ func (d Document) Validate(limits Limits) error {
 	if c := d.Binding.Container; c != nil && (strings.TrimSpace(c.Runtime) == "" || strings.TrimSpace(c.ID) == "") {
 		return fmt.Errorf("container runtime and ID are required")
 	}
-	if p := d.Binding.Process; p != nil && (p.Node == "" || p.BootID == "" || p.HostPID <= 0 || p.StartTimeTicks == 0) {
+	if p := d.Binding.Process; p != nil && (p.Node == "" || p.BootID == "" || p.HostPID <= 0 || p.HostPID > 2147483647 || p.StartTimeTicks == 0) {
 		return fmt.Errorf("process binding requires node, bootID, positive hostPID and startTimeTicks")
 	}
 	if d.Policy.Mode != "audit" && d.Policy.Mode != "enforce" && d.Policy.Mode != "off" {

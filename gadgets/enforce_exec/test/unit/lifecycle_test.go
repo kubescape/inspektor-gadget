@@ -117,6 +117,8 @@ func runLifecycle(t *testing.T, wasm, raw []byte) {
 					result = inputCgroup
 				case "expected_generation":
 					result = inputGeneration
+				case "request_id":
+					result = 0
 				default:
 					panic("unexpected scalar")
 				}

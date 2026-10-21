@@ -1,7 +1,7 @@
 # enforce_exec
 
 An execution-policy gadget using IG's normal eBPF/WASM OCI image and lifecycle.
-It blocks executable paths for one explicitly selected container using BPF LSM.
+It blocks executable paths for one explicitly selected container or process using BPF LSM.
 It runs with `ig` or the existing Kubernetes DaemonSet and stored gadget instances;
 no Kubescape component is required.
 
@@ -10,7 +10,9 @@ The host must enable `operator.oci.allow-enforcement`. The image declares
 Undeclared legacy gadgets retain their existing behavior. This is an explicit
 consent mechanism for trusted, administrator-approved images, not a sandbox for
 untrusted BPF code. Keep image verification and digest admission enabled in
-production. BPF program/helper allowlists remain separate framework work.
+production. Host-owned `operator.ebpf.policy` independently restricts program types,
+builtin helpers and kfuncs; see [BPF admission](../../docs/spec/operators/oci.md#host-bpf-admission-policy).
+An absent policy preserves legacy compatibility. Image parameters cannot override it.
 
 ## Configuration and limits
 
@@ -32,18 +34,53 @@ policy:
 ```
 
 `exec-policy` is YAML passed by value, not a path read by the daemon. The kernel
-compiler supports one container binding, audit/enforce/off, allow/deny default,
+compiler supports one container or process binding, audit/enforce/off, allow/deny default,
 exact absolute paths and trailing `/**` directory patterns. Deny matches override
-allow matches. Rule modes must be empty or match the policy mode. Process
-bindings and other unsupported predicates fail before attachment. Named rules
+allow matches. Rule modes must be empty or match the policy mode. Unsupported
+predicates fail before attachment. Named rules
 and origin retain the standalone policy vocabulary used by the proposed
 SandboxPolicy adapter; a complete CRD compiler is not included.
 
 Actual kernel limits are **8 expanded paths per policy, 255 path bytes, and one
-container binding per gadget instance**. An inner map holds a header and eight
+target binding per gadget instance**. An inner map holds a header and eight
 288-byte entries: 2,592 bytes of values plus kernel allocation/metadata overhead.
-Replacement temporarily retains two generations. The parser additionally bounds
+Replacement temporarily retains two generations. These are rule-value sizes,
+not a total BPF memory budget: map metadata, per-CPU scratch/counters and task
+storage add overhead. Process task storage can grow with marked threads that
+attempt exec and then fail before replacing the process; those entries remain
+until their tasks exit. Only the rule count and reporting buffer have the fixed
+bounds stated here. The parser additionally bounds
 input to 64 KiB; its broader authoring limits do not override kernel limits.
+
+For a process target, replace the container binding with:
+
+```yaml
+binding:
+  process:
+    node: <node-name>
+    bootID: <host-boot-id>
+    hostPID: 12345
+    startTimeTicks: 987654
+```
+
+`hostPID` is the host thread-group leader PID. `startTimeTicks` is field 22 of its
+`/proc/<pid>/stat`, and `bootID` comes from `/proc/sys/kernel/random/boot_id`.
+`node` must match `NODE_NAME`, or the host name for standalone execution. The
+host verifies all four fields, obtains a pidfd, and seeds BPF task storage tied
+to the actual process. Reusing its numeric PID does not inherit enforcement.
+The binding covers the selected thread group, including execution by a nonleader
+thread and subsequent executions after it becomes leader. Child processes are
+not included.
+
+Activation briefly pauses every thread using exclusive ptrace ownership
+(`PTRACE_SEIZE` and `PTRACE_INTERRUPT`) before seeding task storage. Another
+process's SIGCONT cannot release these tracer-owned stops. IG then detaches and
+resumes a previously running group; a fully stopped group remains stopped.
+Partially stopped groups, an existing tracer and IG itself are rejected. The
+bounded pause closes the race with an execution already past the LSM hook.
+Process binding requires the host PID namespace and permission to trace the
+target (`SYS_PTRACE` in the default chart capabilities). The pidfd exit watcher
+removes the binding and emits `target-removed`.
 
 Path resolution uses `bpf_path_d_path` on the executable file in the calling
 task's root. A symlink is checked at its resolved destination; renaming a file
@@ -57,7 +94,8 @@ interpreter does not restrict the code it can interpret.
 Requires BPF LSM enabled, cgroup v2, kernel BTF and the `bpf_path_d_path` kfunc;
 Linux 6.12 is the tested baseline. Successful loading/attachment is the final
 capability check. Current WASM imports require the updated IG host: older hosts
-without `ig.mapFreeze` fail image initialization before any BPF program attaches.
+without the map-freeze and process-binding imports fail image initialization
+before any BPF program attaches.
 Use matching host/image builds from this branch.
 
 ```sh
@@ -74,13 +112,17 @@ Do not put container-ID prefixes or cgroup IDs in the policy.
 For Kubernetes, configure the existing Helm chart's daemon host settings:
 
 ```yaml
+# Required only when using process bindings.
+hostPID: true
 config:
   operator:
     oci:
       allow-enforcement: true
 ```
 
-Keep the production image trust settings. Supply policy through the ordinary
+The chart defaults `hostPID` to false. Custom capability lists must supply the
+process-inspection and ptrace permissions needed for the activation pause. Container bindings
+do not require this opt-in. Keep the production image trust settings. Supply policy through the ordinary
 stored-instance `paramValues.operator.oci.wasm.exec-policy`, as in
 [`examples/instance.yaml`](examples/instance.yaml). This does not introduce a new
 Kubernetes operator or CRD. The future node-agent adapter translates SandboxPolicy
@@ -94,10 +136,13 @@ into this standalone interface; CRD watches, merging and status stay in node-age
    creates and freezes a complete candidate generation.
 4. IG's container datasource supplies runtime, full ID, cgroup ID and cgroup-v2 path. Only an exact
    runtime/ID match with a nonzero cgroup and clean, non-root v2 path binds the generation and activates policy.
-5. Container deletion removes the binding. Instance shutdown releases the binding,
+   Process bindings instead use the validated pidfd and task-storage activation
+   described above.
+5. Container deletion or selected-process exit removes the binding. Instance shutdown releases the binding,
    generation maps and unpinned BPF links, including partial-start failure cleanup.
 
-The `status` datasource emits state, revision, generation, cgroup ID and message.
+The `status` datasource emits state, revision, generation, cgroup ID, host PID,
+request ID and message.
 `waiting-for-target` means no target has been protected. `enforcing`, `auditing`
 and `off` describe the installed mode. Other states include `target-removed`,
 `update-rejected`, `error` and `stopped`. An update rejection leaves the reported
@@ -108,21 +153,45 @@ An embedding host can publish to the `exec_policy_updates` input datasource:
 
 - `policy` (string): complete standalone policy YAML.
 - `expected_generation` (uint64): last observed generation, initially 1.
+- `request_id` (uint64): correlation identifier echoed in the status acknowledgment.
 
 Callbacks serialize policy updates and container events. Updates require the same
-container identity. Parsing, compilation, map population and freezing finish
+container or process identity. Parsing, compilation, map population and freezing finish
 before replacing the bound inner map with one update. Failures retain the prior
 generation. Successful updates increment the generation and emit status. This
 input is an embedding interface, not a new public RPC or CLI file watcher.
 An embedding host must emit asynchronously when reacting to a guest status event;
 synchronous emission back into the same guest would reenter its serialized callback.
-Existing ConfigMap instance replacement still follows IG's restart semantics;
-it is **not** a gap-free live policy update. Integrating this input with a
-controller or node-agent is follow-up work.
+The WASM host recognizes the image's `live-update-parameter`,
+`live-update-datasource`, `live-update-status` and `live-update-field` annotations.
+It supplies the expected generation and a request ID, then requires a matching
+status acknowledgment before accepting the new instance configuration.
+
+For this gadget, changes to the existing ConfigMap's
+`operator.oci.wasm.exec-policy` go through that protocol without restarting the
+instance or replacing its BPF program. Invalid policies retain the last-good
+configuration and enforcement. Structural changes, such as the image, binding
+identity or other parameters, are rejected for a running update-capable instance.
+Deleting the ConfigMap or excluding the node explicitly removes the instance.
+Legacy gadgets without update support retain IG's existing restart behavior.
+There is no new public update RPC. The future node-agent adapter can use the same
+standalone input and acknowledgment protocol.
+
+Standalone `ig daemon` also reconciles its existing stored `.gadget` instance
+files once per second. Changes to `exec-policy` use the same acknowledged update
+path. Malformed files or invalid policies retain the running last-good instance;
+deleting its file explicitly removes enforcement. Closing the service stops the
+watcher. This watches daemon instance files, not policy files passed to `ig run`.
+Last-good retention lasts for the running instance; restarting the daemon reads
+the persisted desired configuration again.
 
 The `verdict` datasource reports generation, cgroup, deny decision, mode,
 path-resolution result and resolved path. `deny=1` in audit mode means would-deny;
-only enforce mode blocks. A shared 4 KiB ring buffer bounds pending reports.
+only enforce mode blocks for ordinary policy decisions. One resource-failure
+exception applies to process identity: if BPF cannot allocate task storage to
+carry the binding through a nonleader's exec, it returns ENOMEM even in audit or
+off mode. This prevents a successful exec from silently losing the binding.
+A shared 4 KiB ring buffer bounds pending reports.
 At most 100 report attempts per CPU per second are permitted, independently of
 verdict evaluation. Per-CPU kernel counters track denied/allowed decisions,
 submitted reports, buffer loss, path errors and rate-limited reports. The counters
@@ -146,7 +215,8 @@ status; it does not gate a container's first execution. Binding covers the suppl
 cgroup exactly, not all descendant cgroups. Discovery/removal notification delays
 are possible. Links are unpinned, so daemon death ends enforcement. Policies from
 multiple gadget instances compose through LSM (a denial from any remains a denial).
-Generation atomicity is per hook, not across script/interpreter hooks. Process
-identity resolution, executable integrity, crash fail-closed semantics, the full
+Generation atomicity is per hook, not across script/interpreter hooks. The
+`trace_lsm` execution hook preserve earlier denials; its other hooks have not
+been audited for other enforcement gadgets. Executable integrity, crash fail-closed semantics, the full
 SandboxPolicy vocabulary and a kernel compatibility/performance matrix remain
 outside this implementation.

@@ -1,7 +1,7 @@
 # enforce_exec privileged integration tests
 
 These opt-in tests load real BPF LSM programs and block executions in dedicated
-cgroup-v2 targets. Run them on a disposable Linux x86-64 host with root access,
+cgroup-v2 or explicitly selected process targets. Run them on a disposable Linux x86-64 host with root access,
 BPF LSM enabled, kernel BTF, `bpf_path_d_path`, `bpf_loop`, Clang, libbpf headers,
 and bpftool. Kernel version alone is insufficient: the programs must load and
 attach. Nothing attaches without `IG_EXEC_KERNEL_TEST=1`.
@@ -31,6 +31,28 @@ IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
 IG_EXEC_WASM=/tmp/enforce-exec.wasm \
 IG_EXEC_METADATA="$PWD/gadgets/enforce_exec/gadget.yaml" \
   go test -v -run '^TestExecRuntime$' -timeout=2m ./gadgets/enforce_exec/test/kernel
+```
+
+`TestExecProcessKernel` uses the production object to check task-storage process
+scope, child exclusion and a nonleader thread replacing the process through
+exec. It needs `IG_EXEC_BPF_OBJECT` and Clang for its small native helper:
+
+```sh
+IG_EXEC_KERNEL_TEST=1 IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
+  go test -v -run '^TestExecProcessKernel$' -timeout=2m ./gadgets/enforce_exec/test/kernel
+```
+
+`TestExecTraceLSMCoexistence` loads the production execution hook from `trace_lsm`
+in both attachment orders, with tracing enabled, disabled and filtered:
+
+```sh
+clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
+  -Iinclude/gadget/amd64 -Iinclude \
+  -c gadgets/trace_lsm/program.bpf.c -o /tmp/trace-lsm.bpf.o
+IG_EXEC_KERNEL_TEST=1 \
+IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
+IG_EXEC_TRACE_LSM_OBJECT=/tmp/trace-lsm.bpf.o \
+  go test -v -run '^TestExecTraceLSMCoexistence$' -timeout=2m ./gadgets/enforce_exec/test/kernel
 ```
 
 Tests can also be compiled with `go test -c` and copied to the test host. For the
@@ -80,20 +102,67 @@ Ordinary CLI/Docker smoke validation also passed with an image built by
 
 This smoke test exercised the container's mount namespace and Docker OverlayFS.
 It exposed and led to fixes for datasource-only manager activation in both local
-and Kubernetes managers. Unit regressions cover both managers; a live Kubernetes
-DaemonSet/ConfigMap run has not been performed.
+and Kubernetes managers. Unit regressions cover both managers; the subsequent live Kubernetes validation
+is recorded below.
 
-After testing, bpftool showed no enforcement programs/maps and no test cgroups
-remained. The temporary VM and its SSH key were deleted.
+After the earlier Docker validation, bpftool showed no enforcement programs/maps
+and no test cgroups remained. That temporary VM and its SSH key were deleted.
+
+## Process, coexistence and Kubernetes validation — 2026-10-21
+
+A disposable Debian 13 x86-64 host ran the production kernel tests,
+`TestExecProcessKernel`, and all six `TestExecTraceLSMCoexistence` cases successfully
+on `6.12.111+deb13-amd64`. The process test verifies exact process scope, child
+exclusion and continued enforcement after exec by a nonleader thread. The
+coexistence test verifies denial preservation in both attachment orders even
+when observation is disabled or filtered.
+
+The same host ran K3s `v1.36.5+k3s1`, using the official chart's DaemonSet, RBAC and
+configuration with a locally built daemon binary mounted into a Debian test
+image. A local OCI store supplied the production gadget image. This was a
+single-node integration test, not a published daemon-image test.
+
+The ConfigMap smoke test passed these checks:
+
+- Generation 1 allowed `/usr/bin/true` and blocked `/usr/bin/false`.
+- Updating the policy to generation 2 reversed those decisions.
+- An invalid update retained generation 2 and its execution decisions.
+- A corrected update installed generation 3.
+- The BPF program ID (350 initially, 576 on the final repeat) and daemon Pod UID remained unchanged within each run;
+  there was no daemon restart.
+- All 22 initial and 23 final-repeat `/usr/bin/echo` probes remained denied across the updates.
+- Deleting the instance ConfigMap removed enforcement and restored normal execution.
+
+The daemon used host-owned program-type and kfunc restrictions (`lsm` and
+`bpf_path_d_path`). Pure admission tests additionally cover helper restrictions,
+linked functions, callbacks, kfunc names, immutable administrator snapshots and
+late instruction changes before loading.
+
+The standalone daemon file-store smoke test also passed: valid edits installed
+generations 1, 2 and 3 while preserving the BPF program ID; malformed instance
+files and invalid policies retained the last-good decisions; deleting the file
+released enforcement. The watcher polls once per second and stops when the
+service closes.
+
+The final repeat also ran the actual CLI process binding with exclusive ptrace
+activation, a strict program/helper/kfunc allowlist, repeated and nonleader exec,
+child exclusion and process-exit reporting. The standalone daemon file-store
+repeat passed generations 1/2/3, malformed/invalid last-good retention, unchanged
+BPF program ID and release on deletion. Host race tests covered exclusive stops,
+external SIGCONT resistance, signal reinjection and partial-stop cleanup.
+
+After the final tests, no enforcement programs, maps or test cgroups remained.
+The temporary Kubernetes VM and its SSH key were deleted.
 
 ## Evidence boundaries
 
 One kernel/compiler combination is feasibility and integration evidence, not a
 compatibility/performance matrix. Generation replacement testing covers bounded
-concurrency, not all schedules. The companion checks BPF-LSM return preservation;
-it is not a test of IG's existing `trace_lsm` gadget or all LSM combinations.
+concurrency, not all schedules. The production `trace_lsm` execution hook is now tested in both attachment
+orders; other LSM hooks and combinations remain outside this coverage. The
+Kubernetes probes demonstrate sampled continuity, not every possible schedule.
 
-The kernel probe does not test process targeting, `execveat`, memfd/deleted
+These tests do not cover `execveat`, memfd/deleted
 executables, concurrent filesystem mutation, descendant cgroups, container startup
 gating or crash fail-closed behavior. Normal shutdown cleanup is tested; daemon
 crash removes unpinned enforcement. Script/interpreter hooks can see different

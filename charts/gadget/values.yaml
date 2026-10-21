@@ -27,6 +27,9 @@ config:
 
   # -- Operator configuration, this will only be used if deprecated values are not set.
   operator:
+    ebpf:
+      # -- Host BPF admission: helpers/programTypes/kfuncs accept add/drop lists. Empty preserves compatibility.
+      policy: {}
     kubemanager:
       # -- Whether to use the fallback to pod informer
       fallback-podinformer: true
@@ -79,6 +82,9 @@ skipLabels: false
 # -- Labels to be added to all other resources.
 additionalLabels:
   labels: {}
+
+# -- Use the host PID namespace. Required for enforce_exec process bindings.
+hostPID: false
 
 # -- RuntimeClassName used by daemonset
 runtimeClassName: ""

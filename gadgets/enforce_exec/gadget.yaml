@@ -1,8 +1,12 @@
 name: enforce_exec
 behavior: mutator
-description: "Enforce execution path rules for an explicitly bound container (BPF LSM)"
+description: "Enforce execution path rules for an explicitly bound container or process (BPF LSM)"
 annotations:
   enable-containers-datasource: "true"
+  live-update-parameter: exec-policy
+  live-update-datasource: exec_policy_updates
+  live-update-status: status
+  live-update-field: policy
 datasources:
   verdict:
     fields:
@@ -10,6 +14,9 @@ datasources:
         annotations:
           description: resolved executable path
   exec_policy_updates:
+    annotations:
+      cli.default-output-mode: none
+  process_lifecycle:
     annotations:
       cli.default-output-mode: none
   containers:

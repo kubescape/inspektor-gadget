@@ -606,3 +606,52 @@ Parameters:
 
 Return value:
 - (u32) 1 if the mount namespace ID should be discarded, 0 otherwise.
+
+### Process binding
+
+#### `bindProcess(target uint32, node uint64, bootID uint64, hostPID uint32, startTicks uint64) uint32`
+
+Validate a live host process and seed its task-storage entry with `uint64(1)`.
+The host uses a pidfd internally; raw file descriptors never enter WASM.
+
+Parameters:
+
+- `target` (u32): Handle to a task-storage map with a 4-byte key and 8-byte value.
+- `node` (u64): Encoded string buffer for the node name.
+- `bootID` (u64): Encoded string buffer for the host boot ID.
+- `hostPID` (u32): Host PID of the thread-group leader.
+- `startTicks` (u64): Process start time from field 22 of `/proc/PID/stat`.
+
+Return value:
+
+- (u32) 0 on success, 1 on validation, lifecycle, or map-update failure.
+
+Call during `gadgetStart`, after registering and subscribing to
+`process_lifecycle` with `event_type` (string), `host_pid` (uint32), and
+`start_time_ticks` (uint64). The host emits `EXITED` with the supplied identity
+after process exit, once `gadgetStart` has returned. One binding is supported
+per instance. IG must run in the host PID namespace; the node must match
+`NODE_NAME`, or the hostname when that variable is unset.
+
+Task storage belongs to the actual task and is reclaimed on exit. The host
+closes its monitoring pidfd on exit or shutdown. Normal map lookup, update,
+and delete operations reject task storage. See the [Go API process binding
+section](./gadget-wasm-api-go.md#binding-a-process) for identity precision and
+nonleader-exec semantics.
+
+The `enforce_exec` program denies a nonleader exec with `ENOMEM` if marker
+propagation cannot allocate task storage, even in audit/off modes, to preserve
+the binding for future policy updates.
+
+This function is exported as `ig.bindProcess`. Runtimes without the function
+reject modules importing it during initialization.
+
+Process activation temporarily seizes each thread with `PTRACE_SEIZE` and
+interrupts it into a tracer-owned stop, waiting up to two seconds for the group
+to become stable. It checks identity again and seeds task storage before
+detaching. External `SIGCONT` cannot resume these stops during binding. This
+requires ptrace permission over the selected process. An initially fully
+job-control-stopped group remains stopped; partially stopped groups, existing
+tracers, and selecting IG itself are rejected. Failed activation detaches
+threads; a dedicated tracer thread exits to release any thread that could not
+stop within the deadline. No `PTRACE_O_EXITKILL` option is enabled.

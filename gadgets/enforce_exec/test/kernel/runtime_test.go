@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -214,29 +215,56 @@ func TestExecRuntime(t *testing.T) {
 		require.NoError(t, updates.EmitAndRelease(packet))
 	}
 	await("enforcing", 1)
+	// The enforcing status is emitted during Start. Wait until the full operator
+	// lifecycle is ready before exercising the public context update entry point.
+	require.Eventually(t, func() bool {
+		supported, err := gc.ParameterUpdatesSupported()
+		return err == nil && supported
+	}, 5*time.Second, time.Millisecond)
+	hostUpdate := func(raw string) error {
+		return gc.UpdateParameters(ctx, api.ParamValues{"operator.oci.wasm.exec-policy": raw})
+	}
 	execute(good, true, false)
 	execute(bad, true, true)
 	execute(bad, false, false)
-	update("invalid: policy", 1)
+	require.ErrorContains(t, hostUpdate("invalid: policy"), "rejected")
 	await("update-rejected", 1)
 	execute(bad, true, true)
+	// Binding changes must be rejected through the same public API without
+	// restarting the gadget or losing the last accepted policy.
+	require.ErrorContains(t, hostUpdate(strings.Replace(policy(bad), "runtime-test", "other-container", 1)), "rejected")
+	await("update-rejected", 1)
+	execute(bad, true, true)
+	require.ErrorContains(t, gc.UpdateParameters(ctx, api.ParamValues{
+		"operator.oci.wasm.exec-policy": policy(bad), "runtime.other": "changed",
+	}), "outside")
+	execute(bad, true, true)
+	// Direct datasource submissions retain coverage for stale-generation input;
+	// normal daemon reconciliation obtains the expected generation from the host.
 	update(policy(bad), 0)
 	await("update-rejected", 1)
 	execute(bad, true, true)
-	update(policy(bad), 1)
+	require.NoError(t, hostUpdate(policy(bad)))
 	await("enforcing", 2)
 	execute(bad, true, false)
 	execute(good, true, true)
+	// Repeated desired configuration is acknowledged without republishing.
+	require.NoError(t, hostUpdate(policy(bad)))
 	update(policy(good), 1)
 	await("update-rejected", 2)
 	execute(good, true, true)
-	require.NoError(t, emitContainer("DELETED"))
-	await("target-removed", 2)
+	// A corrected update must still work after the rejected input.
+	require.NoError(t, hostUpdate(policy(good)))
+	await("enforcing", 3)
 	execute(good, true, false)
+	execute(bad, true, true)
+	require.NoError(t, emitContainer("DELETED"))
+	await("target-removed", 3)
+	execute(bad, true, false)
 	// Rebind before cancellation so shutdown itself must release active enforcement.
 	require.NoError(t, emitContainer("CREATED"))
-	await("enforcing", 2)
-	execute(good, true, true)
+	await("enforcing", 3)
+	execute(bad, true, true)
 	cancel()
 	select {
 	case err := <-done:
@@ -247,6 +275,7 @@ func TestExecRuntime(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("runtime shutdown timed out")
 	}
-	execute(good, true, false)
-	t.Log("real OCI/BPF/WASM lifecycle: scope, updates, rejection, removal, and shutdown passed")
+	execute(bad, true, false)
+	require.ErrorIs(t, hostUpdate(policy(bad)), context.Canceled)
+	t.Log("real OCI/BPF/WASM lifecycle: scope, acknowledged host updates, binding/stale rejection, last-good policy, removal, and shutdown passed")
 }

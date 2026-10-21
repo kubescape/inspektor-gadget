@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright 2026 The Inspektor Gadget authors
-// Execution enforcement; maps remain empty until a validated container is bound.
+// Execution enforcement; maps remain empty until a validated target is bound.
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -35,6 +35,20 @@ struct {
     __array(values, struct policy_map);
 } bindings SEC(".maps");
 
+// The host seeds an actual task object via pidfd, never a reusable numeric PID.
+struct {
+    __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, __u32);
+    __type(value, __u64);
+} process_targets SEC(".maps");
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __array(values, struct policy_map);
+} process_bindings SEC(".maps");
+
 
 struct exec_path_scratch { char path[PATH_SIZE]; };
 struct {
@@ -50,7 +64,7 @@ struct event {
     __u32 deny;
     __u32 mode;
     __s32 path_result;
-    __u32 reserved;
+    __u32 host_pid;
     char path[PATH_SIZE];
 };
 struct {
@@ -128,11 +142,26 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
     if (ret)
         return ret;
     __u64 cgroup = bpf_get_current_cgroup_id();
-    // Read the inner map ONCE. Header and rules belong to the same generation.
-    void *policy = bpf_map_lookup_elem(&bindings, &cgroup);
+    __u32 zero = 0;
+    struct task_struct *task = bpf_get_current_task_btf();
+    struct task_struct *leader = task->group_leader;
+    __u64 *marked = bpf_task_storage_get(&process_targets, leader, 0, 0);
+    // Read one inner map; the header and all rules share one generation.
+    void *policy;
+    if (marked)
+        policy = bpf_map_lookup_elem(&process_bindings, &zero);
+    else
+        policy = bpf_map_lookup_elem(&bindings, &cgroup);
     if (!policy)
         return 0;
-    __u32 zero = 0;
+    // A successful exec by a nonleader becomes the new leader (de_thread).
+    // Transfer the marker before exec so subsequent decisions remain scoped.
+    // Child processes do not inherit task storage.
+    if (marked && task != leader) {
+        __u64 one = 1;
+        if (!bpf_task_storage_get(&process_targets, task, &one, BPF_LOCAL_STORAGE_GET_F_CREATE))
+            return -12; // Cannot safely preserve the selected process identity.
+    }
     struct exec_policy_entry *header = bpf_map_lookup_elem(policy, &zero);
     if (!header)
         return -1;
@@ -195,7 +224,7 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
         event->deny = deny;
         event->mode = mode;
         event->path_result = length;
-        event->reserved = 0;
+        event->host_pid = bpf_get_current_pid_tgid() >> 32;
         // No stale path bytes on resolution failure.
         if (length > 0)
             __builtin_memcpy(event->path, scratch->path, PATH_SIZE);

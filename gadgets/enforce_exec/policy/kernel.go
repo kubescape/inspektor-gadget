@@ -37,9 +37,6 @@ func CompileKernel(d Document, generation uint64) ([KernelMaxRules + 1]KernelEnt
 	if err := d.Validate(DefaultLimits()); err != nil {
 		return fail(err)
 	}
-	if d.Binding.Process != nil {
-		return fail(fmt.Errorf("kernel backend supports only container bindings"))
-	}
 	if generation == 0 {
 		return fail(fmt.Errorf("kernel generation must be nonzero"))
 	}
