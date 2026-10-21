@@ -1,13 +1,17 @@
-# enforce_exec — non-eBPF integration spike
+# enforce_exec — integration spike
 
 This draft is organized as an IG gadget. It declares an `exec-policy` parameter in
 `gadget.yaml`, builds `go/program.go` as a WASM layer, and consumes the parameter in
 IG's existing `gadgetPreStart` lifecycle hook. There is no custom CLI command.
 
-**It does not enforce anything.** Valid configuration reaches policy preparation,
+**The gadget image does not enforce anything.** Valid configuration reaches policy preparation,
 then startup deliberately fails with `enforcement backend unavailable`. Invalid
 configuration fails earlier with a policy diagnostic. Audit and off also fail
 startup: this spike must not advertise a working runtime it does not provide.
+
+An opt-in [kernel feasibility probe](test/kernel/README.md) separately tests real
+BPF LSM blocking, resolved paths, generation replacement and reporting saturation.
+It is not packaged into the gadget image.
 
 ## Structure
 
@@ -131,5 +135,5 @@ Before this can become an enforcement gadget, implement and review:
 
 WASM pre-start validates configuration, but does not itself guarantee validation
 before another operator attaches programs. The shared host admission/prepare order
-must be established before adding an eBPF layer. This spike intentionally contains
+must be established before adding an eBPF layer. The gadget image intentionally contains
 no eBPF layer and never reports an attached or enforcing state.
