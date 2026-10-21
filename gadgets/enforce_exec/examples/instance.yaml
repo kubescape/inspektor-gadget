@@ -1,10 +1,10 @@
 apiVersion: 1
 kind: instance-spec
 name: enforce-exec-spike
+# Unsigned development image: configure verify-image: false on the daemon host.
+# Instance parameters cannot change host trust settings.
 image: enforce_exec:spike
 paramValues:
-  # Development-only unsigned local image; not a production trust policy.
-  operator.oci.verify-image: "false"
   operator.oci.wasm.exec-policy: |
     version: 1
     binding:

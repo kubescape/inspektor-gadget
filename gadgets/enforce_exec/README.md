@@ -134,6 +134,23 @@ stored-instance `paramValues.operator.oci.wasm.exec-policy`, as in
 Kubernetes operator or CRD. The future node-agent adapter translates SandboxPolicy
 into this standalone interface; CRD watches, merging and status stay in node-agent.
 
+The unsigned local image in `examples/instance.yaml` additionally requires
+`operator.oci.verify-image: false` in the **daemon host configuration** for development.
+For Helm, add it under the chart's `config` values:
+
+```yaml
+config:
+  operator:
+    oci:
+      allow-enforcement: true
+      verify-image: false # Unsigned local development images only.
+```
+
+For standalone `ig daemon`, use the same `operator.oci` settings in its host
+configuration file, without Helm's outer `config` key. Instance `paramValues`
+cannot override this host-only setting. Production deployments should retain
+verification and use approved signed images.
+
 ## Activation, replacement and status
 
 1. The host checks behavior admission before image operators initialize.
