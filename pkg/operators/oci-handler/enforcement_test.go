@@ -34,7 +34,7 @@ func TestCheckBehavior(t *testing.T) {
 			config := viper.New()
 			config.SetConfigType("yaml")
 			require.NoError(t, config.ReadConfig(strings.NewReader(tc.metadata)))
-			err := checkBehaviorDeclaration([]byte(tc.metadata))
+			err := checkBehaviorDeclaration([]byte(tc.metadata), tc.allow)
 			if err == nil {
 				err = checkBehavior(config, tc.allow)
 			}

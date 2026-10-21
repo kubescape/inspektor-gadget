@@ -248,22 +248,23 @@ func TestExecRuntime(t *testing.T) {
 	await("enforcing", 2)
 	execute(bad, true, false)
 	execute(good, true, true)
-	// Repeated desired configuration is acknowledged without republishing.
+	// Explicit context updates republish even when the desired value is unchanged.
 	require.NoError(t, hostUpdate(policy(bad)))
+	await("enforcing", 3)
 	update(policy(good), 1)
-	await("update-rejected", 2)
+	await("update-rejected", 3)
 	execute(good, true, true)
 	// A corrected update must still work after the rejected input.
 	require.NoError(t, hostUpdate(policy(good)))
-	await("enforcing", 3)
+	await("enforcing", 4)
 	execute(good, true, false)
 	execute(bad, true, true)
 	require.NoError(t, emitContainer("DELETED"))
-	await("target-removed", 3)
+	await("target-removed", 4)
 	execute(bad, true, false)
 	// Rebind before cancellation so shutdown itself must release active enforcement.
 	require.NoError(t, emitContainer("CREATED"))
-	await("enforcing", 3)
+	await("enforcing", 4)
 	execute(bad, true, true)
 	cancel()
 	select {

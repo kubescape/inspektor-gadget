@@ -437,8 +437,9 @@ func (o *OciHandlerInstance) init(gadgetCtx operators.GadgetContext) error {
 	}
 	r.Close()
 
-	// Viper drops null values, so reject an explicit null declaration before parsing.
-	if err := checkBehaviorDeclaration(metadata); err != nil {
+	// Admit the original declaration before request-selected custom parameters can
+	// patch it. The effective configuration is checked again below.
+	if err := checkBehaviorDeclaration(metadata, o.globalParams.Get(allowEnforcement).AsBool()); err != nil {
 		return err
 	}
 
@@ -647,6 +648,10 @@ func checkBehavior(config *viper.Viper, allow bool) error {
 	if value == nil && !config.InConfig("behavior") {
 		return nil
 	}
+	return checkBehaviorValue(value, allow)
+}
+
+func checkBehaviorValue(value any, allow bool) error {
 	behavior, ok := value.(string)
 	if !ok {
 		return fmt.Errorf("gadget behavior must be a string")
@@ -664,14 +669,16 @@ func checkBehavior(config *viper.Viper, allow bool) error {
 	}
 }
 
-func checkBehaviorDeclaration(metadata []byte) error {
+func checkBehaviorDeclaration(metadata []byte, allow bool) error {
 	var values map[string]any
 	if err := yaml.Unmarshal(metadata, &values); err != nil {
 		return fmt.Errorf("reading gadget behavior: %w", err)
 	}
 	for key, value := range values {
-		if strings.EqualFold(key, "behavior") && value == nil {
-			return fmt.Errorf("gadget behavior must be a string")
+		if strings.EqualFold(key, "behavior") {
+			if err := checkBehaviorValue(value, allow); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
