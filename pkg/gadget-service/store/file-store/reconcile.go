@@ -99,6 +99,9 @@ func (s *FileStore) reconcileFiles(ctx context.Context) error {
 		err = s.instanceMgr.ReconcileGadget(updateCtx, request.GadgetInstance)
 		cancel()
 		if err != nil {
+			// Reconcile a restored last-good file too, so the manager can clear
+			// the rejected update diagnostic. Keep the key for deletion tracking.
+			s.observed[id] = ""
 			log.Warnf("updating gadget file %q: %v", file.Name(), err)
 			continue
 		}

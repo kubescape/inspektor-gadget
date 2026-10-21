@@ -18,12 +18,14 @@ import (
 )
 
 type fakeFileManager struct {
-	applied []string
-	removed []string
-	reject  bool
+	applied     []string
+	removed     []string
+	reject      bool
+	updateError error
+	starts      int
 }
 
-func (*fakeFileManager) RunGadget(*api.GadgetInstance) {}
+func (m *fakeFileManager) RunGadget(*api.GadgetInstance) { m.starts++ }
 func (m *fakeFileManager) RemoveGadget(id string) error {
 	m.removed = append(m.removed, id)
 	return nil
@@ -31,8 +33,10 @@ func (m *fakeFileManager) RemoveGadget(id string) error {
 
 func (m *fakeFileManager) ReconcileGadget(_ context.Context, instance *api.GadgetInstance) error {
 	if m.reject {
-		return errors.New("invalid policy")
+		m.updateError = errors.New("invalid policy")
+		return m.updateError
 	}
+	m.updateError = nil
 	m.applied = append(m.applied, instance.GadgetConfig.ParamValues["policy"])
 	return nil
 }
@@ -85,4 +89,27 @@ func TestFileWatcherAppliesEditsAndCloses(t *testing.T) {
 		return len(manager.applied) == 2 && manager.applied[1] == "edited"
 	}, 3*time.Second, 10*time.Millisecond)
 	store.Close()
+}
+
+func TestFileRestoreClearsRejectedUpdate(t *testing.T) {
+	manager := &fakeFileManager{}
+	store := &FileStore{instanceMgr: manager, directory: t.TempDir(), observed: make(map[string]string)}
+	writeInstance(t, store.directory, "instance", "initial")
+	require.NoError(t, store.reconcileFiles(context.Background()))
+	writeInstance(t, store.directory, "instance", "rejected")
+	manager.reject = true
+	require.NoError(t, store.reconcileFiles(context.Background()))
+	require.Error(t, manager.updateError)
+	_, tracked := store.observed["instance"]
+	require.True(t, tracked, "failed updates must retain deletion tracking")
+	manager.reject = false
+	writeInstance(t, store.directory, "instance", "initial")
+	require.NoError(t, store.reconcileFiles(context.Background()))
+	require.NoError(t, manager.updateError)
+	require.Equal(t, []string{"initial", "initial"}, manager.applied)
+	require.Zero(t, manager.starts)
+	require.Empty(t, manager.removed)
+	require.NoError(t, os.Remove(filepath.Join(store.directory, "instance.gadget")))
+	require.NoError(t, store.reconcileFiles(context.Background()))
+	require.Equal(t, []string{"instance"}, manager.removed)
 }

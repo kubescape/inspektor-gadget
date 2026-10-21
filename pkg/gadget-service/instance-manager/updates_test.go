@@ -145,3 +145,26 @@ func TestFailedStartupAcceptsCorrectedConfiguration(t *testing.T) {
 	require.True(t, cancelled)
 	require.NotSame(t, gi, mgr.LookupInstance("instance"))
 }
+
+func TestRestoreLastGoodClearsUpdateError(t *testing.T) {
+	updater := &fakeUpdateContext{supported: true, updateErr: errors.New("invalid policy")}
+	cancelled := false
+	current := &api.GadgetRunRequest{ImageName: "enforce", ParamValues: map[string]string{"operator.oci.wasm.exec-policy": "old"}}
+	gi := &GadgetInstance{id: "instance", request: current, updateContext: updater, state: stateRunning, cancel: func() { cancelled = true }}
+	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
+	desired := &api.GadgetInstance{Id: "instance", GadgetConfig: proto.Clone(current).(*api.GadgetRunRequest)}
+	desired.GadgetConfig.ParamValues["operator.oci.wasm.exec-policy"] = "invalid"
+	require.Error(t, mgr.ReconcileGadget(context.Background(), desired))
+	require.Error(t, gi.updateError)
+	desired.GadgetConfig = proto.Clone(current).(*api.GadgetRunRequest)
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), desired))
+	require.Nil(t, gi.updateError)
+	require.Equal(t, 1, updater.calls, "restoring active configuration does not republish")
+	require.Same(t, gi, mgr.LookupInstance("instance"))
+	require.Same(t, current, gi.request)
+	require.False(t, cancelled)
+	status, err := mgr.InstanceState("instance")
+	require.NoError(t, err)
+	require.Empty(t, status.Message)
+	require.Equal(t, api.GadgetInstanceStatus_StatusRunning, status.Status)
+}
