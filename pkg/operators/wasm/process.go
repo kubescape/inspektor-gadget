@@ -102,7 +102,7 @@ func (i *wasmOperatorInstance) bindProcess(ctx context.Context, m wapi.Module, s
 
 func validateProcessIdentity(procRoot, node, boot string, pid uint32, startTicks uint64, bind func(int) error) (resultErr error) {
 	if pid == uint32(os.Getpid()) {
-		return fmt.Errorf("cannot bind IG itself: process activation requires a group stop")
+		return fmt.Errorf("binding IG itself is unsupported: process activation requires a group stop")
 	}
 	if node == "" || boot == "" || pid == 0 || startTicks == 0 {
 		return fmt.Errorf("incomplete process identity")
@@ -188,7 +188,7 @@ func traceAndBindProcess(procRoot string, pid uint32, bind func() error) (result
 	stopped := 0
 	for _, state := range states {
 		if state == "t" {
-			return fmt.Errorf("cannot bind a ptrace-stopped process")
+			return fmt.Errorf("binding a ptrace-stopped process is unsupported")
 		}
 		if state == "T" {
 			stopped++
@@ -196,7 +196,7 @@ func traceAndBindProcess(procRoot string, pid uint32, bind func() error) (result
 	}
 	preserveStop := stopped == len(states)
 	if stopped != 0 && !preserveStop {
-		return fmt.Errorf("cannot bind a partially stopped process")
+		return fmt.Errorf("binding a partially stopped process is unsupported")
 	}
 	type traceStop struct {
 		stopped bool
