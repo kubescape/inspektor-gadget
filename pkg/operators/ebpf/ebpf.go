@@ -42,6 +42,7 @@ import (
 	"oras.land/oras-go/v2"
 
 	"github.com/inspektor-gadget/inspektor-gadget/internal/version"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/config"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
@@ -182,6 +183,7 @@ type ebpfInstance struct {
 	logger         logger.Logger
 	collectionSpec *ebpf.CollectionSpec
 	collection     *ebpf.Collection
+	policy         *policy
 
 	tracers     map[string]*Tracer
 	structs     map[string]*Struct
@@ -388,6 +390,20 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 	err := i.loadSpec()
 	if err != nil {
 		return fmt.Errorf("initializing: %w", err)
+	}
+
+	// Snapshot only administrator configuration; image metadata and request
+	// parameters never supply or override the BPF admission policy.
+	policyConfig, err := NewConfigFromViper(config.Config)
+	if err != nil {
+		return fmt.Errorf("loading BPF policy: %w", err)
+	}
+	i.policy, err = NewPolicy(policyConfig)
+	if err != nil {
+		return fmt.Errorf("creating BPF policy: %w", err)
+	}
+	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
+		return err
 	}
 
 	// add extra info to gadgetcontext if requested
@@ -902,6 +918,10 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 			return fmt.Errorf("invalid BTF spec: expected btf.Spec, got %T", btfSpecI)
 		}
 		opts.Programs.KernelTypes = btfSpec
+	}
+	// Recheck transformed instructions before kernel map or program loading.
+	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
+		return fmt.Errorf("verifying BPF policy before loading: %w", err)
 	}
 	collection, err := ebpf.NewCollectionWithOptions(i.collectionSpec, opts)
 	if err != nil {
