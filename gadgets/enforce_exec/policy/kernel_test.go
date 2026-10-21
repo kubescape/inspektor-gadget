@@ -87,6 +87,11 @@ func TestCompileKernelBoundaries(t *testing.T) {
 func TestCompileKernelRejectsUnsupported(t *testing.T) {
 	cases := map[string]func(*Document){
 		"invalid document": func(d *Document) { d.Version = 2 },
+		"empty path": func(d *Document) {
+			d.Policy.Exec.Rules = append(d.Policy.Exec.Rules, Rule{
+				Name: "denied", Target: Target{Path: []string{""}}, Action: "deny",
+			})
+		},
 		"expanded capacity": func(d *Document) {
 			for range KernelMaxRules {
 				d.Policy.Exec.Rules[0].Target.Path = append(d.Policy.Exec.Rules[0].Target.Path, "/tool")

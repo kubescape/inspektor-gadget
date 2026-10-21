@@ -201,19 +201,20 @@ func (s *Store) reconcile(key string) error {
 	if !ok {
 		return fmt.Errorf("unexpected type: expected *corev1.ConfigMap, got %T", obj)
 	}
-	instance, err := configMapToGadgetInstance(configMap)
-	if err != nil {
-		return fmt.Errorf("converting configMap to gadgetInstance: %w", err)
-	}
 	// Removing this node from the desired scope is an explicit administrator
 	// removal, like deleting the ConfigMap. It releases any active binding.
 	// Parameter-only changes below retain the running instance on rejection.
-	if len(instance.Nodes) > 0 && !slices.Contains(instance.Nodes, s.nodeName) {
-		err := s.instanceMgr.RemoveGadget(instance.Id)
+	if nodes := configMap.Annotations[gadgetNodes]; nodes != "" && !slices.Contains(strings.Split(nodes, ","), s.nodeName) {
+		err := s.instanceMgr.RemoveGadget(configMap.Name)
 		if errors.Is(err, instancemanager.ErrNotFound) {
 			return nil
 		}
 		return err
+	}
+
+	instance, err := configMapToGadgetInstance(configMap)
+	if err != nil {
+		return fmt.Errorf("converting configMap to gadgetInstance: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

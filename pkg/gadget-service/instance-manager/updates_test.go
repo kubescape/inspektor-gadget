@@ -48,6 +48,7 @@ func TestReconcileLiveParameters(t *testing.T) {
 		updateErr error
 		readyErr  error
 		image     string
+		rename    bool
 		unchanged bool
 		wantErr   bool
 		calls     int
@@ -57,16 +58,21 @@ func TestReconcileLiveParameters(t *testing.T) {
 		{name: "starting", readyErr: gadgetcontext.ErrNotRunning, wantErr: true},
 		{name: "image change", image: "other-image", wantErr: true},
 		{name: "duplicate notification", unchanged: true},
+		{name: "name change", rename: true, unchanged: true, wantErr: true},
+		{name: "name and policy change", rename: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			updater := &fakeUpdateContext{supported: true, updateErr: tc.updateErr, readyErr: tc.readyErr}
 			cancelled := false
 			current := &api.GadgetRunRequest{ImageName: "enforce", ParamValues: map[string]string{"operator.oci.wasm.exec-policy": "old"}}
-			gi := &GadgetInstance{id: "instance", request: current, updateContext: updater, state: stateRunning, cancel: func() { cancelled = true }}
+			gi := &GadgetInstance{id: "instance", name: "original", request: current, updateContext: updater, state: stateRunning, cancel: func() { cancelled = true }}
 			mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
-			desired := &api.GadgetInstance{Id: "instance", GadgetConfig: proto.Clone(current).(*api.GadgetRunRequest)}
+			desired := &api.GadgetInstance{Id: "instance", Name: "original", GadgetConfig: proto.Clone(current).(*api.GadgetRunRequest)}
 			if !tc.unchanged {
 				desired.GadgetConfig.ParamValues["operator.oci.wasm.exec-policy"] = "new"
+			}
+			if tc.rename {
+				desired.Name = "renamed"
 			}
 			if tc.image != "" {
 				desired.GadgetConfig.ImageName = tc.image
@@ -81,6 +87,8 @@ func TestReconcileLiveParameters(t *testing.T) {
 			}
 			require.Equal(t, tc.calls, updater.calls)
 			require.False(t, cancelled)
+			require.Same(t, gi, mgr.LookupInstance("original"))
+			require.Nil(t, mgr.LookupInstance("renamed"))
 			require.Same(t, gi, mgr.LookupInstance("instance"))
 			status, err := mgr.InstanceState("instance")
 			require.NoError(t, err)
@@ -97,14 +105,30 @@ func TestReconcileLiveParameters(t *testing.T) {
 }
 
 func TestLegacyConfigurationRestarts(t *testing.T) {
-	cancelled := false
-	gi := &GadgetInstance{id: "instance", request: &api.GadgetRunRequest{ImageName: "old"}, updateContext: &fakeUpdateContext{}, cancel: func() { cancelled = true }}
-	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
-	// The deliberately invalid protocol version makes the replacement exit before
-	// runtime initialization; this test concerns the restart decision only.
-	require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", GadgetConfig: &api.GadgetRunRequest{ImageName: "new"}}))
-	require.True(t, cancelled)
-	require.NotSame(t, gi, mgr.LookupInstance("instance"))
+	for _, tc := range []struct {
+		name         string
+		desiredName  string
+		desiredImage string
+	}{
+		{name: "configuration change", desiredName: "original", desiredImage: "new"},
+		{name: "name change", desiredName: "renamed", desiredImage: "old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cancelled := false
+			gi := &GadgetInstance{id: "instance", name: "original", request: &api.GadgetRunRequest{ImageName: "old"}, updateContext: &fakeUpdateContext{}, cancel: func() { cancelled = true }}
+			mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
+			// The deliberately invalid protocol version makes the replacement exit before
+			// runtime initialization; this test concerns the restart decision only.
+			require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", Name: tc.desiredName, GadgetConfig: &api.GadgetRunRequest{ImageName: tc.desiredImage}}))
+			require.True(t, cancelled)
+			replacement := mgr.LookupInstance("instance")
+			require.NotSame(t, gi, replacement)
+			require.Same(t, replacement, mgr.LookupInstance(tc.desiredName))
+			if tc.desiredName != "original" {
+				require.Nil(t, mgr.LookupInstance("original"))
+			}
+		})
+	}
 }
 
 func TestFailedStartupAcceptsCorrectedConfiguration(t *testing.T) {

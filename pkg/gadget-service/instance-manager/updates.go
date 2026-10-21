@@ -47,10 +47,11 @@ func (m *Manager) ReconcileGadget(ctx context.Context, desired *api.GadgetInstan
 	defer gi.updateMu.Unlock()
 	gi.mu.Lock()
 	current := gi.request
+	currentName := gi.name
 	updater := gi.updateContext
 	runErr := gi.error
 	gi.mu.Unlock()
-	if proto.Equal(current, desired.GadgetConfig) {
+	if currentName == desired.Name && proto.Equal(current, desired.GadgetConfig) {
 		gi.setUpdateError(nil)
 		return nil
 	}
@@ -82,8 +83,8 @@ func (m *Manager) ReconcileGadget(ctx context.Context, desired *api.GadgetInstan
 	desiredStructure := proto.Clone(desired.GadgetConfig).(*api.GadgetRunRequest)
 	currentStructure := proto.Clone(current).(*api.GadgetRunRequest)
 	desiredStructure.ParamValues, currentStructure.ParamValues = nil, nil
-	if !proto.Equal(desiredStructure, currentStructure) {
-		return gi.setUpdateError(fmt.Errorf("running gadget only supports parameter updates; remove the instance explicitly to change its execution configuration"))
+	if currentName != desired.Name || !proto.Equal(desiredStructure, currentStructure) {
+		return gi.setUpdateError(fmt.Errorf("running gadget only supports parameter updates; remove the instance explicitly to change its name or execution configuration"))
 	}
 	if err := updater.UpdateParameters(ctx, maps.Clone(desired.GadgetConfig.ParamValues)); err != nil {
 		return gi.setUpdateError(fmt.Errorf("live parameter update not acknowledged; instance remains running: %w", err))

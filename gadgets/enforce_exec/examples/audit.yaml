@@ -13,7 +13,9 @@ policy:
           path: ["/usr/bin/**", "/opt/app/bin/**"]
         action: allow
         origin: example/approved-executables
-      - name: no-shell
+      - name: no-default-shell
         target:
-          path: ["/usr/bin/sh"]
+          # Example for a container where readlink -f /usr/bin/sh returns /usr/bin/dash.
+          # Replace with the resolved path from your target container.
+          path: ["/usr/bin/dash"]
         action: deny

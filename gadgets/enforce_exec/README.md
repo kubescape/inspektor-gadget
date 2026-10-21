@@ -89,6 +89,12 @@ including paths exceeding the fixed buffer, deny in enforce mode and permit in
 audit mode. Scripts and their interpreters are checked separately. Allowing an
 interpreter does not restrict the code it can interpret.
 
+The enforce and audit examples deny `/usr/bin/dash`, assuming it is the resolved
+executable behind `/usr/bin/sh`. Run `readlink -f /usr/bin/sh` inside the target
+container and substitute its output in the deny rule. Denying the symlink path
+alone will not match its resolved destination. Add the resolved paths of any
+other shells you want to deny; this example only denies the selected shell.
+
 ## Build and run
 
 Requires BPF LSM enabled, cgroup v2, kernel BTF and the `bpf_path_d_path` kfunc;

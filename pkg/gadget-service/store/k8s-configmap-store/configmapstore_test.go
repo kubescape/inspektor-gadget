@@ -89,3 +89,17 @@ func TestConfigMapRemovalAndNodeSelection(t *testing.T) {
 	require.Equal(t, []string{"deleted", "elsewhere"}, mgr.removed)
 	require.Nil(t, mgr.desired)
 }
+
+func TestNodeExclusionOverridesMalformedConfiguration(t *testing.T) {
+	for _, annotation := range []string{gadgetTimeout, gadgetLogLevel} {
+		t.Run(annotation, func(t *testing.T) {
+			mgr := &fakeManager{}
+			store := &Store{store: cache.NewStore(cache.MetaNamespaceKeyFunc), instanceMgr: mgr, nodeName: "here"}
+			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "ig", Annotations: map[string]string{gadgetNodes: "other-node", annotation: "invalid"}}}
+			require.NoError(t, store.store.Add(cm))
+			require.NoError(t, store.reconcile("ig/instance"))
+			require.Equal(t, []string{"instance"}, mgr.removed)
+			require.Nil(t, mgr.desired)
+		})
+	}
+}

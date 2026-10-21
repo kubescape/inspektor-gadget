@@ -134,7 +134,7 @@ func (d Document) Validate(limits Limits) error {
 		}
 		for _, pattern := range r.Target.Path {
 			base := strings.TrimSuffix(pattern, "/**")
-			if base == "" {
+			if pattern == "/**" {
 				base = "/"
 			}
 			if !path.IsAbs(base) || path.Clean(base) != base || strings.ContainsAny(base, "*?[]\\\x00") {

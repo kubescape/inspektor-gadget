@@ -44,6 +44,7 @@ func TestStrictParsing(t *testing.T) {
 		"missing binding":    strings.Replace(fixture, "container:\n    runtime: containerd\n    id: container-123", "{}", 1),
 		"bad mode":           strings.Replace(fixture, "mode: enforce", "mode: tripwire", 1),
 		"bad glob":           strings.Replace(fixture, "/usr/bin/**", "/usr/*/bin", 1),
+		"empty path":         strings.Replace(fixture, "/usr/bin/**", "", 1),
 		"relative path":      strings.Replace(fixture, "/usr/bin/**", "usr/bin/**", 1),
 		"unclean path":       strings.Replace(fixture, "/usr/bin/**", "/usr/../bin/**", 1),
 		"unknown version":    strings.Replace(fixture, "version: 1", "version: 2", 1),
