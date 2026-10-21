@@ -372,6 +372,11 @@ Return value:
 
 ### eBPF Maps
 
+Maps created through `newMap` and file descriptors opened by map-of-maps lookups
+are owned by the WASM operator. Release them when no longer needed; the runtime
+also closes remaining owned maps on shutdown or failed startup. Handles from
+`getMap` borrow a gadget map and releasing them does not close that map.
+
 #### `newMap(name string, typ uint32, keySize uint32, valueSize uint32, maxEntries uint32) uint32`
 
 Create a new eBPF map.
@@ -435,6 +440,22 @@ Parameters:
 Return value:
 - 0 in case of success, 1 otherwise.
 
+#### `mapFreeze(m uint32) uint32`
+
+Prevent further userspace updates to a map. BPF programs can still update it.
+Populate a policy map before freezing and publishing it in a map of maps.
+
+Parameters:
+
+- `m` (u32): Map handle.
+
+Return value:
+
+- 0 in case of success, 1 otherwise.
+
+This host function is exported as `ig.mapFreeze`. A module importing it fails
+initialization on runtimes without the function, before gadget eBPF attachment.
+
 #### `mapRelease(m uint32) uint32`
 
 Close the map created by `newMap()`.
@@ -450,7 +471,9 @@ Return value:
 
 #### `releaseHandle(h uint32) uint32`
 
-Releases the handle
+Releases the handle. For an owned map, including a map-of-maps lookup result,
+this also closes its file descriptor. Borrowed `getMap` handles do not close the
+underlying gadget map.
 
 Parameters:
 - `h` (u32): handle

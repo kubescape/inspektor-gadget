@@ -27,6 +27,7 @@ import (
 )
 
 func (i *wasmOperatorInstance) addMapFuncs(env wazero.HostModuleBuilder) {
+	exportFunction(env, "mapFreeze", i.mapFreeze, []wapi.ValueType{wapi.ValueTypeI32}, []wapi.ValueType{wapi.ValueTypeI32})
 	exportFunction(env, "newMap", i.newMap,
 		[]wapi.ValueType{
 			wapi.ValueTypeI64, // Map name
@@ -151,9 +152,14 @@ func (i *wasmOperatorInstance) newMap(ctx context.Context, m wapi.Module, stack 
 	}
 
 	mapHandle := i.addHandle(ebpfMap)
+	if mapHandle == 0 {
+		ebpfMap.Close()
+		stack[0] = 0
+		return
+	}
 
 	i.createdMapMutex.Lock()
-	i.createdMap[mapHandle] = struct{}{}
+	i.createdMap[mapHandle] = ebpfMap
 	i.createdMapMutex.Unlock()
 
 	stack[0] = wapi.EncodeU32(mapHandle)
@@ -250,7 +256,16 @@ func (i *wasmOperatorInstance) mapLookup(ctx context.Context, m wapi.Module, sta
 			return
 		}
 
-		binary.NativeEndian.PutUint32(value, i.addHandle(innerMap))
+		handle := i.addHandle(innerMap)
+		if handle == 0 {
+			innerMap.Close()
+			stack[0] = 1
+			return
+		}
+		i.createdMapMutex.Lock()
+		i.createdMap[handle] = innerMap
+		i.createdMapMutex.Unlock()
+		binary.NativeEndian.PutUint32(value, handle)
 	}
 
 	err = bufToStack(m, value, valuePtr)
@@ -419,4 +434,17 @@ func (i *wasmOperatorInstance) mapRelease(ctx context.Context, m wapi.Module, st
 	i.createdMapMutex.Unlock()
 
 	i.delHandle(mapHandle)
+}
+
+func (i *wasmOperatorInstance) mapFreeze(ctx context.Context, m wapi.Module, stack []uint64) {
+	bpfMap, ok := getHandle[*ebpf.Map](i, wapi.DecodeU32(stack[0]))
+	stack[0] = 1
+	if !ok {
+		return
+	}
+	if err := bpfMap.Freeze(); err != nil {
+		i.logger.Warnf("mapFreeze: %v", err)
+		return
+	}
+	stack[0] = 0
 }

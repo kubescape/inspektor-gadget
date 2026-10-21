@@ -219,6 +219,7 @@ type ebpfInstance struct {
 
 	gadgetCtx operators.GadgetContext
 	done      chan struct{}
+	doneOnce  sync.Once
 
 	// used to be sure all tracers are done before returning from Stop()
 	wg sync.WaitGroup
@@ -1019,11 +1020,16 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 }
 
 func (i *ebpfInstance) PreStop(gadgetCtx operators.GadgetContext) error {
-	close(i.done)
+	i.doneOnce.Do(func() {
+		if i.done != nil {
+			close(i.done)
+		}
+	})
 	return nil
 }
 
 func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
+	i.PreStop(gadgetCtx)
 	for _, t := range i.tracers {
 		t.close()
 	}
@@ -1047,11 +1053,13 @@ func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 		}
 	}
 
+	i.perfFds = nil
 	i.wg.Wait()
 	return nil
 }
 
 func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
+	i.Stop(gadgetCtx)
 	if i.collection != nil {
 		i.collection.Close()
 		i.collection = nil

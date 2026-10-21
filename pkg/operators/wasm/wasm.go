@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -95,7 +96,7 @@ func (w *wasmOperator) InstantiateImageOperator(
 		handleMap:   map[uint32]any{},
 		logger:      gadgetCtx.Logger(),
 		paramValues: paramValues,
-		createdMap:  map[uint32]struct{}{},
+		createdMap:  map[uint32]*ebpf.Map{},
 	}
 
 	if configVar, ok := gadgetCtx.GetVar("config"); ok {
@@ -135,6 +136,7 @@ type wasmOperatorInstance struct {
 	// https://github.com/tetratelabs/wazero/blob/610c202ec48f3a7c729f2bf11707330127ab3689/api/wasm.go#L378-L381
 	dataSourceCallbackLock sync.Mutex
 	dataSourceCallback     wapi.Function
+	guestStopped           atomic.Bool
 
 	// Golang objects are exposed to the wasm module by using a handleID
 	handleMap       map[uint32]any
@@ -146,7 +148,7 @@ type wasmOperatorInstance struct {
 	extraParams api.Params
 	paramValues map[string]string
 
-	createdMap      map[uint32]struct{}
+	createdMap      map[uint32]*ebpf.Map
 	createdMapMutex sync.RWMutex
 
 	syscallsDeclarations map[string]syscalls.SyscallDeclaration
@@ -219,6 +221,13 @@ func getHandle[T any](i *wasmOperatorInstance, handleID uint32) (T, bool) {
 }
 
 func (i *wasmOperatorInstance) delHandle(handleID uint32) {
+	i.createdMapMutex.Lock()
+	owned := i.createdMap[handleID]
+	delete(i.createdMap, handleID)
+	i.createdMapMutex.Unlock()
+	if owned != nil {
+		owned.Close()
+	}
 	i.handleLock.Lock()
 	defer i.handleLock.Unlock()
 	delete(i.handleMap, handleID)
@@ -348,16 +357,18 @@ func (i *wasmOperatorInstance) Start(gadgetCtx operators.GadgetContext) error {
 }
 
 func (i *wasmOperatorInstance) Stop(gadgetCtx operators.GadgetContext) error {
-	i.cancel()
-	defer func() {
-		i.handleLock.Lock()
-		i.handleMap = nil
-		i.handleLock.Unlock()
-
-		i.createdMapMutex.Lock()
-		i.createdMap = nil
-		i.createdMapMutex.Unlock()
-	}()
+	if i.guestStopped.Swap(true) {
+		return nil
+	}
+	if i.cancel != nil {
+		i.cancel()
+	}
+	i.dataSourceCallbackLock.Lock()
+	defer i.dataSourceCallbackLock.Unlock()
+	defer i.closeMaps()
+	if i.mod == nil {
+		return nil
+	}
 
 	// We need a new context in here, as gadgetCtx has already been cancelled
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*42)
@@ -371,6 +382,13 @@ func (i *wasmOperatorInstance) PostStop(gadgetCtx operators.GadgetContext) error
 }
 
 func (i *wasmOperatorInstance) Close(gadgetCtx operators.GadgetContext) error {
+	i.guestStopped.Store(true)
+	if i.cancel != nil {
+		i.cancel()
+	}
+	i.dataSourceCallbackLock.Lock()
+	defer i.dataSourceCallbackLock.Unlock()
+	defer i.closeMaps()
 	var errs []error
 
 	if i.rt != nil {
@@ -385,4 +403,18 @@ func (i *wasmOperatorInstance) Close(gadgetCtx operators.GadgetContext) error {
 
 func init() {
 	operators.RegisterOperatorForMediaType(wasmObjectMediaType, newWasmOperator())
+}
+
+// closeMaps releases owned FDs, including those acquired before startup failed.
+func (i *wasmOperatorInstance) closeMaps() {
+	i.createdMapMutex.Lock()
+	owned := i.createdMap
+	i.createdMap = make(map[uint32]*ebpf.Map)
+	i.createdMapMutex.Unlock()
+	for _, m := range owned {
+		m.Close()
+	}
+	i.handleLock.Lock()
+	clear(i.handleMap)
+	i.handleLock.Unlock()
 }
