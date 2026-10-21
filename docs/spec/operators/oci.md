@@ -36,6 +36,41 @@ gadgets](../../reference/verify-gadgets.mdx) to learn more.
 
 Default: `true`
 
+### `allow-enforcement`
+
+Allow administrator-approved gadgets declaring `generator` or `mutator` behavior.
+The host checks the declaration before instantiating any image operator. The
+supported top-level `behavior` values in gadget metadata are:
+
+- `observer`: observes activity.
+- `generator`: generates activity.
+- `mutator`: changes or blocks activity, including execution enforcement.
+
+Declared generators and mutators require explicit host opt-in. Observers and
+legacy gadgets without a declaration keep working with the default setting.
+Unknown or malformed declarations are rejected.
+
+Default: `false`
+
+Fully qualified name: `operator.oci.allow-enforcement`
+
+For a local run, use the generated CLI flag `ig run --allow-enforcement=true`.
+For a daemon, set the host configuration or start it with
+`ig daemon --allow-enforcement=true`. A client request cannot override a daemon's
+setting. The Helm value is `config.operator.oci.allow-enforcement`:
+
+```yaml
+config:
+  operator:
+    oci:
+      allow-enforcement: true
+```
+
+Behavior declarations express the intent of trusted, administrator-approved
+code; they are not a sandbox that prevents an incorrectly declared gadget from
+changing the system. Continue using image signature verification and a digest
+allow list to select approved gadgets. See `verify-image` and `allowed-gadgets`.
+
 ### `public-keys`
 
 Public keys used to verify the gadgets. Check [Verify image-based

@@ -25,6 +25,7 @@ import (
 	"github.com/blang/semver"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -57,6 +58,7 @@ const (
 	certificates            = "notation-certificates"
 	policyDocument          = "notation-policy-document"
 	allowedGadgets          = "allowed-gadgets"
+	allowEnforcement        = "allow-enforcement"
 
 	TagGroupOCI = "group:OCI"
 )
@@ -113,6 +115,7 @@ func (o *ociHandler) Init(params *params.Params) error {
 
 func (o *ociHandler) GlobalParams() api.Params {
 	p := api.Params{
+		{Key: allowEnforcement, Title: "Allow enforcement", Description: "Allow administrator-approved gadgets declaring generator or mutator behavior", DefaultValue: "false", TypeHint: api.TypeBool},
 		{
 			Key:          verifyImage,
 			Title:        "Verify image",
@@ -434,6 +437,11 @@ func (o *OciHandlerInstance) init(gadgetCtx operators.GadgetContext) error {
 	}
 	r.Close()
 
+	// Viper drops null values, so reject an explicit null declaration before parsing.
+	if err := checkBehaviorDeclaration(metadata); err != nil {
+		return err
+	}
+
 	// Store metadata
 	err = gadgetCtx.SetMetadata(metadata)
 	if err != nil {
@@ -447,6 +455,10 @@ func (o *OciHandlerInstance) init(gadgetCtx operators.GadgetContext) error {
 	viper, ok := cfg.(*viper.Viper)
 	if !ok {
 		return fmt.Errorf("invalid configuration format")
+	}
+
+	if err := checkBehavior(viper, o.globalParams.Get(allowEnforcement).AsBool()); err != nil {
+		return err
 	}
 
 	for _, ann := range o.instanceParams.Get(annotate).AsStringSlice() {
@@ -627,3 +639,40 @@ func (o *ociHandler) Priority() int {
 
 // OciHandler is a singleton of ociHandler
 var OciHandler = New()
+
+// checkBehavior gates declared behavior before any image operator can execute.
+// Undeclared legacy gadgets retain their existing admission behavior.
+func checkBehavior(config *viper.Viper, allow bool) error {
+	value := config.Get("behavior")
+	if value == nil && !config.InConfig("behavior") {
+		return nil
+	}
+	behavior, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("gadget behavior must be a string")
+	}
+	switch behavior {
+	case "observer":
+		return nil
+	case "generator", "mutator":
+		if !allow {
+			return fmt.Errorf("gadget behavior %q requires operator.oci.allow-enforcement=true on the host", behavior)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown gadget behavior %q", behavior)
+	}
+}
+
+func checkBehaviorDeclaration(metadata []byte) error {
+	var values map[string]any
+	if err := yaml.Unmarshal(metadata, &values); err != nil {
+		return fmt.Errorf("reading gadget behavior: %w", err)
+	}
+	for key, value := range values {
+		if strings.EqualFold(key, "behavior") && value == nil {
+			return fmt.Errorf("gadget behavior must be a string")
+		}
+	}
+	return nil
+}

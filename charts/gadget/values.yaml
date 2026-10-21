@@ -34,6 +34,8 @@ config:
       hook-mode: "auto"
     oci:
       verify-image: true
+      # -- Allow administrator-approved gadgets declaring generator or mutator behavior.
+      allow-enforcement: false
       public-keys:
         - |
           -----BEGIN PUBLIC KEY-----
