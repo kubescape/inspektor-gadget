@@ -17,6 +17,7 @@ package instancemanager
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ type fakeUpdateContext struct {
 	updateErr error
 	calls     int
 	values    api.ParamValues
+	active    api.ParamValues
+	acks      int
 }
 
 func (f *fakeUpdateContext) ParameterUpdatesSupported() (bool, error) { return f.supported, f.readyErr }
@@ -43,7 +46,12 @@ func (f *fakeUpdateContext) ParameterUpdatesSupported() (bool, error) { return f
 func (f *fakeUpdateContext) UpdateParameters(_ context.Context, values api.ParamValues) error {
 	f.calls++
 	f.values = values
-	return f.updateErr
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	f.active = maps.Clone(values)
+	f.acks++
+	return nil
 }
 
 func TestReconcileLiveParameters(t *testing.T) {
@@ -61,7 +69,8 @@ func TestReconcileLiveParameters(t *testing.T) {
 		{name: "rejected", updateErr: errors.New("invalid policy"), wantErr: true, calls: 1},
 		{name: "starting", readyErr: gadgetcontext.ErrNotRunning, wantErr: true},
 		{name: "image change", image: "other-image", wantErr: true},
-		{name: "duplicate notification", unchanged: true},
+		{name: "duplicate notification", unchanged: true, calls: 1},
+		{name: "duplicate while starting", unchanged: true, readyErr: gadgetcontext.ErrNotRunning, wantErr: true},
 		{name: "name change", rename: true, unchanged: true, wantErr: true},
 		{name: "name and policy change", rename: true, wantErr: true},
 	} {
@@ -150,22 +159,34 @@ func TestFailedStartupAcceptsCorrectedConfiguration(t *testing.T) {
 	require.NotSame(t, gi, mgr.LookupInstance("instance"))
 }
 
-func TestRestoreLastGoodClearsUpdateError(t *testing.T) {
-	updater := &fakeUpdateContext{supported: true, updateErr: errors.New("invalid policy")}
+func TestRestoreLastGoodRequiresFreshAcknowledgement(t *testing.T) {
+	updater := &fakeUpdateContext{supported: true}
 	cancelled := false
 	current := &api.GadgetRunRequest{ImageName: "enforce", ParamValues: map[string]string{"operator.oci.wasm.exec-policy": "old"}}
 	gi := &GadgetInstance{id: "instance", request: current, updateContext: updater, state: stateRunning, cancel: func() { cancelled = true }}
 	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
 	desired := &api.GadgetInstance{Id: "instance", GadgetConfig: proto.Clone(current).(*api.GadgetRunRequest)}
+	// A direct input publication changes the active policy without updating the
+	// manager's cached request. Restoring the cached request must undo this.
+	require.NoError(t, updater.UpdateParameters(context.Background(), api.ParamValues{"operator.oci.wasm.exec-policy": "direct"}))
+	updater.updateErr = errors.New("invalid policy")
 	desired.GadgetConfig.ParamValues["operator.oci.wasm.exec-policy"] = "invalid"
 	require.Error(t, mgr.ReconcileGadget(context.Background(), desired))
 	require.Error(t, gi.updateError)
 	desired.GadgetConfig = proto.Clone(current).(*api.GadgetRunRequest)
+	// A failed restoration must not clear the error or claim the old policy.
+	require.Error(t, mgr.ReconcileGadget(context.Background(), desired))
+	require.Error(t, gi.updateError)
+	require.Equal(t, "direct", updater.active["operator.oci.wasm.exec-policy"])
+	require.Equal(t, 1, updater.acks)
+	updater.updateErr = nil
 	require.NoError(t, mgr.ReconcileGadget(context.Background(), desired))
 	require.Nil(t, gi.updateError)
-	require.Equal(t, 1, updater.calls, "restoring active configuration does not republish")
+	require.Equal(t, 4, updater.calls)
+	require.Equal(t, 2, updater.acks)
+	require.Equal(t, api.ParamValues(current.ParamValues), updater.active, "restoration republishes the desired policy")
 	require.Same(t, gi, mgr.LookupInstance("instance"))
-	require.Same(t, current, gi.request)
+	require.True(t, proto.Equal(current, gi.request))
 	require.False(t, cancelled)
 	status, err := mgr.InstanceState("instance")
 	require.NoError(t, err)
@@ -238,4 +259,14 @@ func TestCompletedRunAcceptsChangedConfiguration(t *testing.T) {
 	replacement.mu.Lock()
 	require.True(t, proto.Equal(changed.GadgetConfig, replacement.request))
 	replacement.mu.Unlock()
+}
+
+func TestUnchangedLegacyConfigurationDoesNotRestart(t *testing.T) {
+	updater := &fakeUpdateContext{}
+	current := &api.GadgetRunRequest{ImageName: "legacy"}
+	gi := &GadgetInstance{id: "instance", request: current, updateContext: updater, cancel: func() { t.Error("unchanged legacy gadget was cancelled") }}
+	mgr := &Manager{gadgetInstances: map[string]*GadgetInstance{"instance": gi}}
+	require.NoError(t, mgr.ReconcileGadget(context.Background(), &api.GadgetInstance{Id: "instance", GadgetConfig: proto.Clone(current).(*api.GadgetRunRequest)}))
+	require.Same(t, gi, mgr.LookupInstance("instance"))
+	require.Zero(t, updater.calls)
 }

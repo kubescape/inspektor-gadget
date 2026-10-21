@@ -51,11 +51,11 @@ func (m *Manager) ReconcileGadget(ctx context.Context, desired *api.GadgetInstan
 	updater := gi.updateContext
 	runCompleted := gi.runCompleted
 	gi.mu.Unlock()
-	if currentName == desired.Name && proto.Equal(current, desired.GadgetConfig) {
-		gi.setUpdateError(nil)
-		return nil
-	}
+	unchanged := currentName == desired.Name && proto.Equal(current, desired.GadgetConfig)
 	if runCompleted {
+		if unchanged {
+			return gi.setUpdateError(nil)
+		}
 		// Run has returned and completed operator cleanup, whether it failed
 		// or finished normally. A changed configuration may start a fresh instance.
 		if err := m.RemoveGadget(desired.Id); err != nil {
@@ -72,6 +72,9 @@ func (m *Manager) ReconcileGadget(ctx context.Context, desired *api.GadgetInstan
 		return gi.setUpdateError(err)
 	}
 	if !supported {
+		if unchanged {
+			return gi.setUpdateError(nil)
+		}
 		if err := m.RemoveGadget(desired.Id); err != nil {
 			return err
 		}
@@ -86,6 +89,8 @@ func (m *Manager) ReconcileGadget(ctx context.Context, desired *api.GadgetInstan
 	if currentName != desired.Name || !proto.Equal(desiredStructure, currentStructure) {
 		return gi.setUpdateError(fmt.Errorf("running gadget only supports parameter updates; remove the instance explicitly to change its name or execution configuration"))
 	}
+	// Cached requests do not prove the active policy: direct datasource updates
+	// can change it independently. Even an unchanged request needs a fresh ack.
 	if err := updater.UpdateParameters(ctx, maps.Clone(desired.GadgetConfig.ParamValues)); err != nil {
 		return gi.setUpdateError(fmt.Errorf("live parameter update not acknowledged; instance remains running: %w", err))
 	}
