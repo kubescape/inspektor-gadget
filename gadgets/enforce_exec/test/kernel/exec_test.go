@@ -66,7 +66,11 @@ func TestExecKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	object := filepath.Join(tmp, "exec.bpf.o")
-	run(t, "clang", "-O2", "-g", "-target", "bpf", "-D__TARGET_ARCH_x86", "-I"+tmp, "-c", source, "-o", object)
+	include := os.Getenv("IG_EXEC_INCLUDE")
+	if include == "" {
+		include = "../../../../include"
+	}
+	run(t, "clang", "-O2", "-g", "-target", "bpf", "-D__TARGET_ARCH_x86", "-I"+tmp, "-I"+include, "-c", source, "-o", object)
 	spec, err := ebpf.LoadCollectionSpec(object)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +252,7 @@ func TestExecKernel(t *testing.T) {
 	})
 	t.Run("reporting-saturation", func(t *testing.T) {
 		publish(t, 7, 2, 1, nil, nil)
-		for range 100 {
+		for range 1000 {
 			expect(t, bad, true, true)
 		}
 		var counts []uint64
@@ -263,6 +267,17 @@ func TestExecKernel(t *testing.T) {
 			t.Fatal("expected ring buffer loss with no reader")
 		}
 		t.Logf("reports lost while blocking: %d", lost)
+		if err := collection.Maps["counters"].Lookup(uint32(5), &counts); err != nil {
+			t.Fatal(err)
+		}
+		var limited uint64
+		for _, n := range counts {
+			limited += n
+		}
+		if limited == 0 {
+			t.Fatal("expected reporting rate limit while blocking")
+		}
+		t.Logf("reports rate limited while blocking: %d", limited)
 	})
 	t.Run("atomic-generation", func(t *testing.T) {
 		reader, err := ringbuf.NewReader(collection.Maps["events"])

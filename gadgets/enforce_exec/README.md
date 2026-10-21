@@ -1,55 +1,25 @@
-# enforce_exec — integration spike
+# enforce_exec
 
-This draft is organized as an IG gadget. It declares an `exec-policy` parameter in
-`gadget.yaml`, builds `go/program.go` as a WASM layer, and consumes the parameter in
-IG's existing `gadgetPreStart` lifecycle hook. There is no custom CLI command.
+An execution-policy gadget using IG's normal eBPF/WASM OCI image and lifecycle.
+It blocks executable paths for one explicitly selected container using BPF LSM.
+It runs with `ig` or the existing Kubernetes DaemonSet and stored gadget instances;
+no Kubescape component is required.
 
-**The gadget image does not enforce anything.** Valid configuration reaches policy preparation,
-then startup deliberately fails with `enforcement backend unavailable`. Invalid
-configuration fails earlier with a policy diagnostic. Audit and off also fail
-startup: this spike must not advertise a working runtime it does not provide.
+The host must enable `operator.oci.allow-enforcement`. The image declares
+`behavior: mutator`, so the default host rejects it before any image code runs.
+Undeclared legacy gadgets retain their existing behavior. This is an explicit
+consent mechanism for trusted, administrator-approved images, not a sandbox for
+untrusted BPF code. Keep image verification and digest admission enabled in
+production. BPF program/helper allowlists remain separate framework work.
 
-An opt-in [kernel feasibility probe](test/kernel/README.md) separately tests real
-BPF LSM blocking, resolved paths, generation replacement and reporting saturation.
-It is not packaged into the gadget image.
-
-## Structure
-
-- `gadget.yaml`: metadata and mandatory WASM parameter.
-- `build.yaml`, `go/`: normal IG Go/WASM packaging and exported pre-start hook.
-- `policy/`: gadget-owned parser, bounded validation, immutable prepared input and
-  explicit unavailable-backend result. This is execution-specific code, not yet a
-  shared framework abstraction.
-- `policy/*_test.go`: simulated generation lifecycle and path evaluator, used only
-  for contract tests. They are not compiled into the gadget.
-- `examples/`: standalone enforce/audit policies and an IG instance manifest.
-- `test/unit/`: compiles the actual WASM guest, tests its parameter/log ABI, and
-  exercises the real IG OCI handler, WASM operator and local runtime in memory.
-
-No Kubescape packages, CRDs, service, or compiler are required. A future adapter in
-`kubescape/node-agent` can translate SandboxPolicy inputs to this gadget's contract;
-CRD watches/imports/merge/status stay in node-agent. Shared rule vocabulary does not
-make Kubescape a prerequisite.
-
-## Configuration path
-
-```text
-ig run --exec-policy <YAML string> / instance paramValues
-  -> OCI metadata params.wasm.exec-policy
-  -> operator.oci.wasm.exec-policy
-  -> WASM GetParamValue("exec-policy") in gadgetPreStart
-  -> policy.Prepare: strict decode, validation, immutable revision
-  -> Start: explicit backend-unavailable failure (this spike)
-```
-
-Example input (`examples/enforce.yaml`):
+## Configuration and limits
 
 ```yaml
 version: 1
 binding:
   container:
     runtime: containerd
-    id: demo-container-not-resolved-by-this-spike
+    id: <full-container-id>
 policy:
   mode: enforce
   exec:
@@ -61,79 +31,122 @@ policy:
         action: allow
 ```
 
-The parameter is passed by value. No remote process reads a client-side filename.
-There is no `--exec-policy-file` option in this spike; that was proposed, not an
-existing IG facility. Use the existing string parameter or instance manifest:
+`exec-policy` is YAML passed by value, not a path read by the daemon. The kernel
+compiler supports one container binding, audit/enforce/off, allow/deny default,
+exact absolute paths and trailing `/**` directory patterns. Deny matches override
+allow matches. Rule modes must be empty or match the policy mode. Process
+bindings and other unsupported predicates fail before attachment. Named rules
+and origin retain the standalone policy vocabulary used by the proposed
+SandboxPolicy adapter; a complete CRD compiler is not included.
+
+Actual kernel limits are **8 expanded paths per policy, 255 path bytes, and one
+container binding per gadget instance**. An inner map holds a header and eight
+288-byte entries: 2,592 bytes of values plus kernel allocation/metadata overhead.
+Replacement temporarily retains two generations. The parser additionally bounds
+input to 64 KiB; its broader authoring limits do not override kernel limits.
+
+Path resolution uses `bpf_path_d_path` on the executable file in the calling
+task's root. A symlink is checked at its resolved destination; renaming a file
+out of an allowed directory removes that path permission. Resolution errors,
+including paths exceeding the fixed buffer, deny in enforce mode and permit in
+audit mode. Scripts and their interpreters are checked separately. Allowing an
+interpreter does not restrict the code it can interpret.
+
+## Build and run
+
+Requires BPF LSM enabled, cgroup v2, kernel BTF and the `bpf_path_d_path` kfunc;
+Linux 6.12 is the tested baseline. Successful loading/attachment is the final
+capability check. Current WASM imports require the updated IG host: older hosts
+without `ig.mapFreeze` fail image initialization before any BPF program attaches.
+Use matching host/image builds from this branch.
 
 ```sh
 sudo ig image build --local -t enforce_exec:spike gadgets/enforce_exec
-sudo ig run enforce_exec:spike --verify-image=false \
+sudo ig run --allow-enforcement --verify-image=false enforce_exec:spike \
   --exec-policy "$(cat gadgets/enforce_exec/examples/enforce.yaml)"
-# Or:
-sudo ig run -f gadgets/enforce_exec/examples/instance.yaml
 ```
 
-The local build needs the existing IG build prerequisites and write access to the
-local OCI store. The unsigned local development image uses `verify-image=false`
-only for this example; this is not a production trust configuration. Expected run
-result: nonzero exit, policy validation log, then backend-unavailable error.
+Unsigned images and `verify-image=false` are for local development. The existing
+container manager must discover the selected runtime and full ID, and ordinary
+IG selectors must include that container. Other containers remain unaffected.
+Do not put container-ID prefixes or cgroup IDs in the policy.
 
-`GetGadgetInfo`/help can expose metadata without activating enforcement because
-preparation runs in pre-start, not `gadgetInit`. No behavior-declaration field is
-invented in current metadata: framework enforcement admission and consent are
-still required before a real backend can ship. This WASM-only artifact refuses
-startup unconditionally after preparation.
+For Kubernetes, configure the existing Helm chart's daemon host settings:
 
-## Supported validation and test contract
+```yaml
+config:
+  operator:
+    oci:
+      allow-enforcement: true
+```
 
-The parser supports one exact container or process binding, policy modes
-`audit`/`enforce`/`off`, explicit exec default, named allow/deny path rules, optional
-rule modes, and origin. Exact absolute paths and trailing `/**` patterns are the
-first supported subset. Unsupported predicates/globs are rejected rather than
-silently ignored. This is not a full SandboxPolicy implementation.
+Keep the production image trust settings. Supply policy through the ordinary
+stored-instance `paramValues.operator.oci.wasm.exec-policy`, as in
+[`examples/instance.yaml`](examples/instance.yaml). This does not introduce a new
+Kubernetes operator or CRD. The future node-agent adapter translates SandboxPolicy
+into this standalone interface; CRD watches, merging and status stay in node-agent.
 
-Illustrative preparation limits are 64 KiB input/encoded document, 128 rules and
-512 path entries. They are not production kernel-memory measurements. Container
-runtime/ID and process node/boot ID/PID/start-time fields are structurally checked;
-there is no real identity resolution yet. The parser rejects unknown fields,
-multiple YAML documents, duplicate names, invalid modes, and oversized input.
+## Activation, replacement and status
 
-The test-only backend exercises prepare/activate/cancel/inspect/remove, immutable
-snapshots, compare-and-swap generations, one pending candidate, retained last-good
-configuration on invalid updates, and deletion tombstones. The test-only evaluator
-checks deny precedence, directory boundaries, and audit/enforce/off decisions for
-supplied paths; it never inspects or executes files. Its output is not a gadget
-datasource and not evidence of real blocking.
+1. The host checks behavior admission before image operators initialize.
+2. WASM pre-start parses and compiles the full policy before any BPF attachment.
+3. IG loads/attaches the BPF program with an empty, inactive binding map. The guest
+   creates and freezes a complete candidate generation.
+4. IG's container datasource supplies runtime, full ID, cgroup ID and cgroup-v2 path. Only an exact
+   runtime/ID match with a nonzero cgroup and clean, non-root v2 path binds the generation and activates policy.
+5. Container deletion removes the binding. Instance shutdown releases the binding,
+   generation maps and unpinned BPF links, including partial-start failure cleanup.
 
-## Run the tests without root or Kubescape
+The `status` datasource emits state, revision, generation, cgroup ID and message.
+`waiting-for-target` means no target has been protected. `enforcing`, `auditing`
+and `off` describe the installed mode. Other states include `target-removed`,
+`update-rejected`, `error` and `stopped`. An update rejection leaves the reported
+revision/generation and last-good kernel policy intact. These events describe
+policy readiness; the daemon's generic running-instance state alone does not.
+
+An embedding host can publish to the `exec_policy_updates` input datasource:
+
+- `policy` (string): complete standalone policy YAML.
+- `expected_generation` (uint64): last observed generation, initially 1.
+
+Callbacks serialize policy updates and container events. Updates require the same
+container identity. Parsing, compilation, map population and freezing finish
+before replacing the bound inner map with one update. Failures retain the prior
+generation. Successful updates increment the generation and emit status. This
+input is an embedding interface, not a new public RPC or CLI file watcher.
+An embedding host must emit asynchronously when reacting to a guest status event;
+synchronous emission back into the same guest would reenter its serialized callback.
+Existing ConfigMap instance replacement still follows IG's restart semantics;
+it is **not** a gap-free live policy update. Integrating this input with a
+controller or node-agent is follow-up work.
+
+The `verdict` datasource reports generation, cgroup, deny decision, mode,
+path-resolution result and resolved path. `deny=1` in audit mode means would-deny;
+only enforce mode blocks. A shared 4 KiB ring buffer bounds pending reports.
+At most 100 report attempts per CPU per second are permitted, independently of
+verdict evaluation. Per-CPU kernel counters track denied/allowed decisions,
+submitted reports, buffer loss, path errors and rate-limited reports. The counters
+are available in the `counters` BPF map; periodic metric export remains to be wired.
+Enforcement continues when reports are dropped or rate limited.
+
+## Validation and scope
 
 ```sh
 go test -race ./gadgets/enforce_exec/policy ./gadgets/enforce_exec/test/unit
 go vet ./gadgets/enforce_exec/policy ./gadgets/enforce_exec/test/unit
 ```
 
-The integration test compiles `go/program.go` for `wasip1/wasm`, supplies an in-memory
-OCI image, skips the root-only `Runtime.Init` BPF setup, checks that the real
-`GetGadgetInfo`/`RunGadget` path exposes `exec-policy`, and verifies
-that startup fails at the actual guest pre-start hook. Additional ABI tests verify
-valid, invalid, unsupported, oversized, and missing input diagnostics. They need a
-Go toolchain supporting WASM reactor exports; they do not need a container runtime,
-registry, writable `/var/lib/ig`, or BPF privileges.
+Unit tests compile the real WASM guest, test actual OCI admission and initialization,
+and exercise callbacks with mock map/data services, including failure retention.
+The [privileged tests and recorded evidence](test/kernel/README.md) run real BPF
+and the actual guest through IG on a disposable Linux host.
 
-## Framework work still needed
-
-Before this can become an enforcement gadget, implement and review:
-
-1. Enforcement metadata/admission, administrator limits, explicit consent and old
-   daemon capability negotiation before image code initializes.
-2. Real lifetime-safe target resolution, policy preparation against that target,
-   and enforcement-specific readiness/cleanup.
-3. A backend and host interface for prepared generation replacement; the test-only
-   abstraction is an experiment, not an already exported production API.
-4. BPF attachment, verdict datasource, bounded reporting and loss counters.
-5. Kubernetes selector and stored-instance reconciliation semantics.
-
-WASM pre-start validates configuration, but does not itself guarantee validation
-before another operator attaches programs. The shared host admission/prepare order
-must be established before adding an eBPF layer. The gadget image intentionally contains
-no eBPF layer and never reports an attached or enforcing state.
+This is an implementation spike. It protects future executions after target-bound
+status; it does not gate a container's first execution. Binding covers the supplied
+cgroup exactly, not all descendant cgroups. Discovery/removal notification delays
+are possible. Links are unpinned, so daemon death ends enforcement. Policies from
+multiple gadget instances compose through LSM (a denial from any remains a denial).
+Generation atomicity is per hook, not across script/interpreter hooks. Process
+identity resolution, executable integrity, crash fail-closed semantics, the full
+SandboxPolicy vocabulary and a kernel compatibility/performance matrix remain
+outside this implementation.

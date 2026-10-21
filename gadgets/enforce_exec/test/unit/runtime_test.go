@@ -18,6 +18,7 @@ import (
 	"oras.land/oras-go/v2/content/memory"
 
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
+	apihelpers "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api-helpers"
 
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
 	_ "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/wasm"
@@ -57,11 +58,33 @@ func runThroughIG(t *testing.T, wasm, metadata, policy []byte) {
 	if err := store.Tag(ctx, desc, image); err != nil {
 		t.Fatal(err)
 	}
-	gadgetCtx := gadgetcontext.New(ctx, image, gadgetcontext.WithDataOperators(ocihandler.OciHandler), gadgetcontext.WithOrasReadonlyTarget(store))
+	newContext := func(t *testing.T, allow bool) *gadgetcontext.GadgetContext {
+		t.Helper()
+		handler := ocihandler.New()
+		params := apihelpers.ToParamDescs(handler.GlobalParams()).ToParams()
+		if err := params.Set("verify-image", "false"); err != nil {
+			t.Fatal(err)
+		}
+		if allow {
+			if err := params.Set("allow-enforcement", "true"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := handler.Init(params); err != nil {
+			t.Fatal(err)
+		}
+		return gadgetcontext.New(ctx, image, gadgetcontext.WithDataOperators(handler), gadgetcontext.WithOrasReadonlyTarget(store))
+	}
 	runtime := local.New()
-	// Skip local Runtime.Init: it requires root for BPF even for a WASM-only
-	// image. Exercise the real RunGadget/OCI/WASM path without BPF setup.
-	// Inspection must expose the real parameter without trying to start enforcement.
+	// Skip root-only Runtime.Init and use an image with just the actual WASM
+	// layer. Admission and lifecycle execute normally; no BPF is installed.
+	t.Run("admission-default-denied", func(t *testing.T) {
+		err := runtime.RunGadget(newContext(t, false), nil, map[string]string{"operator.oci.wasm.exec-policy": string(policy)})
+		if err == nil || !strings.Contains(err.Error(), "requires operator.oci.allow-enforcement=true") {
+			t.Fatalf("expected enforcement admission denial, got %v", err)
+		}
+	})
+	gadgetCtx := newContext(t, true)
 	_, err = runtime.GetGadgetInfo(gadgetCtx, nil, nil)
 	if err != nil {
 		t.Fatalf("gadget inspection: %v", err)
@@ -75,10 +98,10 @@ func runThroughIG(t *testing.T, wasm, metadata, policy []byte) {
 	if !found {
 		t.Fatal("OCI metadata did not expose mandatory exec-policy")
 	}
-	// Use a fresh context for execution, as normal run does after inspection.
-	gadgetCtx = gadgetcontext.New(ctx, image, gadgetcontext.WithDataOperators(ocihandler.OciHandler), gadgetcontext.WithOrasReadonlyTarget(store))
-	err = runtime.RunGadget(gadgetCtx, nil, map[string]string{"operator.oci.wasm.exec-policy": string(policy)})
-	if err == nil || !strings.Contains(err.Error(), "gadgetPreStart failed") {
-		t.Fatalf("expected failure from actual guest pre-start hook, got %v", err)
+	// A valid policy reaches gadgetStart, where the deliberately absent BPF
+	// bindings map must fail startup instead of advertising enforcement.
+	err = runtime.RunGadget(newContext(t, true), nil, map[string]string{"operator.oci.wasm.exec-policy": string(policy)})
+	if err == nil || !strings.Contains(err.Error(), "gadgetStart failed") {
+		t.Fatalf("expected failure from actual guest start hook without BPF maps, got %v", err)
 	}
 }

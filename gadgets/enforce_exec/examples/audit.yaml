@@ -2,7 +2,7 @@ version: 1
 binding:
   container:
     runtime: containerd
-    id: demo-container-not-resolved-by-this-spike
+    id: replace-with-full-container-id
 policy:
   mode: audit
   exec:

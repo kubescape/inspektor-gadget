@@ -1,9 +1,24 @@
 name: enforce_exec
-description: "Execution policy integration spike: validates configuration, then refuses startup (no enforcement backend)"
+behavior: mutator
+description: "Enforce execution path rules for an explicitly bound container (BPF LSM)"
+annotations:
+  enable-containers-datasource: "true"
+datasources:
+  verdict:
+    fields:
+      path:
+        annotations:
+          description: resolved executable path
+  exec_policy_updates:
+    annotations:
+      cli.default-output-mode: none
+  containers:
+    annotations:
+      cli.default-output-mode: none
 params:
   wasm:
     exec-policy:
       key: exec-policy
-      description: "Standalone execution policy YAML, passed by value; this spike never installs enforcement"
+      description: "Standalone execution policy YAML, passed by value; requires host allow-enforcement"
       typeHint: string
       isMandatory: true

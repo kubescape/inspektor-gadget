@@ -20,7 +20,7 @@ import (
 
 // TestWasmPreStart compiles the actual gadget and invokes its exported lifecycle
 // hook using the IG parameter/log ABI. It substitutes host services only; policy
-// parsing and preparation execute inside the real WASM guest.
+// parsing and kernel compilation execute inside the real WASM guest.
 func TestWasmPreStart(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -58,18 +58,21 @@ func TestWasmPreStart(t *testing.T) {
 	if param.Key != "exec-policy" || !param.Mandatory {
 		t.Fatal("metadata must declare the guest parameter")
 	}
+	t.Run("lifecycle", func(t *testing.T) { runLifecycle(t, wasm, policy) })
 	t.Run("IG-local-runtime", func(t *testing.T) { runThroughIG(t, wasm, metadata, policy) })
 
 	for _, tc := range []struct {
 		name, raw, want string
 		missing         bool
+		wantResult      uint64
 	}{
-		{"valid", string(policy), "enforcement backend unavailable", false},
-		{"audit", strings.Replace(string(policy), "mode: enforce", "mode: audit", 1), "enforcement backend unavailable", false},
-		{"unknown predicate", strings.Replace(string(policy), "target:", "target:\n          fromImage: true", 1), "invalid policy", false},
-		{"invalid", "version: 100", "invalid policy", false},
-		{"oversize", strings.Repeat("x", 65538), "reading exec-policy", false},
-		{"missing", "", "reading exec-policy", true},
+		{"valid", string(policy), "validated policy", false, 0},
+		{"audit", strings.Replace(string(policy), "mode: enforce", "mode: audit", 1), "validated policy", false, 0},
+		{"off", strings.Replace(string(policy), "mode: enforce", "mode: off", 1), "validated policy", false, 0},
+		{"unknown predicate", strings.Replace(string(policy), "target:", "target:\n          fromImage: true", 1), "invalid policy", false, 1},
+		{"invalid", "version: 100", "invalid policy", false, 1},
+		{"oversize", strings.Repeat("x", 65538), "reading exec-policy", false, 1},
+		{"missing", "", "reading exec-policy", true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -134,8 +137,8 @@ func TestWasmPreStart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result) != 1 || result[0] != 1 {
-				t.Fatalf("spike must refuse startup: %v", result)
+			if len(result) != 1 || result[0] != tc.wantResult {
+				t.Fatalf("pre-start result = %v, want %d", result, tc.wantResult)
 			}
 			if !strings.Contains(strings.Join(logs, "\n"), tc.want) {
 				t.Fatalf("expected %q, logs %v", tc.want, logs)

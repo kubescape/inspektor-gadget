@@ -4,7 +4,6 @@
 package execpolicy
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -18,9 +17,6 @@ func TestGadgetPreparation(t *testing.T) {
 			}
 			if p.Hash() == "" || p.RuleCount() != 1 {
 				t.Fatal("missing prepared configuration")
-			}
-			if !errors.Is(p.Start(), ErrBackendUnavailable) {
-				t.Fatal("spike must never report successful startup")
 			}
 		})
 	}
