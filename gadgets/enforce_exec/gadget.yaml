@@ -1,0 +1,9 @@
+name: enforce_exec
+description: "Execution policy integration spike: validates configuration, then refuses startup (no enforcement backend)"
+params:
+  wasm:
+    exec-policy:
+      key: exec-policy
+      description: "Standalone execution policy YAML, passed by value; this spike never installs enforcement"
+      typeHint: string
+      isMandatory: true
