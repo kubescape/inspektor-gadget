@@ -28,6 +28,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	containerhook "github.com/inspektor-gadget/inspektor-gadget/pkg/container-hook"
 	eventtypes "github.com/inspektor-gadget/inspektor-gadget/pkg/types"
 )
 
@@ -79,6 +80,19 @@ type ContainerCollection struct {
 
 	// functions to be called on Close()
 	cleanUpFuncs []func()
+
+	// containerNotifier is the node-wide container-hook notifier, when
+	// WithContainerFanotifyEbpf installed one. There is exactly one per
+	// ContainerCollection, watching every container on the node, so holding it
+	// here is all that is needed to reach the notifier tracking any given
+	// container. It is kept so consumers outside this package can drive the
+	// notifier's exec-hold marking (see MarkExecHoldCandidateByMntns); the
+	// container lifecycle itself is driven by the callback closure, not by this
+	// field.
+	//
+	// Written once, during Initialize, before any consumer can observe the
+	// collection; read-only afterwards.
+	containerNotifier *containerhook.ContainerNotifier
 
 	// disableContainerRuntimeWarnings is used to disable warnings about container runtimes.
 	disableContainerRuntimeWarnings bool

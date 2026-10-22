@@ -131,6 +131,9 @@ func TestMultiOffsetResolverReceivesProgName(t *testing.T) {
 	if got.BuildID == "" {
 		t.Error("BuildID was not populated")
 	}
+	if got.HoldPath {
+		t.Error("HoldPath = true, want false: AttachContainer drives openTargets, not the exec-hold hand-off")
+	}
 	if st.lastOffset == nil || *st.lastOffset != 0x9000 {
 		t.Errorf("attach offset = %v, want 0x9000", st.lastOffset)
 	}

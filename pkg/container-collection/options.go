@@ -664,6 +664,12 @@ func WithContainerFanotifyEbpf() ContainerCollectionOption {
 			return fmt.Errorf("starting container fanotify: %w", err)
 		}
 
+		// Kept on the collection so consumers outside this package can reach the
+		// notifier that tracks a given container (see
+		// MarkExecHoldCandidateByMntns). The closure above remains the only
+		// driver of the container lifecycle.
+		cc.containerNotifier = containerNotifier
+
 		cc.cleanUpFuncs = append(cc.cleanUpFuncs, func() {
 			containerNotifier.Close()
 		})
