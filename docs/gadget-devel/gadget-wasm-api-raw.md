@@ -649,7 +649,12 @@ health reporting and transition semantics; these belong to the gadget policy.
 This function is exported as `ig.bindProcess`. Runtimes without the function
 reject modules importing it during initialization.
 
-Process activation temporarily seizes each thread with `PTRACE_SEIZE` and
+For an IG-owned controlled launch, a private native context capability selects
+the already-held child and its owned pidfd. Binding bypasses ptrace; the launcher
+releases the child after binding and full operator startup. The WASM signature
+and policy identity fields are unchanged, and cannot request this shortcut.
+
+Existing-process activation temporarily seizes each thread with `PTRACE_SEIZE` and
 interrupts it into a tracer-owned stop, waiting up to two seconds for the group
 to become stable. It checks identity again and seeds task storage before
 detaching. External `SIGCONT` cannot resume these stops during binding. This

@@ -94,3 +94,13 @@ func WithName(name string) Option {
 		gadgetCtx.name = name
 	}
 }
+
+// WithOnStarted registers a synchronous callback invoked by Run after all
+// operators have started and parameter updates are ready. It is not invoked by
+// PrepareGadgetInfo. If startup is canceled, the callback is skipped. Returning
+// an error stops the gadget through its normal shutdown lifecycle.
+func WithOnStarted(callback func() error) Option {
+	return func(gadgetCtx *GadgetContext) {
+		gadgetCtx.onStarted = callback
+	}
+}

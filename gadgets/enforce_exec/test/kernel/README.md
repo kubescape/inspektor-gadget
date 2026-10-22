@@ -33,6 +33,19 @@ IG_EXEC_METADATA="$PWD/gadgets/enforce_exec/gadget.yaml" \
   go test -v -run '^TestExecRuntime$' -timeout=2m ./gadgets/enforce_exec/test/kernel
 ```
 
+`TestExecLaunchRuntime` uses the same three artifacts to exercise the controlled
+launcher through the production guest and host. It verifies that an allow policy
+lets the application execute in the registered PID, and a deny policy rejects its
+first exec before it can write a marker file:
+
+```sh
+IG_EXEC_KERNEL_TEST=1 \
+IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
+IG_EXEC_WASM=/tmp/enforce-exec.wasm \
+IG_EXEC_METADATA="$PWD/gadgets/enforce_exec/gadget.yaml" \
+  go test -v -run '^TestExecLaunchRuntime$' -timeout=2m ./gadgets/enforce_exec/test/kernel
+```
+
 `TestExecProcessKernel` uses the production object to check task-storage process
 scope, child exclusion and a nonleader thread replacing the process through
 exec. It needs `IG_EXEC_BPF_OBJECT` and Clang for its small native helper:
@@ -83,6 +96,28 @@ The host-side WASM map test additionally checks actual freezing and FD ownership
 go test -race -v ./pkg/operators/wasm \
   -run 'TestMapFreezeInvalidHandle|TestOwnedMapCleanupAndFreeze|TestStoppedGuestIgnoresCallbacks'
 ```
+
+## Launcher validation — 2026-10-22
+
+Validated on a disposable Debian 13 amd64 VM with Linux
+`6.12.111+deb13-amd64` and BPF LSM enabled, without a container runtime:
+
+- `TestExecLaunchRuntime` passed three consecutive runs with the production
+  BPF object, freshly built WASM guest, and native host. An allow policy executed
+  the application under the registered PID; deny rejected its first exec before
+  its marker file could be written.
+- The actual `ig launch` command passed allow, first-exec deny, missing enforcement
+  consent, startup-timeout, and SIGTERM cleanup checks using a local OCI image.
+- Native race tests covered the private capability, identity rejection, failed
+  binding, gating, cancellation, same-PID exec, environment confidentiality and
+  descriptor cleanup. A nonexistent proc root in the WASM binding test confirms
+  that controlled launches bypass discovery and the ptrace path.
+- Startup callback lifecycle tests, policy tests, targeted existing-process
+  binding tests, vet and scoped lint passed. No BPF program logic changed.
+
+The reusable launcher and integration tests are in `pkg/processlaunch` and
+`launch_runtime_test.go`. These checks cover initial activation; they do not
+establish crash-persistent enforcement or extend process selection to children.
 
 ## Results — 2026-10-21
 

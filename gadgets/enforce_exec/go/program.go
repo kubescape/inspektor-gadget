@@ -224,7 +224,7 @@ func gadgetStart() int32 {
 	}, 0); err != nil {
 		return failed(err)
 	}
-	emitStatus(activeState(), "program attached; only resolved targets are protected; no first-execution guarantee")
+	emitStatus(activeState(), "program attached; resolved target protected; executions before binding are outside coverage")
 	return 0
 }
 

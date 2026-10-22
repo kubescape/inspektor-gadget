@@ -255,15 +255,23 @@ func (c *GadgetContext) Run(paramValues api.ParamValues) error {
 	c.updatesReady = true
 	c.updateMu.Unlock()
 
-	c.Logger().Debugf("running...")
-	WaitForTimeoutOrDone(c)
+	var errs []error
+	if c.onStarted != nil {
+		if err := c.ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("startup canceled: %w", err))
+		} else if err := c.onStarted(); err != nil {
+			errs = append(errs, fmt.Errorf("running startup callback: %w", err))
+		}
+	}
+	if len(errs) == 0 {
+		c.Logger().Debugf("running...")
+		WaitForTimeoutOrDone(c)
+	}
 
 	// Wait for an acknowledged update before tearing down its operator.
 	c.updateMu.Lock()
 	defer c.updateMu.Unlock()
 	c.updatesReady = false
-
-	var errs []error
 
 	if err := c.preStop(); err != nil {
 		errs = append(errs, fmt.Errorf("pre-stopping operators: %w", err))

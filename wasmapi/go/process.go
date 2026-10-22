@@ -28,6 +28,8 @@ func bindProcess(target uint32, node uint64, bootID uint64, hostPID uint32, star
 // its task-storage entry. The map must have a 4-byte key and 8-byte value.
 // StartTicks is field 22 of /proc/PID/stat. IG must run in the host PID namespace.
 // Kernel task storage disappears on task exit and cannot select a reused PID.
+// IG-owned controlled launches use their private barrier and pidfd; other
+// processes require the host to quiesce the thread group through ptrace.
 // Before calling, register process_lifecycle with event_type (string), host_pid
 // (uint32), start_time_ticks (uint64). It receives EXITED after gadgetStart
 // completes. One process binding is supported per gadget instance.

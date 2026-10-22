@@ -76,7 +76,13 @@ policy semantics, rather than requirements imposed by `BindProcess` itself.
 This API imports `ig.bindProcess`; runtimes without the host function reject
 modules importing it during initialization.
 
-Process activation temporarily seizes each thread with `PTRACE_SEIZE` and
+For an IG-owned controlled launch, native `pkg/processlaunch` supplies a private
+context capability for its blocked child. `BindProcess` checks the complete
+identity and writes through the owned pidfd without ptrace. The launcher releases
+the child only after binding and all operator startup succeed. This does not
+change the WASM import or let a policy request a ptrace bypass.
+
+Existing-process activation temporarily seizes each thread with `PTRACE_SEIZE` and
 interrupts it into a tracer-owned stop, waiting up to two seconds for the group
 to become stable. It checks identity again and seeds task storage before
 detaching. External `SIGCONT` cannot resume these stops during binding. This

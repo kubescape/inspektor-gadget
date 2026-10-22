@@ -69,29 +69,56 @@ type Target struct {
 // In particular, unsupported predicates cannot disappear into a broader rule.
 func Parse(r io.Reader, limits Limits) (Document, error) {
 	var d Document
-	if limits.MaxBytes <= 0 || limits.MaxRules <= 0 || limits.MaxPaths <= 0 {
-		return d, fmt.Errorf("limits must be positive")
-	}
-	data, err := io.ReadAll(io.LimitReader(r, limits.MaxBytes+1))
-	if err != nil {
-		return d, fmt.Errorf("read policy: %w", err)
-	}
-	if int64(len(data)) > limits.MaxBytes {
-		return d, fmt.Errorf("policy exceeds %d bytes", limits.MaxBytes)
-	}
-	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&d); err != nil {
-		return d, fmt.Errorf("decode policy: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return d, fmt.Errorf("expected exactly one YAML document")
+	if err := decode(r, limits, &d); err != nil {
+		return Document{}, err
 	}
 	if err := d.Validate(limits); err != nil {
 		return Document{}, err
 	}
 	return d, nil
+}
+
+// ParseLaunch reads a policy with no binding. The launcher supplies the exact
+// process identity; even an empty or null user-provided binding is rejected.
+func ParseLaunch(r io.Reader, limits Limits, process Process) (Document, error) {
+	var input struct {
+		Version int    `yaml:"version"`
+		Policy  Policy `yaml:"policy"`
+	}
+	if err := decode(r, limits, &input); err != nil {
+		return Document{}, err
+	}
+	d := Document{Version: input.Version, Policy: input.Policy, Binding: Binding{Process: &process}}
+	if err := d.Validate(limits); err != nil {
+		return Document{}, err
+	}
+	if _, err := CompileKernel(d, 1); err != nil {
+		return Document{}, err
+	}
+	return d, nil
+}
+
+func decode(r io.Reader, limits Limits, into any) error {
+	if limits.MaxBytes <= 0 || limits.MaxRules <= 0 || limits.MaxPaths <= 0 {
+		return fmt.Errorf("limits must be positive")
+	}
+	data, err := io.ReadAll(io.LimitReader(r, limits.MaxBytes+1))
+	if err != nil {
+		return fmt.Errorf("read policy: %w", err)
+	}
+	if int64(len(data)) > limits.MaxBytes {
+		return fmt.Errorf("policy exceeds %d bytes", limits.MaxBytes)
+	}
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(into); err != nil {
+		return fmt.Errorf("decode policy: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("expected exactly one YAML document")
+	}
+	return nil
 }
 
 func (d Document) Validate(limits Limits) error {

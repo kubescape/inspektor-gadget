@@ -31,6 +31,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/processlaunch"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
 )
 
@@ -75,7 +76,7 @@ func (i *wasmOperatorInstance) bindProcess(ctx context.Context, m wapi.Module, s
 			err = fmt.Errorf("only one process binding per gadget instance is supported")
 		} else {
 			pid, ticks := wapi.DecodeU32(stack[3]), stack[4]
-			err = validateProcessIdentity(host.HostProcFs, node, boot, pid, ticks, func(fd int) error {
+			bind := func(fd int) error {
 				watchFD, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 				if err != nil {
 					return err
@@ -87,7 +88,8 @@ func (i *wasmOperatorInstance) bindProcess(ctx context.Context, m wapi.Module, s
 				i.processWatchWG.Add(1)
 				go i.watchProcess(watchFD, ds, pid, ticks)
 				return nil
-			})
+			}
+			err = bindProcessIdentity(i.gadgetCtx.Context(), host.HostProcFs, node, boot, pid, ticks, bind)
 			if err != nil {
 				i.processWatchActive.Store(false)
 			}
@@ -98,6 +100,20 @@ func (i *wasmOperatorInstance) bindProcess(ctx context.Context, m wapi.Module, s
 		i.logger.Warnf("bindProcess: %v", err)
 		stack[0] = 1
 	}
+}
+
+// bindProcessIdentity uses a host-owned launch barrier when present. Policy
+// fields alone cannot select this path: only the native launcher can supply
+// the private context capability. Existing-process attachment retains its
+// exclusive ptrace activation protocol.
+func bindProcessIdentity(ctx context.Context, procRoot, node, boot string, pid uint32, ticks uint64, bind func(int) error) error {
+	matched, err := processlaunch.Bind(ctx, processlaunch.Identity{
+		Node: node, BootID: boot, PID: pid, StartTimeTicks: ticks,
+	}, bind)
+	if matched {
+		return err
+	}
+	return validateProcessIdentity(procRoot, node, boot, pid, ticks, bind)
 }
 
 func validateProcessIdentity(procRoot, node, boot string, pid uint32, startTicks uint64, bind func(int) error) (resultErr error) {

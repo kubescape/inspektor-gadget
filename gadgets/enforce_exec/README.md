@@ -72,7 +72,7 @@ The binding covers the selected thread group, including execution by a nonleader
 thread and subsequent executions after it becomes leader. Child processes are
 not included.
 
-Activation briefly pauses every thread using exclusive ptrace ownership
+Attaching to an existing process briefly pauses every thread using exclusive ptrace ownership
 (`PTRACE_SEIZE` and `PTRACE_INTERRUPT`) before seeding task storage. Another
 process's SIGCONT cannot release these tracer-owned stops. IG then detaches and
 resumes a previously running group; a fully stopped group remains stopped.
@@ -81,6 +81,61 @@ bounded pause closes the race with an execution already past the LSM hook.
 Process binding requires the host PID namespace and permission to trace the
 target (`SYS_PTRACE` in the default chart capabilities). The pidfd exit watcher
 removes the binding and emits `target-removed`.
+
+### Launching a new process
+
+For a new workload, use the local IG launcher instead of discovering its PID:
+
+```sh
+sudo ig launch <enforce-exec-image> --allow-enforcement \
+  --policy gadgets/enforce_exec/examples/launch.yaml -- /usr/bin/true
+```
+
+Image verification and the configured host BPF admission policy still apply.
+For a locally built unsigned development image, explicitly add `--verify-image=false`.
+The launch policy contains `version` and `policy`; omit `binding`. IG inserts the
+actual child identity and rejects a supplied binding instead of silently replacing it.
+The example allows `/usr/bin/true`; substitute the resolved executable path for your workload.
+The application inherits the launching user's credentials (normally root because
+IG requires root); this interface does not drop privileges or create a sandbox.
+
+IG starts a trusted `/bin/sh` bootstrap held on a private pipe. Native code owns
+its pidfd and passes a private capability through the gadget context. The existing
+`BindProcess` API uses this capability to seed task storage directly, without
+ptrace, thread enumeration, or signal-stop restoration. Policy fields alone cannot
+select this shortcut. After every gadget operator starts successfully, IG sends
+an acknowledgement to the bootstrap, which closes its control descriptors and
+replaces itself with the application using `exec`. The application's first exec
+therefore encounters the installed policy. A deny policy can reject that first
+exec; the bootstrap itself starts before enforcement is bound.
+
+```text
+IG starts blocked bootstrap
+  -> prepares and attaches gadget
+  -> BindProcess writes marker through owned pidfd
+  -> all operators finish startup
+  -> release private barrier
+  -> same process executes application under policy
+```
+
+Startup failure, timeout, or cancellation prevents the application from starting.
+IG keeps the gadget alive until the selected application exits. Cancellation kills
+the selected process before gadget teardown; descendants are outside this process
+binding. The launcher uses a trusted bootstrap and is not a public service accepting
+arbitrary registration requests. The reusable native implementation lives in
+`pkg/processlaunch`; no Kubescape component or container runtime is needed.
+Container discovery is omitted from this process-only command. The bootstrap
+receives the application environment through a private sealed memory file,
+so environment secrets are absent from its command-line arguments; environment
+names must be POSIX identifiers. Command lookup uses the launching host's PATH.
+Application failures currently produce IG exit status 1, rather than preserving
+the application's exact nonzero exit status.
+
+This simplifies initial activation only. Nonleader exec marker transfer, its
+allocation-failure handling, policy updates, and exit monitoring still apply.
+Attaching to an existing process continues to use the ptrace protocol above.
+Killing IG after release still removes its unpinned enforcement programs; the
+launcher does not provide persistent enforcement across an owner crash.
 
 Path resolution uses `bpf_path_d_path` on the executable file in the calling
 task's root. A symlink is checked at its resolved destination; renaming a file

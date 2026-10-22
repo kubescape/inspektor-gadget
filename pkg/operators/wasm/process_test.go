@@ -31,6 +31,7 @@ import (
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	api "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/processlaunch"
 )
 
 func TestProcessStartTicks(t *testing.T) {
@@ -375,5 +376,53 @@ func TestSignalForDetach(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// An unavailable proc root proves the controlled launch path bypasses process
+// discovery and ptrace. The pidfd comes from the parent that owns the barrier.
+func TestBindLaunchedProcessWithoutPtrace(t *testing.T) {
+	child, err := processlaunch.Start(context.Background(), []string{"/bin/true"}, processlaunch.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	id := child.Identity()
+	called := false
+	err = bindProcessIdentity(child.Context(context.Background()), "/proc-not-used-for-launch", id.Node, id.BootID, id.PID, id.StartTimeTicks, func(fd int) error {
+		called = true
+		_, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("binding callback was not called")
+	}
+	if err := child.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLaunchCapabilityRejectsDifferentPolicyIdentity(t *testing.T) {
+	child, err := processlaunch.Start(context.Background(), []string{"/bin/true"}, processlaunch.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	id := child.Identity()
+	err = bindProcessIdentity(child.Context(context.Background()), "/proc-not-used-for-launch", id.Node, id.BootID, id.PID, id.StartTimeTicks+1, func(int) error {
+		t.Fatal("wrong identity reached binding callback")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("accepted different process identity")
+	}
+	if err := child.Release(); err == nil {
+		t.Fatal("released unbound process")
 	}
 }
