@@ -146,7 +146,7 @@ func emitStatus(state, message string) {
 			// The generation may already be committed. Keep its acknowledgement
 			// successful while reporting unknown health explicitly in the message.
 		} else if health.Degraded != 0 {
-			message += "; process tracking degraded; recreate the instance to enable enforcement"
+			message += "; process tracking degraded; launch a new process and instance to enable enforcement"
 		}
 	}
 	packet, err := status.NewPacketSingle()
@@ -372,14 +372,14 @@ func replace(raw string, expected uint64) error {
 		// An audit/off hook can still be running when this update is handled.
 		// Even a clean health snapshot cannot prove it will preserve the marker.
 		if doc.Policy.Mode == "enforce" && document.Policy.Mode != "enforce" {
-			return fmt.Errorf("enabling process enforcement from audit/off requires a new gadget instance and validated process binding")
+			return fmt.Errorf("enabling process enforcement from audit/off requires a new process launch and gadget instance")
 		}
 		health, err := readTrackingHealth()
 		if err != nil {
 			return fmt.Errorf("reading process tracking health: %w", err)
 		}
 		if doc.Policy.Mode == "enforce" && health.Degraded != 0 {
-			return fmt.Errorf("process tracking degraded; enforcement requires a new gadget instance")
+			return fmt.Errorf("process tracking degraded; enforcement requires a new process launch and gadget instance")
 		}
 	}
 	m, err := newGeneration(values)

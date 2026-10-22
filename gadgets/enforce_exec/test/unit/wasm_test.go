@@ -16,6 +16,8 @@ import (
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"gopkg.in/yaml.v3"
+
+	execpolicy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
 )
 
 // TestWasmPreStart compiles the actual gadget and invokes its exported lifecycle
@@ -59,7 +61,18 @@ func TestWasmPreStart(t *testing.T) {
 		t.Fatal("metadata must declare the guest parameter")
 	}
 	t.Run("lifecycle", func(t *testing.T) { runLifecycle(t, wasm, policy) })
-	processPolicy, err := os.ReadFile(filepath.Join(root, "examples", "process.yaml"))
+	launchPolicy, err := os.ReadFile(filepath.Join(root, "examples", "launch.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The launcher injects this identity before passing policy to the guest.
+	processDocument, err := execpolicy.ParseLaunch(strings.NewReader(string(launchPolicy)), execpolicy.DefaultLimits(), execpolicy.Process{
+		Node: "test-node", BootID: "test-boot", HostPID: 12345, StartTimeTicks: 123456,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	processPolicy, err := yaml.Marshal(processDocument)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccount: {{ include "gadget.fullname" . }}
-      hostPID: {{ .Values.hostPID }}
+      hostPID: false
       hostNetwork: false
       {{- if .Values.runtimeClassName }}
       runtimeClassName: {{ .Values.runtimeClassName | quote }}

@@ -14,8 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -33,12 +31,13 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/simple"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/processlaunch"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/runtime/local"
 )
 
-// TestExecProcessFailureRuntime exercises the actual host's exclusive process
-// binding and guest updates, with allocation failure injected only in the BPF
-// test object. No test switch is present in the production gadget.
+// TestExecProcessFailureRuntime exercises launcher binding and guest updates,
+// with allocation failure injected only in the BPF test object. No test switch
+// is present in the production gadget.
 func TestExecProcessFailureRuntime(t *testing.T) {
 	if os.Getenv("IG_EXEC_KERNEL_TEST") != "1" {
 		t.Skip("requires disposable BPF LSM host and IG_EXEC_KERNEL_TEST=1")
@@ -60,48 +59,14 @@ func TestExecProcessFailureRuntime(t *testing.T) {
 	require.NoError(t, os.WriteFile(source, []byte(processHelperSource), 0o600))
 	out, err := exec.Command("clang", "-Wall", "-Werror", "-pthread", "-O2", source, "-o", helper).CombinedOutput()
 	require.NoError(t, err, string(out))
-	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	require.NoError(t, err)
-	node := os.Getenv("NODE_NAME")
-	if node == "" {
-		node, err = os.Hostname()
-		require.NoError(t, err)
-	}
 	for _, initialMode := range []string{"audit", "off"} {
 		t.Run(initialMode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, helper, "/usr/bin/true")
-			input, err := cmd.StdinPipe()
-			require.NoError(t, err)
-			output, err := cmd.StdoutPipe()
-			require.NoError(t, err)
-			cmd.Stderr = os.Stderr
-			require.NoError(t, cmd.Start())
-			defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-			scanner := bufio.NewScanner(output)
-			ready := fmt.Sprintf("READY %d", cmd.Process.Pid)
-			read := func(want string) {
-				t.Helper()
-				require.True(t, scanner.Scan(), "expected %s; scan error: %v", want, scanner.Err())
-				require.Equal(t, want, scanner.Text())
-			}
-			send := func(command, want string) {
-				t.Helper()
-				_, err := input.Write([]byte(command))
-				require.NoError(t, err)
-				read(want)
-			}
-			read(ready)
-			stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", cmd.Process.Pid))
-			require.NoError(t, err)
-			fields := strings.Fields(string(stat)[strings.LastIndexByte(string(stat), ')')+1:])
-			require.Greater(t, len(fields), 19)
-			birth, err := strconv.ParseUint(fields[19], 10, 64)
-			require.NoError(t, err)
-			policy := func(mode string) string {
-				return fmt.Sprintf("version: 1\nbinding:\n  process:\n    node: %q\n    bootID: %q\n    hostPID: %d\n    startTimeTicks: %d\npolicy:\n  mode: %s\n  exec:\n    default: deny\n    rules:\n      - name: helper\n        target:\n          path: [%q]\n        action: allow\n", node, strings.TrimSpace(string(boot)), cmd.Process.Pid, birth, mode, helper)
-			}
+			var policy func(string) string
+			var read func(string)
+			var send func(string, string)
+			var ready string
 			store := memory.New()
 			push := func(media string, data []byte) ocispec.Descriptor {
 				d := content.NewDescriptorFromBytes(media, data)
@@ -125,6 +90,36 @@ func TestExecProcessFailureRuntime(t *testing.T) {
 			}
 			start := func(mode string) (*gadgetcontext.GadgetContext, func(string, uint64) observed, func()) {
 				instanceCtx, stop := context.WithCancel(ctx)
+				t.Cleanup(stop)
+				stdin, input, err := os.Pipe()
+				require.NoError(t, err)
+				t.Cleanup(func() { stdin.Close(); input.Close() })
+				output, stdout, err := os.Pipe()
+				require.NoError(t, err)
+				t.Cleanup(func() { output.Close(); stdout.Close() })
+				child, err := processlaunch.Start(instanceCtx, []string{helper, "/usr/bin/true"}, processlaunch.Options{Stdin: stdin, Stdout: stdout, Stderr: os.Stderr})
+				require.NoError(t, err)
+				t.Cleanup(func() { child.Close() })
+				stdin.Close()
+				stdout.Close()
+				id := child.Identity()
+				ready = fmt.Sprintf("READY %d", id.PID)
+				scanner := bufio.NewScanner(output)
+				read = func(want string) {
+					t.Helper()
+					require.True(t, scanner.Scan(), "expected %s; scan error: %v", want, scanner.Err())
+					require.Equal(t, want, scanner.Text())
+				}
+				send = func(command, want string) {
+					t.Helper()
+					_, err := input.Write([]byte(command))
+					require.NoError(t, err)
+					read(want)
+				}
+				policy = func(mode string) string {
+					return fmt.Sprintf("version: 1\nbinding:\n  process:\n    node: %q\n    bootID: %q\n    hostPID: %d\n    startTimeTicks: %d\npolicy:\n  mode: %s\n  exec:\n    default: deny\n    rules:\n      - name: helper\n        target:\n          path: [%q]\n        action: allow\n", id.Node, id.BootID, id.PID, id.StartTimeTicks, mode, helper)
+				}
+
 				handler := ocihandler.New()
 				params := apihelpers.ToParamDescs(handler.GlobalParams()).ToParams()
 				require.NoError(t, params.Set("verify-image", "false"))
@@ -157,9 +152,10 @@ func TestExecProcessFailureRuntime(t *testing.T) {
 						return nil
 					}, 0)
 				}))
-				gc := gadgetcontext.New(instanceCtx, image, gadgetcontext.WithDataOperators(handler, observer), gadgetcontext.WithOrasReadonlyTarget(store))
+				gc := gadgetcontext.New(child.Context(instanceCtx), image, gadgetcontext.WithDataOperators(handler, observer), gadgetcontext.WithOrasReadonlyTarget(store), gadgetcontext.WithOnStarted(child.Release))
 				runtime := local.New()
 				require.NoError(t, runtime.Init(nil))
+				t.Cleanup(func() { runtime.Close() })
 				done := make(chan error, 1)
 				go func() {
 					done <- runtime.RunGadget(gc, nil, map[string]string{"operator.oci.wasm.exec-policy": policy(mode)})
@@ -168,6 +164,7 @@ func TestExecProcessFailureRuntime(t *testing.T) {
 				shutdown := func() {
 					t.Helper()
 					stop()
+					child.Close()
 					if finished {
 						return
 					}
@@ -205,6 +202,7 @@ func TestExecProcessFailureRuntime(t *testing.T) {
 			gc, await, stop := start(initialMode)
 			state := map[string]string{"audit": "auditing", "off": "off"}[initialMode]
 			got := await(state, 1)
+			read(ready)
 			require.Zero(t, got.failures)
 			require.Zero(t, got.degraded)
 			require.Eventually(t, func() bool { ok, err := gc.ParameterUpdatesSupported(); return err == nil && ok }, 5*time.Second, time.Millisecond)
@@ -220,19 +218,17 @@ func TestExecProcessFailureRuntime(t *testing.T) {
 			got = await("update-rejected", 2)
 			require.Equal(t, uint64(1), got.degraded)
 			stop()
-			// A fresh instance validates the same live identity and seeds its new
-			// leader's task storage while exclusively paused by the production host.
+			// Enforcing again requires a fresh launch; an already running process
+			// cannot be rebound after tracking continuity was lost.
 			gc, await, stop = start("enforce")
 			got = await("enforcing", 1)
+			read(ready)
 			require.Zero(t, got.failures)
 			require.Zero(t, got.degraded)
 			send("d", "DENIED")
 			send("e", ready)
 			send("d", "DENIED")
 			stop()
-			_, err = input.Write([]byte("q"))
-			require.NoError(t, err)
-			require.NoError(t, cmd.Wait())
 		})
 	}
 }

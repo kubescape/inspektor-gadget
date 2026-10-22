@@ -30,18 +30,19 @@ older runtime cannot bypass its startup requirements.
 ## Binding a process
 
 `BindProcess(target Map, node, bootID string, hostPID uint32, startTicks uint64) error`
-validates a live host process and writes `uint64(1)` into its BPF task storage.
+binds an IG-owned bootstrap waiting for launch and writes `uint64(1)` into its
+BPF task storage. Arbitrary running processes cannot be attached.
 Obtain `target` with `GetMap`; it must be a `TaskStorage` map with a 4-byte key
 and an 8-byte value. Normal map lookup, update, and delete functions reject task
 storage because its keys are host pidfds, which are not exposed to WASM.
 
-Call from `gadgetStart`. IG must run in the host PID namespace. The host checks
-`node` against `NODE_NAME` (or the hostname when unset), `bootID` against the
-host boot ID, and `startTicks` against field 22 of `/proc/PID/stat`. `hostPID`
-identifies a thread-group leader. A pidfd ties the storage update to the
-validated task, preventing a later reused PID from inheriting the binding.
-The supplied start time has clock-tick precision; it does not distinguish two
-processes whose PID was reused within the same tick before binding.
+Call from `gadgetStart` in a context created by native `pkg/processlaunch`.
+The launcher supplies a private capability identifying its blocked child and
+owned pidfd. The host verifies that `node`, `bootID`, `hostPID` and `startTicks`
+match that identity before writing task storage. These fields are injected by
+the launcher; providing them in policy YAML cannot authorize a binding.
+The pidfd keeps binding tied to the actual task, including if its numeric PID
+is later reused. The host must run in the host PID namespace.
 
 Before calling, register and subscribe to the single-event datasource
 `process_lifecycle`, with these fields:
@@ -67,8 +68,8 @@ and sticky degradation flag independently of reporting. Gadget status exposes
 `tracking_failures` and `tracking_degraded` snapshots on lifecycle/update activity.
 
 Process transitions from audit/off to enforce require removing the gadget instance
-and creating a fresh instance with validated process binding, even when tracking
-appears healthy. A prior nonblocking execution can still be in flight, so a health
+and launching a new process with a fresh instance, even when tracking appears
+healthy. A prior nonblocking execution can still be in flight, so a health
 snapshot cannot safely authorize promotion. Live updates within enforce, from
 enforce to audit/off, and between audit/off remain supported. These are gadget
 policy semantics, rather than requirements imposed by `BindProcess` itself.
@@ -76,18 +77,8 @@ policy semantics, rather than requirements imposed by `BindProcess` itself.
 This API imports `ig.bindProcess`; runtimes without the host function reject
 modules importing it during initialization.
 
-For an IG-owned controlled launch, native `pkg/processlaunch` supplies a private
-context capability for its blocked child. `BindProcess` checks the complete
-identity and writes through the owned pidfd without ptrace. The launcher releases
-the child only after binding and all operator startup succeed. This does not
-change the WASM import or let a policy request a ptrace bypass.
-
-Existing-process activation temporarily seizes each thread with `PTRACE_SEIZE` and
-interrupts it into a tracer-owned stop, waiting up to two seconds for the group
-to become stable. It checks identity again and seeds task storage before
-detaching. External `SIGCONT` cannot resume these stops during binding. This
-requires ptrace permission over the selected process. An initially fully
-job-control-stopped group remains stopped; partially stopped groups, existing
-tracers, and selecting IG itself are rejected. Failed activation detaches
-threads; a dedicated tracer thread exits to release any thread that could not
-stop within the deadline. No `PTRACE_O_EXITKILL` option is enabled.
+The launcher releases the child only after binding and all operator startup
+succeed. The child replaces itself with the application using `exec`, so its
+first application exec encounters the installed policy. No thread enumeration,
+ptrace activation or signal-stop restoration is needed. This uses the same
+`ig.bindProcess` import and task-storage marker as the BPF enforcement program.

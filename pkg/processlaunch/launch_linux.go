@@ -217,37 +217,36 @@ func (c *Child) Context(ctx context.Context) context.Context {
 }
 
 // Bind invokes install with the owned pidfd while the bootstrap is waiting.
-// matched is false only when ctx contains no launch capability. A mismatch or
-// failed attempt must not fall back to attaching to an arbitrary process.
+// A private launch capability and the matching waiting child are required.
 // install must not close or retain the borrowed pidfd.
-func Bind(ctx context.Context, identity Identity, install func(int) error) (matched bool, err error) {
+func Bind(ctx context.Context, identity Identity, install func(int) error) error {
 	c, ok := ctx.Value(contextKey{}).(*Child)
 	if !ok {
-		return false, nil
+		return errors.New("process binding requires an IG-controlled launch")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return true, err
+		return err
 	}
 	if err := c.ctx.Err(); err != nil {
-		return true, err
+		return err
 	}
 	if c.identity != identity {
-		return true, errors.New("launcher process identity mismatch")
+		return errors.New("launcher process identity mismatch")
 	}
 	if c.exited || c.released || c.attempted {
-		return true, errors.New("launcher binding is no longer available")
+		return errors.New("launcher binding is no longer available")
 	}
 	c.attempted = true
 	if install == nil {
-		return true, errors.New("missing process binding callback")
+		return errors.New("missing process binding callback")
 	}
 	if err := install(c.pidfd); err != nil {
-		return true, err
+		return err
 	}
 	c.bound = true
-	return true, nil
+	return nil
 }
 
 // Release permits the first application exec after binding and runtime startup.

@@ -45,11 +45,11 @@ func startTest(t *testing.T, ctx context.Context) (*Child, string) {
 
 func installTest(t *testing.T, c *Child) {
 	t.Helper()
-	matched, err := Bind(c.Context(context.Background()), c.Identity(), func(fd int) error {
+	err := Bind(c.Context(context.Background()), c.Identity(), func(fd int) error {
 		return unix.PidfdSendSignal(fd, 0, nil, 0)
 	})
-	if !matched || err != nil {
-		t.Fatalf("bind = %v, %v", matched, err)
+	if err != nil {
+		t.Fatalf("bind: %v", err)
 	}
 }
 
@@ -87,8 +87,8 @@ func TestBindingCapabilityAndIdentity(t *testing.T) {
 	c, _ := startTest(t, context.Background())
 	calls := 0
 	callback := func(int) error { calls++; return nil }
-	matched, err := Bind(context.Background(), c.Identity(), callback)
-	if matched || err != nil || calls != 0 {
+	err := Bind(context.Background(), c.Identity(), callback)
+	if err == nil || calls != 0 {
 		t.Fatal("plain context authorized binding")
 	}
 	for _, field := range []string{"node", "boot", "pid", "ticks"} {
@@ -103,14 +103,14 @@ func TestBindingCapabilityAndIdentity(t *testing.T) {
 		case "ticks":
 			id.StartTimeTicks++
 		}
-		matched, err = Bind(c.Context(context.Background()), id, callback)
-		if !matched || err == nil || calls != 0 {
+		err = Bind(c.Context(context.Background()), id, callback)
+		if err == nil || calls != 0 {
 			t.Fatalf("%s mismatch accepted", field)
 		}
 	}
 	installTest(t, c)
-	matched, err = Bind(c.Context(context.Background()), c.Identity(), callback)
-	if !matched || err == nil || calls != 0 {
+	err = Bind(c.Context(context.Background()), c.Identity(), callback)
+	if err == nil || calls != 0 {
 		t.Fatal("second binding accepted")
 	}
 }
@@ -118,7 +118,7 @@ func TestBindingCapabilityAndIdentity(t *testing.T) {
 func TestBindingFailurePreventsExec(t *testing.T) {
 	c, file := startTest(t, context.Background())
 	failure := errors.New("map update failed")
-	_, err := Bind(c.Context(context.Background()), c.Identity(), func(int) error { return failure })
+	err := Bind(c.Context(context.Background()), c.Identity(), func(int) error { return failure })
 	if !errors.Is(err, failure) {
 		t.Fatal(err)
 	}

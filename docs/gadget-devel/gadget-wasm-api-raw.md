@@ -611,7 +611,8 @@ Return value:
 
 #### `bindProcess(target uint32, node uint64, bootID uint64, hostPID uint32, startTicks uint64) uint32`
 
-Validate a live host process and seed its task-storage entry with `uint64(1)`.
+Bind an IG-owned bootstrap waiting for launch and seed its task-storage entry
+with `uint64(1)`. Arbitrary running processes cannot be attached.
 The host uses a pidfd internally; raw file descriptors never enter WASM.
 
 Parameters:
@@ -636,30 +637,23 @@ per instance. IG must run in the host PID namespace; the node must match
 Task storage belongs to the actual task and is reclaimed on exit. The host
 closes its monitoring pidfd on exit or shutdown. Normal map lookup, update,
 and delete operations reject task storage. See the [Go API process binding
-section](./gadget-wasm-api-go.md#binding-a-process) for identity precision and
+section](./gadget-wasm-api-go.md#binding-a-process) for identity ownership and
 nonleader-exec semantics.
 
 The `enforce_exec` program rejects a nonleader exec with the chosen error `ENOMEM`
 if marker propagation fails in enforce mode. Audit/off permit the exec and record
 possible tracking loss in persistent `process_health` state. Process policy
-transitions from audit/off to enforce require a fresh gadget instance and validated
-binding, including when health appears clean. See the Go API section above for
-health reporting and transition semantics; these belong to the gadget policy.
+transitions from audit/off to enforce require a new process launch and fresh
+gadget instance, including when health appears clean. See the Go API section
+above for health reporting and transition semantics; these belong to the gadget
+policy.
 
 This function is exported as `ig.bindProcess`. Runtimes without the function
 reject modules importing it during initialization.
 
-For an IG-owned controlled launch, a private native context capability selects
-the already-held child and its owned pidfd. Binding bypasses ptrace; the launcher
-releases the child after binding and full operator startup. The WASM signature
-and policy identity fields are unchanged, and cannot request this shortcut.
-
-Existing-process activation temporarily seizes each thread with `PTRACE_SEIZE` and
-interrupts it into a tracer-owned stop, waiting up to two seconds for the group
-to become stable. It checks identity again and seeds task storage before
-detaching. External `SIGCONT` cannot resume these stops during binding. This
-requires ptrace permission over the selected process. An initially fully
-job-control-stopped group remains stopped; partially stopped groups, existing
-tracers, and selecting IG itself are rejected. Failed activation detaches
-threads; a dedicated tracer thread exits to release any thread that could not
-stop within the deadline. No `PTRACE_O_EXITKILL` option is enabled.
+Native `pkg/processlaunch` must supply a private context capability for its
+blocked child and owned pidfd. The supplied identity must match that capability;
+policy identity fields alone cannot authorize a binding. The launcher releases
+the child after binding and full operator startup, then the child executes the
+application in the same process. This needs no ptrace activation and retains the
+same WASM signature and BPF task-storage marker.

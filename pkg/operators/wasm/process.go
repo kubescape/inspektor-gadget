@@ -18,12 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/tetratelabs/wazero"
@@ -89,7 +83,7 @@ func (i *wasmOperatorInstance) bindProcess(ctx context.Context, m wapi.Module, s
 				go i.watchProcess(watchFD, ds, pid, ticks)
 				return nil
 			}
-			err = bindProcessIdentity(i.gadgetCtx.Context(), host.HostProcFs, node, boot, pid, ticks, bind)
+			err = bindProcessIdentity(i.gadgetCtx.Context(), node, boot, pid, ticks, bind)
 			if err != nil {
 				i.processWatchActive.Store(false)
 			}
@@ -102,255 +96,12 @@ func (i *wasmOperatorInstance) bindProcess(ctx context.Context, m wapi.Module, s
 	}
 }
 
-// bindProcessIdentity uses a host-owned launch barrier when present. Policy
-// fields alone cannot select this path: only the native launcher can supply
-// the private context capability. Existing-process attachment retains its
-// exclusive ptrace activation protocol.
-func bindProcessIdentity(ctx context.Context, procRoot, node, boot string, pid uint32, ticks uint64, bind func(int) error) error {
-	matched, err := processlaunch.Bind(ctx, processlaunch.Identity{
+// bindProcessIdentity only accepts the host-owned child held by processlaunch.
+// Policy fields identify that child but cannot grant permission to bind a PID.
+func bindProcessIdentity(ctx context.Context, node, boot string, pid uint32, ticks uint64, bind func(int) error) error {
+	return processlaunch.Bind(ctx, processlaunch.Identity{
 		Node: node, BootID: boot, PID: pid, StartTimeTicks: ticks,
 	}, bind)
-	if matched {
-		return err
-	}
-	return validateProcessIdentity(procRoot, node, boot, pid, ticks, bind)
-}
-
-func validateProcessIdentity(procRoot, node, boot string, pid uint32, startTicks uint64, bind func(int) error) (resultErr error) {
-	if pid == uint32(os.Getpid()) {
-		return fmt.Errorf("binding IG itself is unsupported: process activation requires a group stop")
-	}
-	if node == "" || boot == "" || pid == 0 || startTicks == 0 {
-		return fmt.Errorf("incomplete process identity")
-	}
-	localNode := os.Getenv("NODE_NAME")
-	if localNode == "" {
-		var err error
-		localNode, err = os.Hostname()
-		if err != nil {
-			return err
-		}
-	}
-	if node != localNode {
-		return fmt.Errorf("process node %q does not match %q", node, localNode)
-	}
-	bootData, err := os.ReadFile(filepath.Join(procRoot, "sys/kernel/random/boot_id"))
-	if err != nil {
-		return fmt.Errorf("reading boot ID: %w", err)
-	}
-	if strings.TrimSpace(string(bootData)) != boot {
-		return fmt.Errorf("process boot ID does not match")
-	}
-	// pidfd_open accepts thread-group leaders only. Polling after reading stat
-	// rejects an identity whose process exited during validation. The callback
-	// may duplicate the FD for monitoring; this validation FD is always closed.
-	fd, err := unix.PidfdOpen(int(pid), 0)
-	if err != nil {
-		return fmt.Errorf("opening process: %w", err)
-	}
-	defer unix.Close(fd)
-	stat, err := os.ReadFile(filepath.Join(procRoot, strconv.FormatUint(uint64(pid), 10), "stat"))
-	if err != nil {
-		return fmt.Errorf("reading process stat: %w", err)
-	}
-	actual, err := processStartTicks(string(stat), pid)
-	if err != nil {
-		return err
-	}
-	if actual != startTicks {
-		return fmt.Errorf("process start time does not match")
-	}
-	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-	if _, err := unix.Poll(fds, 0); err != nil {
-		return fmt.Errorf("checking process liveness: %w", err)
-	}
-	if fds[0].Revents != 0 {
-		return fmt.Errorf("process has exited")
-	}
-	return withProcessQuiesced(procRoot, pid, func() error {
-		stat, err := os.ReadFile(filepath.Join(procRoot, strconv.FormatUint(uint64(pid), 10), "stat"))
-		if err != nil {
-			return err
-		}
-		actual, err := processStartTicks(string(stat), pid)
-		if err != nil {
-			return err
-		}
-		if actual != startTicks {
-			return fmt.Errorf("process identity changed while stopping")
-		}
-		return bind(fd)
-	})
-}
-
-// withProcessQuiesced owns ptrace stops, so SIGCONT from another process cannot
-// resume a thread between identity validation and the task-storage update.
-func withProcessQuiesced(procRoot string, pid uint32, bind func() error) error {
-	result := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread()
-		// Deliberately never unlock. Go retires this tracer thread on return,
-		// ensuring the kernel detaches any tracee that could not stop by the deadline.
-		result <- traceAndBindProcess(procRoot, pid, bind)
-	}()
-	return <-result
-}
-
-func traceAndBindProcess(procRoot string, pid uint32, bind func() error) (resultErr error) {
-	states, err := processThreadStates(procRoot, pid)
-	if err != nil {
-		return err
-	}
-	stopped := 0
-	for _, state := range states {
-		if state == "t" {
-			return fmt.Errorf("binding a ptrace-stopped process is unsupported")
-		}
-		if state == "T" {
-			stopped++
-		}
-	}
-	preserveStop := stopped == len(states)
-	if stopped != 0 && !preserveStop {
-		return fmt.Errorf("binding a partially stopped process is unsupported")
-	}
-	type traceStop struct {
-		stopped bool
-		signal  unix.Signal
-	}
-	traced := make(map[int]traceStop)
-	defer func() {
-		for tid, stop := range traced {
-			if !stop.stopped {
-				continue
-			} // Retiring tracer thread handles this case.
-			signal := uintptr(stop.signal)
-			if preserveStop && signal == 0 {
-				signal = uintptr(unix.SIGSTOP)
-			}
-			_, _, errno := unix.Syscall6(unix.SYS_PTRACE, uintptr(unix.PTRACE_DETACH), uintptr(tid), 0, signal, 0, 0)
-			if errno != 0 && errno != unix.ESRCH {
-				resultErr = errors.Join(resultErr, fmt.Errorf("detaching thread %d: %w", tid, errno))
-			}
-		}
-	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out stopping process thread group")
-		}
-		tasks, err := os.ReadDir(filepath.Join(procRoot, strconv.FormatUint(uint64(pid), 10), "task"))
-		if err != nil {
-			return err
-		}
-		if len(tasks) == 0 {
-			return fmt.Errorf("process has no threads")
-		}
-		if len(tasks) > maxHandles {
-			return fmt.Errorf("too many process threads")
-		}
-		added := false
-		for _, task := range tasks {
-			tid, err := strconv.Atoi(task.Name())
-			if err != nil {
-				return err
-			}
-			if _, ok := traced[tid]; ok {
-				continue
-			}
-			if err := unix.PtraceSeize(tid); err != nil {
-				return fmt.Errorf("seizing thread %d: %w", tid, err)
-			}
-			traced[tid] = traceStop{}
-			if err := unix.PtraceInterrupt(tid); err != nil {
-				return fmt.Errorf("interrupting thread %d: %w", tid, err)
-			}
-			added = true
-		}
-		for tid, stop := range traced {
-			if stop.stopped {
-				continue
-			}
-			for {
-				var status unix.WaitStatus
-				waited, err := unix.Wait4(tid, &status, unix.WALL|unix.WNOHANG, nil)
-				if errors.Is(err, unix.EINTR) {
-					continue
-				}
-				if err != nil {
-					return fmt.Errorf("waiting for thread %d: %w", tid, err)
-				}
-				if waited == tid {
-					if !status.Stopped() {
-						return fmt.Errorf("thread %d exited while stopping", tid)
-					}
-					traced[tid] = traceStop{stopped: true, signal: signalForDetach(status)}
-					break
-				}
-				if time.Now().After(deadline) {
-					return fmt.Errorf("timed out stopping process thread group")
-				}
-				time.Sleep(time.Millisecond)
-			}
-		}
-		// Re-enumerate after all observed threads stopped, catching threads created
-		// before their parent entered its stop. Stable stopped parents cannot clone.
-		if !added {
-			return bind()
-		}
-	}
-}
-
-func processThreadStates(procRoot string, pid uint32) ([]string, error) {
-	dir := filepath.Join(procRoot, strconv.FormatUint(uint64(pid), 10), "task")
-	tasks, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	states := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		data, err := os.ReadFile(filepath.Join(dir, task.Name(), "stat"))
-		if err != nil {
-			return nil, err
-		}
-		end := strings.LastIndexByte(string(data), ')')
-		if end == -1 {
-			return nil, fmt.Errorf("invalid thread stat")
-		}
-		fields := strings.Fields(string(data[end+1:]))
-		if len(fields) == 0 {
-			return nil, fmt.Errorf("missing thread state")
-		}
-		if fields[0] == "Z" || fields[0] == "X" {
-			return nil, fmt.Errorf("thread has exited")
-		}
-		states = append(states, fields[0])
-	}
-	if len(states) == 0 {
-		return nil, fmt.Errorf("process has no threads")
-	}
-	return states, nil
-}
-
-func processStartTicks(stat string, pid uint32) (uint64, error) {
-	// comm may contain spaces and closing parentheses; the final ')' ends it.
-	open, close := strings.IndexByte(stat, '('), strings.LastIndexByte(stat, ')')
-	if open < 1 || close <= open {
-		return 0, fmt.Errorf("invalid process stat")
-	}
-	actualPID, err := strconv.ParseUint(strings.TrimSpace(stat[:open]), 10, 32)
-	if err != nil || uint32(actualPID) != pid {
-		return 0, fmt.Errorf("process stat PID does not match")
-	}
-	fields := strings.Fields(stat[close+1:])
-	if len(fields) < 20 {
-		return 0, fmt.Errorf("truncated process stat")
-	}
-	ticks, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid process start time: %w", err)
-	}
-	return ticks, nil
 }
 
 func (i *wasmOperatorInstance) watchProcess(fd int, ds datasource.DataSource, pid uint32, ticks uint64) {
@@ -398,13 +149,4 @@ func (i *wasmOperatorInstance) watchProcess(fd int, ds datasource.DataSource, pi
 		}
 		return
 	}
-}
-
-// signalForDetach preserves ordinary signal-delivery stops. Interrupt/event
-// stops are ptrace machinery and must not inject a synthetic signal on resume.
-func signalForDetach(status unix.WaitStatus) unix.Signal {
-	if !status.Stopped() || uint32(status)>>16 != 0 {
-		return 0
-	}
-	return status.StopSignal()
 }

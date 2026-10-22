@@ -1,7 +1,7 @@
 # enforce_exec privileged integration tests
 
 These opt-in tests load real BPF LSM programs and block executions in dedicated
-cgroup-v2 or explicitly selected process targets. Run them on a disposable Linux x86-64 host with root access,
+cgroup-v2 or launcher-owned process targets. Run them on a disposable Linux x86-64 host with root access,
 BPF LSM enabled, kernel BTF, `bpf_path_d_path`, `bpf_loop`, Clang, libbpf headers,
 and bpftool. Kernel version alone is insufficient: the programs must load and
 attach. Nothing attaches without `IG_EXEC_KERNEL_TEST=1`.
@@ -97,23 +97,27 @@ go test -race -v ./pkg/operators/wasm \
   -run 'TestMapFreezeInvalidHandle|TestOwnedMapCleanupAndFreeze|TestStoppedGuestIgnoresCallbacks'
 ```
 
-## Launcher validation — 2026-10-22
+## Launcher-only validation — 2026-10-22
 
-Validated on a disposable Debian 13 amd64 VM with Linux
+The launcher-only implementation was validated on a disposable Debian 13 amd64 VM with Linux
 `6.12.111+deb13-amd64` and BPF LSM enabled, without a container runtime:
 
 - `TestExecLaunchRuntime` passed three consecutive runs with the production
   BPF object, freshly built WASM guest, and native host. An allow policy executed
   the application under the registered PID; deny rejected its first exec before
-  its marker file could be written.
+  its marker file could be written. A matching process identity without a private
+  launcher capability was rejected before releasing the application.
 - The actual `ig launch` command passed allow, first-exec deny, missing enforcement
   consent, startup-timeout, and SIGTERM cleanup checks using a local OCI image.
 - Native race tests covered the private capability, identity rejection, failed
   binding, gating, cancellation, same-PID exec, environment confidentiality and
-  descriptor cleanup. A nonexistent proc root in the WASM binding test confirms
-  that controlled launches bypass discovery and the ptrace path.
-- Startup callback lifecycle tests, policy tests, targeted existing-process
-  binding tests, vet and scoped lint passed. No BPF program logic changed.
+  descriptor cleanup.
+- The converted `TestExecProcessFailureRuntime` passed three consecutive runs
+  for both audit and off. Injected marker allocation failure remained nonblocking,
+  promotion was rejected, and recovery launched a new process under enforcement.
+- The full gadget unit suite and native race tests passed, including rejection
+  without launch authority. Startup lifecycle tests, policy tests, vet, scoped
+  lint and Helm lint/render checks passed. No BPF program logic changed.
 
 The reusable launcher and integration tests are in `pkg/processlaunch` and
 `launch_runtime_test.go`. These checks cover initial activation; they do not
@@ -196,13 +200,6 @@ files and invalid policies retained the last-good decisions; deleting the file
 released enforcement. The watcher polls once per second and stops when the
 service closes.
 
-The final repeat also ran the actual CLI process binding with exclusive ptrace
-activation, a strict program/helper/kfunc allowlist, repeated and nonleader exec,
-child exclusion and process-exit reporting. The standalone daemon file-store
-repeat passed generations 1/2/3, malformed/invalid last-good retention, unchanged
-BPF program ID and release on deletion. Host race tests covered exclusive stops,
-external SIGCONT resistance, signal reinjection and partial-stop cleanup.
-
 After the final tests, no enforcement programs, maps or test cgroups remained.
 The temporary Kubernetes VM and its SSH key were deleted.
 
@@ -233,16 +230,15 @@ A fresh disposable Debian 13 amd64 droplet on Linux `6.12.111+deb13-amd64` ran:
   Health remains readable with the ordinary reporting ring full or reporting off.
 - `TestExecProcessKernel`: production-object thread-group selection, successful
   nonleader exec continuity, child exclusion and exit cleanup.
-- `TestExecProcessFailureRuntime`: actual OCI/WASM guest and exclusive host process
-  binding, in both audit and off. Forced failure allows exec; status snapshots
-  report degradation; attempted enforcement promotion is rejected at the same
-  generation. A new instance validates and rebinds the same live process, then
-  blocks denied executions before and after a subsequent leader exec.
 - Existing container `TestExecRuntime`, full `TestExecKernel`, and all six
   `TestExecTraceLSMCoexistence` cases pass with the changed production program.
 
-Run the new runtime test with `IG_EXEC_PROCESS_FAILURE_OBJECT`, `IG_EXEC_WASM`,
-`IG_EXEC_METADATA`, and `IG_EXEC_KERNEL_TEST=1`. The failure object is compiled
-using the wrapper command above. This exercises a deterministic helper-failure
-substitute, not induced host-wide memory exhaustion. Production amd64 and arm64
+The failure object is compiled using the wrapper command above. This exercises
+a deterministic helper-failure substitute, not induced host-wide memory exhaustion. Production amd64 and arm64
 objects compile; only amd64 has been exercised on a running kernel here.
+
+`TestExecProcessFailureRuntime` now uses the controlled launcher for the actual
+OCI/WASM guest and host binding. Run it with `IG_EXEC_PROCESS_FAILURE_OBJECT`,
+`IG_EXEC_WASM`, `IG_EXEC_METADATA`, and `IG_EXEC_KERNEL_TEST=1`. It covers audit/off
+marker loss and rejected enforcement promotion; enforcement recovery requires a
+new process launch. See the launcher-only validation above for current results.

@@ -24,12 +24,12 @@ import (
 //go:linkname bindProcess bindProcess
 func bindProcess(target uint32, node uint64, bootID uint64, hostPID uint32, startTicks uint64) uint32
 
-// BindProcess validates a host thread-group identity and writes uint64(1) to
+// BindProcess validates an IG-owned blocked child and writes uint64(1) to
 // its task-storage entry. The map must have a 4-byte key and 8-byte value.
 // StartTicks is field 22 of /proc/PID/stat. IG must run in the host PID namespace.
 // Kernel task storage disappears on task exit and cannot select a reused PID.
-// IG-owned controlled launches use their private barrier and pidfd; other
-// processes require the host to quiesce the thread group through ptrace.
+// The host context must carry the private processlaunch capability for the child.
+// Arbitrary running processes cannot be bound by supplying their identity.
 // Before calling, register process_lifecycle with event_type (string), host_pid
 // (uint32), start_time_ticks (uint64). It receives EXITED after gadgetStart
 // completes. One process binding is supported per gadget instance.

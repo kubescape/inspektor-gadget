@@ -2,8 +2,8 @@
 
 An execution-policy gadget using IG's normal eBPF/WASM OCI image and lifecycle.
 It blocks executable paths for one explicitly selected container or process using BPF LSM.
-It runs with `ig` or the existing Kubernetes DaemonSet and stored gadget instances;
-no Kubescape component is required.
+Use `ig launch` for processes, or `ig run` and the existing Kubernetes DaemonSet
+and stored gadget instances for containers. No Kubescape component is required.
 
 The host must enable `operator.oci.allow-enforcement`. The image declares
 `behavior: mutator`, so the default host rejects it before any image code runs.
@@ -52,39 +52,9 @@ until their tasks exit. Only the rule count and reporting buffer have the fixed
 bounds stated here. The parser additionally bounds
 input to 64 KiB; its broader authoring limits do not override kernel limits.
 
-For a process target, replace the container binding with:
+### Launching a process
 
-```yaml
-binding:
-  process:
-    node: <node-name>
-    bootID: <host-boot-id>
-    hostPID: 12345
-    startTimeTicks: 987654
-```
-
-`hostPID` is the host thread-group leader PID. `startTimeTicks` is field 22 of its
-`/proc/<pid>/stat`, and `bootID` comes from `/proc/sys/kernel/random/boot_id`.
-`node` must match `NODE_NAME`, or the host name for standalone execution. The
-host verifies all four fields, obtains a pidfd, and seeds BPF task storage tied
-to the actual process. Reusing its numeric PID does not inherit enforcement.
-The binding covers the selected thread group, including execution by a nonleader
-thread and subsequent executions after it becomes leader. Child processes are
-not included.
-
-Attaching to an existing process briefly pauses every thread using exclusive ptrace ownership
-(`PTRACE_SEIZE` and `PTRACE_INTERRUPT`) before seeding task storage. Another
-process's SIGCONT cannot release these tracer-owned stops. IG then detaches and
-resumes a previously running group; a fully stopped group remains stopped.
-Partially stopped groups, an existing tracer and IG itself are rejected. The
-bounded pause closes the race with an execution already past the LSM hook.
-Process binding requires the host PID namespace and permission to trace the
-target (`SYS_PTRACE` in the default chart capabilities). The pidfd exit watcher
-removes the binding and emits `target-removed`.
-
-### Launching a new process
-
-For a new workload, use the local IG launcher instead of discovering its PID:
+Process binding is available only through the controlled launcher:
 
 ```sh
 sudo ig launch <enforce-exec-image> --allow-enforcement \
@@ -103,8 +73,8 @@ IG starts a trusted `/bin/sh` bootstrap held on a private pipe. Native code owns
 its pidfd and passes a private capability through the gadget context. The existing
 `BindProcess` API uses this capability to seed task storage directly, without
 ptrace, thread enumeration, or signal-stop restoration. Policy fields alone cannot
-select this shortcut. After every gadget operator starts successfully, IG sends
-an acknowledgement to the bootstrap, which closes its control descriptors and
+authorize process binding. Arbitrary running processes cannot be attached.
+After every gadget operator starts successfully, IG sends an acknowledgement to the bootstrap, which closes its control descriptors and
 replaces itself with the application using `exec`. The application's first exec
 therefore encounters the installed policy. A deny policy can reject that first
 exec; the bootstrap itself starts before enforcement is bound.
@@ -131,9 +101,11 @@ names must be POSIX identifiers. Command lookup uses the launching host's PATH.
 Application failures currently produce IG exit status 1, rather than preserving
 the application's exact nonzero exit status.
 
-This simplifies initial activation only. Nonleader exec marker transfer, its
-allocation-failure handling, policy updates, and exit monitoring still apply.
-Attaching to an existing process continues to use the ptrace protocol above.
+The binding covers the selected thread group, including execution by a nonleader
+thread and subsequent executions after it becomes leader. Children are excluded.
+The owned pidfd prevents a reused numeric PID from inheriting enforcement. Its
+exit watcher removes the binding and emits `target-removed`. Nonleader exec marker
+transfer, allocation-failure handling and policy updates still apply.
 Killing IG after release still removes its unpinned enforcement programs; the
 launcher does not provide persistent enforcement across an owner crash.
 
@@ -173,17 +145,15 @@ Do not put container-ID prefixes or cgroup IDs in the policy.
 For Kubernetes, configure the existing Helm chart's daemon host settings:
 
 ```yaml
-# Required only when using process bindings.
-hostPID: true
 config:
   operator:
     oci:
       allow-enforcement: true
 ```
 
-The chart defaults `hostPID` to false. Custom capability lists must supply the
-process-inspection and ptrace permissions needed for the activation pause. Container bindings
-do not require this opt-in. Keep the production image trust settings. Supply policy through the ordinary
+Kubernetes and daemon stored instances support container bindings. Process launch
+is local to its owning host; there is no public daemon registration transport.
+Keep the production image trust settings. Supply container policy through the ordinary
 stored-instance `paramValues.operator.oci.wasm.exec-policy`, as in
 [`examples/instance.yaml`](examples/instance.yaml). This does not introduce a new
 Kubernetes operator or CRD. The future node-agent adapter translates SandboxPolicy
@@ -278,10 +248,9 @@ ultimately succeeded. Status includes `tracking_failures` and `tracking_degraded
 snapshots on lifecycle and update activity, rather than periodic notifications.
 The map remains the persistent source when event buffers are full.
 
-Process policy transitions from audit or off to enforce require explicitly removing
-the instance and creating a new one, which validates identity and binds under the
-exclusive activation pause again. This applies even when health is clean: a prior
-audit/off execution could still be in flight when an update reads health. Live
+Process policy transitions from audit or off to enforce require a new process
+launch with a fresh gadget instance; the running application cannot be rebound.
+This applies even when health is clean: a prior audit/off execution could still be in flight when an update reads health. Live
 updates within enforce, from enforce to audit/off, and between audit/off remain
 supported. Rejected promotions leave the active generation unchanged. Container
 mode changes retain their existing behavior.

@@ -71,8 +71,12 @@ func TestExecLaunchRuntime(t *testing.T) {
 	runtime := local.New()
 	require.NoError(t, runtime.Init(nil))
 	defer runtime.Close()
-	for _, action := range []string{"allow", "deny"} {
-		t.Run(action, func(t *testing.T) {
+	for _, scenario := range []string{"allow", "deny", "unregistered"} {
+		t.Run(scenario, func(t *testing.T) {
+			action := scenario
+			if scenario == "unregistered" {
+				action = "allow"
+			}
 			instanceCtx, stop := context.WithCancel(ctx)
 			defer stop()
 			marker := filepath.Join(t.TempDir(), "application-started")
@@ -91,7 +95,11 @@ func TestExecLaunchRuntime(t *testing.T) {
 			require.NoError(t, params.Set("allow-enforcement", "true"))
 			require.NoError(t, handler.Init(params))
 			released := make(chan struct{})
-			gc := gadgetcontext.New(child.Context(instanceCtx), image, gadgetcontext.WithDataOperators(handler), gadgetcontext.WithOrasReadonlyTarget(store), gadgetcontext.WithOnStarted(func() error {
+			launchCtx := instanceCtx
+			if scenario != "unregistered" {
+				launchCtx = child.Context(instanceCtx)
+			}
+			gc := gadgetcontext.New(launchCtx, image, gadgetcontext.WithDataOperators(handler), gadgetcontext.WithOrasReadonlyTarget(store), gadgetcontext.WithOnStarted(func() error {
 				err := child.Release()
 				if err == nil {
 					close(released)
@@ -106,15 +114,27 @@ func TestExecLaunchRuntime(t *testing.T) {
 				stop()
 				select {
 				case err := <-done:
-					require.NoError(t, err)
+					if scenario == "unregistered" {
+						require.Error(t, err)
+					} else {
+						require.NoError(t, err)
+					}
 				case <-time.After(10 * time.Second):
 					t.Error("gadget shutdown timed out")
 				}
 			}()
 			select {
 			case <-released:
+				require.NotEqual(t, "unregistered", scenario, "released process without launch capability")
 			case err := <-done:
 				done <- err
+				if scenario == "unregistered" {
+					require.Error(t, err)
+					require.Error(t, child.Release(), "unregistered process must remain unbound")
+					_, statErr := os.Stat(marker)
+					require.True(t, os.IsNotExist(statErr))
+					return
+				}
 				t.Fatalf("runtime failed before release: %v", err)
 			case <-instanceCtx.Done():
 				t.Fatal(instanceCtx.Err())

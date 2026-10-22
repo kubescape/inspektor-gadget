@@ -207,12 +207,10 @@ Deleting the ConfigMap or removing this node from `gadgetNodes` explicitly
 removes enforcement. Gadgets without declared live-update support retain the
 existing restart behavior. This integration adds no public update RPC.
 
-Process bindings additionally require the host PID namespace. Helm users can
-set top-level `hostPID: true`; the default remains false. Activation temporarily
-pauses the selected thread group using exclusive ptrace ownership. The default
-capabilities already include `SYS_PTRACE`; custom capability lists must provide
-the required ptrace and process-inspection permissions. Container bindings do not require this option.
-
+Process bindings require an IG-owned blocked child created by `ig launch` or
+native `pkg/processlaunch`. Stored ConfigMap and daemon-file instances support
+container bindings; supplying a process identity cannot authorize attachment to
+an arbitrary running process. No public daemon registration transport is added.
 
 The standalone daemon's file store polls its existing `.gadget` instance files
 once per second and uses the same reconciliation path. Malformed files and
