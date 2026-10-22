@@ -24,12 +24,13 @@ type fakeFileManager struct {
 	updateError error
 	starts      int
 	active      string
+	removeErr   error
 }
 
 func (m *fakeFileManager) RunGadget(*api.GadgetInstance) { m.starts++ }
 func (m *fakeFileManager) RemoveGadget(id string) error {
 	m.removed = append(m.removed, id)
-	return nil
+	return m.removeErr
 }
 
 func (m *fakeFileManager) ReconcileGadget(_ context.Context, instance *api.GadgetInstance) error {

@@ -125,10 +125,19 @@ func (s *FileStore) CreateGadgetInstance(ctx context.Context, req *api.CreateGad
 	defer s.mu.Unlock()
 
 	// Store to gadget file
-	gadgetBlob, _ := protojson.Marshal(req)
+	gadgetBlob, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encoding gadget information: %w", err)
+	}
 
 	// req.GadgetInstance.Id is sanitized in service-store.go
 	filename := filepath.Join(s.directory, fmt.Sprintf("%s.gadget", req.GadgetInstance.Id))
+
+	// A removed file may still own a live instance until the watcher handles
+	// deletion. Creating the same ID must not orphan that retained instance.
+	if _, tracked := s.observed[req.GadgetInstance.Id]; tracked {
+		return nil, fmt.Errorf("gadget with id %q already exists", req.GadgetInstance.Id)
+	}
 
 	// check whether a gadget with the given id or name already exists
 	gadgets, err := s.getGadgets()
@@ -144,9 +153,19 @@ func (s *FileStore) CreateGadgetInstance(ctx context.Context, req *api.CreateGad
 		}
 	}
 
-	err = os.WriteFile(filename, gadgetBlob, 0o644)
+	// Reserve the ID independently of the file's contents. Invalid desired
+	// configuration may still own a running last-good instance, and an external
+	// writer can create the file after the parsed-name checks above.
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("gadget with id %q already exists", req.GadgetInstance.Id)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("storing gadget information: %w", err)
+		return nil, fmt.Errorf("creating gadget file: %w", err)
+	}
+	_, writeErr := file.Write(gadgetBlob)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return nil, fmt.Errorf("storing gadget information: %w", errors.Join(err, os.Remove(filename)))
 	}
 
 	log.Debugf("installing new gadget %q", req.GadgetInstance.Id)
@@ -190,17 +209,24 @@ func (s *FileStore) RemoveGadgetInstance(ctx context.Context, request *api.Gadge
 	defer s.mu.Unlock()
 
 	path := filepath.Join(s.directory, fmt.Sprintf("%s.gadget", request.Id))
-	_, err := loadGadgetFile(path)
-	if err != nil {
+	// Removal addresses the file's sanitized ID, never its desired contents.
+	// The last-good instance may still run after an invalid administrator edit.
+	_, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		if _, tracked := s.observed[request.Id]; !tracked {
+			return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
+		}
 	}
 
 	err = s.instanceMgr.RemoveGadget(request.Id)
-	if err != nil {
+	if err != nil && !errors.Is(err, instancemanager.ErrNotFound) {
 		return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
 	}
 	err = os.Remove(path)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
 	}
 	delete(s.observed, request.Id)
