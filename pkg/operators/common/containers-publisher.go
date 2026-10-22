@@ -16,6 +16,7 @@ package common
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -32,7 +33,9 @@ type ContainersPublisher struct {
 	containersDs              datasource.DataSource
 	eventTypeField            datasource.FieldAccessor
 	idField                   datasource.FieldAccessor
+	runtimeField              datasource.FieldAccessor
 	cgroupIDField             datasource.FieldAccessor
+	cgroupV2PathField         datasource.FieldAccessor
 	mountNsIDField            datasource.FieldAccessor
 	nameField                 datasource.FieldAccessor
 	containerConfigField      datasource.FieldAccessor
@@ -57,6 +60,16 @@ func NewContainersPublisher(gadgetCtx operators.GadgetContext, collection *conta
 	publisher.idField, err = publisher.containersDs.AddField("container_id", api.Kind_String)
 	if err != nil {
 		return nil, fmt.Errorf("adding field container_id: %w", err)
+	}
+
+	publisher.runtimeField, err = publisher.containersDs.AddField("runtime", api.Kind_String)
+	if err != nil {
+		return nil, fmt.Errorf("adding field runtime: %w", err)
+	}
+
+	publisher.cgroupV2PathField, err = publisher.containersDs.AddField("cgroup_v2_path", api.Kind_String)
+	if err != nil {
+		return nil, fmt.Errorf("adding field cgroup_v2_path: %w", err)
 	}
 
 	publisher.cgroupIDField, err = publisher.containersDs.AddField("cgroup_id", api.Kind_Uint64)
@@ -92,7 +105,9 @@ func (publisher *ContainersPublisher) emitContainersDatasourceEvent(eventType co
 
 	publisher.eventTypeField.PutString(ev, eventType.String())
 	publisher.idField.PutString(ev, container.Runtime.ContainerID)
+	publisher.runtimeField.PutString(ev, container.Runtime.RuntimeName.String())
 	publisher.cgroupIDField.PutUint64(ev, container.CgroupID)
+	publisher.cgroupV2PathField.PutString(ev, container.CgroupV2)
 	publisher.mountNsIDField.PutUint64(ev, container.Mntns)
 	if k8s {
 		publisher.nameField.PutString(ev, container.K8s.ContainerName)
@@ -110,7 +125,21 @@ func (publisher *ContainersPublisher) emitContainersDatasourceEvent(eventType co
 	return nil
 }
 
-func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector) error {
+func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector) (err error) {
+	// Subscribe snapshots the collection atomically, but publishing that snapshot
+	// takes time. Queue concurrent changes until the snapshot has been delivered.
+	var mu sync.Mutex
+	replaying, failed := true, false
+	var pending []containercollection.PubSubEvent
+	defer func() {
+		if err != nil {
+			mu.Lock()
+			failed = true
+			pending = nil
+			mu.Unlock()
+			publisher.Unsubscribe()
+		}
+	}()
 	var containers []*containercollection.Container
 
 	if publisher.collection != nil {
@@ -121,6 +150,15 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 			publisher.containersSubscriptionKey,
 			containerSelector,
 			func(event containercollection.PubSubEvent) {
+				mu.Lock()
+				defer mu.Unlock()
+				if failed {
+					return
+				}
+				if replaying {
+					pending = append(pending, event)
+					return
+				}
 				err := publisher.emitContainersDatasourceEvent(event.Type, event.Container, k8s)
 				if err != nil {
 					log.Errorf("publishing new container event: %v", err)
@@ -140,7 +178,22 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 		}
 	}
 
-	return nil
+	for {
+		mu.Lock()
+		if len(pending) == 0 {
+			replaying = false
+			mu.Unlock()
+			return nil
+		}
+		batch := pending
+		pending = nil
+		mu.Unlock()
+		for _, event := range batch {
+			if err := publisher.emitContainersDatasourceEvent(event.Type, event.Container, k8s); err != nil {
+				return fmt.Errorf("publishing queued container event: %w", err)
+			}
+		}
+	}
 }
 
 func (publisher *ContainersPublisher) Unsubscribe() {

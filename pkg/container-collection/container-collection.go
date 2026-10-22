@@ -42,6 +42,10 @@ type ContainerCollection struct {
 	// Values: container   Container
 	containers sync.Map
 
+	// Containers being removed remain available for callback lookups, but must
+	// not enter a new subscription's snapshot after deletion was published.
+	removing sync.Map // keys: *Container
+
 	// Keys:   MntNsID     string
 	// Values: container   Container
 	containersByMntNs sync.Map
@@ -150,6 +154,10 @@ func (cc *ContainerCollection) RemoveContainer(id string) {
 	}
 
 	container := v.(*Container)
+	if _, loaded := cc.removing.LoadOrStore(container, struct{}{}); loaded {
+		return
+	}
+	defer cc.removing.Delete(container)
 
 	if cc.pubsub != nil {
 		cc.pubsub.Publish(EventTypeRemoveContainer, container)
@@ -524,7 +532,9 @@ func (cc *ContainerCollection) Subscribe(key interface{}, selector ContainerSele
 		// guarantee that no new container event will be published at
 		// the same time.
 		cc.ContainerRangeWithSelector(&selector, func(c *Container) {
-			ret = append(ret, c)
+			if _, removing := cc.removing.Load(c); !removing {
+				ret = append(ret, c)
+			}
 		})
 	})
 	return ret

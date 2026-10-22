@@ -449,7 +449,8 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 		containersPublisher: containersPublisher,
 	}
 
-	activate := false
+	// A gadget can consume lifecycle events without requesting enrichment maps.
+	activate := enableContainersDs
 
 	// Check, whether the gadget requested a map from us
 	if t, ok := gadgetCtx.GetVar(gadgets.MntNsFilterMapName); ok {
