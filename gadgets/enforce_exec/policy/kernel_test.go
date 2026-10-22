@@ -131,3 +131,32 @@ func TestCompileKernelRejectsUnsupported(t *testing.T) {
 		t.Fatalf("zero generation accepted: %v", err)
 	}
 }
+
+func TestValidateKernel(t *testing.T) {
+	entries, err := CompileKernel(document(t), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateKernel(entries); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(*[KernelMaxRules + 1]KernelEntry){
+		"revision": func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Generation = 0 },
+		"mode":     func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Mode = 3 },
+		"capacity": func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Count = 9 },
+		"unused":   func(e *[KernelMaxRules + 1]KernelEntry) { e[8].Deny = 1 },
+		"length":   func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Length = 256 },
+		"padding":  func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[255] = 1 },
+		"relative": func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[0] = 'x' },
+		"nul":      func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[2] = 0 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			copy := entries
+			mutate(&copy)
+			if ValidateKernel(copy) == nil {
+				t.Fatal("invalid compiled policy accepted")
+			}
+		})
+	}
+}

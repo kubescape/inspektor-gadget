@@ -46,10 +46,6 @@ func mapDelete(m uint32, keyptr uint64) uint32
 //go:linkname mapRelease mapRelease
 func mapRelease(m uint32) uint32
 
-//go:wasmimport ig mapFreeze
-//go:linkname mapFreeze mapFreeze
-func mapFreeze(m uint32) uint32
-
 type Map uint32
 
 type MapUpdateFlags uint64
@@ -200,14 +196,6 @@ func (m Map) Close() error {
 	ret := mapRelease(uint32(m))
 	if ret != 0 {
 		return errors.New("closing map")
-	}
-	return nil
-}
-
-// Freeze prevents further userspace updates to this map.
-func (m Map) Freeze() error {
-	if mapFreeze(uint32(m)) != 0 {
-		return errors.New("freezing map")
 	}
 	return nil
 }

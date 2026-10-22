@@ -1,27 +1,68 @@
 # enforce_exec
 
-An execution-policy gadget using IG's normal eBPF/WASM OCI image and lifecycle.
-It blocks executable paths for one explicitly selected container or process using BPF LSM.
-Use `ig launch` for processes, or `ig run` and the existing Kubernetes DaemonSet
-and stored gadget instances for containers. No Kubescape component is required.
+Container execution enforcement using BPF LSM. The gadget image contains a fixed
+BPF program; a native Go controller supplies compiled rules and manages container
+membership. No WASM, policy parameter updates, request IDs or acknowledgement
+protocol are involved. Process enforcement is deferred.
 
-The host must enable `operator.oci.allow-enforcement`. The image declares
-`behavior: mutator`, so the default host rejects it before any image code runs.
-Undeclared legacy gadgets retain their existing behavior. This is an explicit
-consent mechanism for trusted, administrator-approved images, not a sandbox for
-untrusted BPF code. Keep image verification and digest admission enabled in
-production. Host-owned `operator.ebpf.policy` independently restricts program types,
-builtin helpers and kfuncs; see [BPF admission](../../docs/spec/operators/oci.md#host-bpf-admission-policy).
-An absent policy preserves legacy compatibility. Image parameters cannot override it.
+## Architecture
 
-## Configuration and limits
+```text
+CLI policy / node-agent CRD adapter
+  -> shared Go compiler
+  -> immutable policy map, populated and frozen before binding
+  -> native container binding controller
+  -> BPF LSM decisions and bounded verdict reporting
+```
+
+Each instance has two ordinary maps:
+
+- `policy`: nine array entries (one revision/header and eight expanded path rules).
+  Native code fills it once and freezes it. `BPF_F_RDONLY_PROG` also prevents BPF
+  writes. Rules never change while this instance runs.
+- `bindings`: up to 1,024 cgroup-v2 identities. Adding/removing a container is a
+  synchronous map operation serialized by the native controller. Membership can
+  change without restarting or changing policy.
+
+Rule changes create a new instance. Both programs enforce during replacement;
+there is no map-of-maps publication protocol or writable standby rule map.
+
+## Try it
+
+Requires root, cgroup v2, kernel BTF, BPF LSM enabled and `bpf_path_d_path`.
+Linux 6.12 is the tested baseline; successful loading/attachment is the capability
+check. Use a host binary built from this branch:
+
+```sh
+go build -o /tmp/ig-enforce-exec ./cmd/ig
+sudo /tmp/ig-enforce-exec image build --local -t enforce_exec:spike gadgets/enforce_exec
+```
+
+Edit `examples/enforce.yaml` with the actual runtime and full container ID, then:
+
+```sh
+sudo /tmp/ig-enforce-exec enforce-exec enforce_exec:spike \
+  --allow-enforcement --verify-image=false \
+  --policy gadgets/enforce_exec/examples/enforce.yaml --revision 1
+```
+
+`--verify-image=false` is for unsigned local development. Keep verification and
+approved signed images in production. Host behavior consent and BPF admission
+restrictions still apply. Verdicts are printed as JSON; stderr reports native
+startup readiness and the number of currently bound containers.
+
+This command uses the existing IG container cache and discovery settings, such as
+`--runtimes docker`. No Kubescape component is required. Generic `ig run` cannot
+supply the typed native policy; use this command or the embedded interface below.
+
+## Policy
 
 ```yaml
 version: 1
 binding:
-  container:
-    runtime: containerd
-    id: <full-container-id>
+  containers:
+    - runtime: containerd
+      id: full-container-id
 policy:
   mode: enforce
   exec:
@@ -31,255 +72,118 @@ policy:
         target:
           path: ["/usr/bin/**", "/opt/app/bin/**"]
         action: allow
+      - name: deny-default-shell
+        target:
+          path: ["/usr/bin/dash"]
+        action: deny
 ```
 
-`exec-policy` is YAML passed by value, not a path read by the daemon. The kernel
-compiler supports one container or process binding, audit/enforce/off, allow/deny default,
-exact absolute paths and trailing `/**` directory patterns. Deny matches override
-allow matches. Rule modes must be empty or match the policy mode. Unsupported
-predicates fail before attachment. Named rules
-and origin retain the standalone policy vocabulary used by the proposed
-SandboxPolicy adapter; a complete CRD compiler is not included.
+The singular `binding.container` spelling also works. Use exactly one spelling.
+`binding.process` is unsupported. This file is CLI/compiler input, not a gadget
+parameter or a file watched by a daemon.
 
-Actual kernel limits are **8 expanded paths per policy, 255 path bytes, and one
-target binding per gadget instance**. An inner map holds a header and eight
-288-byte entries: 2,592 bytes of values plus kernel allocation/metadata overhead.
-Replacement temporarily retains two generations. These are rule-value sizes,
-not a total BPF memory budget: map metadata, per-CPU scratch/counters and task
-storage add overhead. Process task storage can grow with marked threads that
-attempt exec and then fail before replacing the process; those entries remain
-until their tasks exit. Only the rule count and reporting buffer have the fixed
-bounds stated here. The parser additionally bounds
-input to 64 KiB; its broader authoring limits do not override kernel limits.
+Rules support exact clean absolute paths or trailing `/**` directory patterns,
+allow/deny default, and audit/enforce/off mode. Denies override matching allows.
+Rule modes must be empty or match the policy mode. Unsupported predicates,
+duplicate selectors, oversized input or excess rules fail before loading.
 
-### Launching a process
+Paths refer to resolved executable destinations. Check `readlink -f /usr/bin/sh`
+inside the target container before adapting the shell example. Renaming an
+executable can change its path permission. Scripts and interpreters are checked
+separately; allowing an interpreter does not constrain the code it interprets.
+Resolution failures deny in enforce mode and permit in audit mode. Off permits
+without ordinary verdict reporting.
 
-Process binding is available only through the controlled launcher:
+## Embedded owner
 
-```sh
-sudo ig launch <enforce-exec-image> --allow-enforcement \
-  --policy gadgets/enforce_exec/examples/launch.yaml -- /usr/bin/true
+The compiler and native controller are ordinary IG Go packages:
+
+```go
+entries, err := execpolicy.CompileKernel(document, revision)
+// Check err before constructing an instance.
+config := execruntime.Config{
+    Entries: entries,
+    Targets: document.Binding.Targets(),
+}
+err = manager.StartGadget(ctx, instance,
+    execruntime.WithConfig(config),
+)
 ```
 
-Image verification and the configured host BPF admission policy still apply.
-For a locally built unsigned development image, explicitly add `--verify-image=false`.
-The launch policy contains `version` and `policy`; omit `binding`. IG inserts the
-actual child identity and rejects a supplied binding instead of silently replacing it.
-The example allows `/usr/bin/true`; substitute the resolved executable path for your workload.
-The application inherits the launching user's credentials (normally root because
-IG requires root); this interface does not drop privileges or create a sandbox.
+Import `gadgets/enforce_exec/runtime` and include its registered native operator
+alongside the existing OCI and container-cache operators. The owner controls
+`instance.Id` and supplies a nonzero revision. All required operators must start
+successfully before `StartGadget` returns. Initial discovery and binding errors
+fail startup instead of being accepted as readiness.
 
-IG starts a trusted `/bin/sh` bootstrap held on a private pipe. Native code owns
-its pidfd and passes a private capability through the gadget context. The existing
-`BindProcess` API uses this capability to seed task storage directly, without
-ptrace, thread enumeration, or signal-stop restoration. Policy fields alone cannot
-authorize process binding. Arbitrary running processes cannot be attached.
-After every gadget operator starts successfully, IG sends an acknowledgement to the bootstrap, which closes its control descriptors and
-replaces itself with the application using `exec`. The application's first exec
-therefore encounters the installed policy. A deny policy can reject that first
-exec; the bootstrap itself starts before enforcement is bound.
+`GetBindings(gadgetContext)` returns the per-instance controller. Its
+`Bind(ContainerIdentity)` and `Unbind(ContainerIdentity)` methods return the map
+operation result synchronously; `Status()` returns revision, bound count,
+readiness and the latest binding error. Startup errors remain sticky until the
+final readiness check, even if another binding operation succeeds. Identities include runtime, full ID,
+nonzero cgroup ID and clean non-root cgroup-v2 path. Stale deletions cannot remove
+a newer identity. Map handles remain private and writes are rejected after stop.
 
-```text
-IG starts blocked bootstrap
-  -> prepares and attaches gadget
-  -> BindProcess writes marker through owned pidfd
-  -> all operators finish startup
-  -> release private barrier
-  -> same process executes application under policy
+Choose one input owner. CLI discovery uses `Targets` with the IG container cache.
+An embedded cache owner can use empty `Targets`, `InitialBindings`, and direct
+`Bind`/`Unbind`. For a cache outside IG, provide a native startup operator after
+the binding controller (priority 1): subscribe before taking the snapshot, replay
+it and drain queued lifecycle changes through `Bind` before returning from
+`Start`, and unsubscribe on stop. Manager readiness follows **all** operator
+startup, so this adapter participates in the replacement barrier. An initial
+snapshot alone is insufficient while the cache changes concurrently.
+
+The Kubescape SandboxPolicy CRD adapter belongs in node-agent. It owns CRD
+watching, translation, policy merging and controller status. IG stays independent
+of that CRD and Kubescape packages. This PR adds no ConfigMap/file policy watcher
+or public policy RPC. Existing upstream stores retain their normal operation.
+
+## Rule replacement
+
+```go
+err := manager.ReplaceGadget(ctx, oldInstanceID, candidate,
+    execruntime.WithConfig(newConfig),
+)
 ```
 
-Startup failure, timeout, or cancellation prevents the application from starting.
-IG keeps the gadget alive until the selected application exits. Cancellation kills
-the selected process before gadget teardown; descendants are outside this process
-binding. The launcher uses a trusted bootstrap and is not a public service accepting
-arbitrary registration requests. The reusable native implementation lives in
-`pkg/processlaunch`; no Kubescape component or container runtime is needed.
-Container discovery is omitted from this process-only command. The bootstrap
-receives the application environment through a private sealed memory file,
-so environment secrets are absent from its command-line arguments; environment
-names must be POSIX identifiers. Command lookup uses the launching host's PATH.
-Application failures currently produce IG exit status 1, rather than preserving
-the application's exact nonzero exit status.
+The candidate must have a distinct instance ID and a new revision:
 
-The binding covers the selected thread group, including execution by a nonleader
-thread and subsequent executions after it becomes leader. Children are excluded.
-The owned pidfd prevents a reused numeric PID from inheriting enforcement. Its
-exit watcher removes the binding and emits `target-removed`. Nonleader exec marker
-transfer, allocation-failure handling and policy updates still apply.
-Killing IG after release still removes its unpinned enforcement programs; the
-launcher does not provide persistent enforcement across an owner crash.
+1. Start it while retaining the old instance.
+2. Load/attach BPF, freeze its rules, replay current bindings and apply concurrent
+   container changes. A failed binding fails preparation.
+3. Wait for every startup operator to succeed.
+4. Stop the old instance and wait for its cleanup.
 
-Path resolution uses `bpf_path_d_path` on the executable file in the calling
-task's root. A symlink is checked at its resolved destination; renaming a file
-out of an allowed directory removes that path permission. Resolution errors,
-including paths exceeding the fixed buffer, deny in enforce mode and permit in
-audit mode. Scripts and their interpreters are checked separately. Allowing an
-interpreter does not restrict the code it can interpret.
+Startup failure discards the candidate and retains the old instance. Once the
+candidate starts, it is committed: cancellation while waiting for old cleanup
+leaves the candidate active; the returned error identifies it, and `StopGadget`
+can finish waiting for the old ID. Manager lifecycle operations are serialized.
 
-The enforce and audit examples deny `/usr/bin/dash`, assuming it is the resolved
-executable behind `/usr/bin/sh`. Run `readlink -f /usr/bin/sh` inside the target
-container and substitute its output in the deny rule. Denying the symlink path
-alone will not match its resolved destination. Add the resolved paths of any
-other shells you want to deny; this example only denies the selected shell.
+For a target covered by both enforcing instances, overlap allows an exec only
+when both policies allow it. Temporary overblocking is deliberate. This is a
+handoff guarantee for established bindings, not an atomic node-wide policy
+transition or a guarantee about a container's first exec before discovery.
 
-## Build and run
+The verdict `generation` field carries the immutable revision; correlate it with
+the instance ID.
+Reporting can drop and an earlier LSM denial can skip later programs, so events
+are not readiness acknowledgements. Native startup/binding results are authority.
 
-Requires BPF LSM enabled, cgroup v2, kernel BTF and the `bpf_path_d_path` kfunc;
-Linux 6.12 is the tested baseline. Successful loading/attachment is the final
-capability check. Current WASM imports require the updated IG host: older hosts
-without the map-freeze and process-binding imports fail image initialization
-before any BPF program attaches.
-Use matching host/image builds from this branch.
+## Limits and lifecycle
 
-```sh
-sudo ig image build --local -t enforce_exec:spike gadgets/enforce_exec
-sudo ig run --allow-enforcement --verify-image=false enforce_exec:spike \
-  --exec-policy "$(cat gadgets/enforce_exec/examples/enforce.yaml)"
-```
+Eight expanded paths, 255 path bytes, 1,024 live bindings and 64 KiB authoring input
+bound this prototype. Policy values total 2,592 bytes plus map overhead. Each
+instance has a 4 KiB reporting ring and a per-CPU limit of 100 report attempts per
+second; saturation loses reports while enforcement continues. Overlap temporarily
+loads both instances and their resources. These are explicit map/rule limits,
+not a total memory budget.
 
-Unsigned images and `verify-image=false` are for local development. The existing
-container manager must discover the selected runtime and full ID, and ordinary
-IG selectors must include that container. Other containers remain unaffected.
-Do not put container-ID prefixes or cgroup IDs in the policy.
+No programs or maps are pinned. Stopping or killing the owning IG/node-agent
+releases enforcement; workloads continue. Removing a binding intentionally
+removes protection for that cgroup. Container scope is exact, excluding descendant
+cgroups. Enrichment/discovery is not a pre-exec admission mechanism.
 
-For Kubernetes, configure the existing Helm chart's daemon host settings:
-
-```yaml
-config:
-  operator:
-    oci:
-      allow-enforcement: true
-```
-
-Kubernetes and daemon stored instances support container bindings. Process launch
-is local to its owning host; there is no public daemon registration transport.
-Keep the production image trust settings. Supply container policy through the ordinary
-stored-instance `paramValues.operator.oci.wasm.exec-policy`, as in
-[`examples/instance.yaml`](examples/instance.yaml). This does not introduce a new
-Kubernetes operator or CRD. The future node-agent adapter translates SandboxPolicy
-into this standalone interface; CRD watches, merging and status stay in node-agent.
-
-The unsigned local image in `examples/instance.yaml` additionally requires
-`operator.oci.verify-image: false` in the **daemon host configuration** for development.
-For Helm, add it under the chart's `config` values:
-
-```yaml
-config:
-  operator:
-    oci:
-      allow-enforcement: true
-      verify-image: false # Unsigned local development images only.
-```
-
-For standalone `ig daemon`, use the same `operator.oci` settings in its host
-configuration file, without Helm's outer `config` key. Instance `paramValues`
-cannot override this host-only setting. Production deployments should retain
-verification and use approved signed images.
-
-## Activation, replacement and status
-
-1. The host checks behavior admission before image operators initialize.
-2. WASM pre-start parses and compiles the full policy before any BPF attachment.
-3. IG loads/attaches the BPF program with an empty, inactive binding map. The guest
-   creates and freezes a complete candidate generation.
-4. IG's container datasource supplies runtime, full ID, cgroup ID and cgroup-v2 path. Only an exact
-   runtime/ID match with a nonzero cgroup and clean, non-root v2 path binds the generation and activates policy.
-   Process bindings instead use the validated pidfd and task-storage activation
-   described above.
-5. Container deletion or selected-process exit removes the binding. Instance shutdown releases the binding,
-   generation maps and unpinned BPF links, including partial-start failure cleanup.
-
-The `status` datasource emits state, revision, generation, cgroup ID, host PID,
-request ID and message.
-`waiting-for-target` means no target has been protected. `enforcing`, `auditing`
-and `off` describe the installed mode. Other states include `target-removed`,
-`update-rejected`, `error` and `stopped`. An update rejection leaves the reported
-revision/generation and last-good kernel policy intact. These events describe
-policy readiness; the daemon's generic running-instance state alone does not.
-
-An embedding host can publish to the `exec_policy_updates` input datasource:
-
-- `policy` (string): complete standalone policy YAML.
-- `expected_generation` (uint64): last observed generation, initially 1.
-- `request_id` (uint64): correlation identifier echoed in the status acknowledgment.
-
-Callbacks serialize policy updates and container events. Updates require the same
-container or process identity. Parsing, compilation, map population and freezing finish
-before replacing the bound inner map with one update. Failures retain the prior
-generation. Successful updates increment the generation and emit status. This
-input is an embedding interface, not a new public RPC or CLI file watcher.
-An embedding host must emit asynchronously when reacting to a guest status event;
-synchronous emission back into the same guest would reenter its serialized callback.
-The WASM host recognizes the image's `live-update-parameter`,
-`live-update-datasource`, `live-update-status` and `live-update-field` annotations.
-It supplies the expected generation and a request ID, then requires a matching
-status acknowledgment before accepting the new instance configuration.
-
-For this gadget, changes to the existing ConfigMap's
-`operator.oci.wasm.exec-policy` go through that protocol without restarting the
-instance or replacing its BPF program. Invalid policies retain the last-good
-configuration and enforcement. Structural changes, such as the image, binding
-identity or other parameters, are rejected for a running update-capable instance.
-Deleting the ConfigMap or excluding the node explicitly removes the instance.
-Legacy gadgets without update support retain IG's existing restart behavior.
-There is no new public update RPC. The future node-agent adapter can use the same
-standalone input and acknowledgment protocol.
-
-Standalone `ig daemon` also reconciles its existing stored `.gadget` instance
-files once per second. Changes to `exec-policy` use the same acknowledged update
-path. Malformed files or invalid policies retain the running last-good instance;
-deleting its file explicitly removes enforcement. Closing the service stops the
-watcher. This watches daemon instance files, not policy files passed to `ig run`.
-Last-good retention lasts for the running instance; restarting the daemon reads
-the persisted desired configuration again.
-
-The `verdict` datasource reports generation, cgroup, deny decision, mode,
-path-resolution result and resolved path. `deny=1` in audit mode means would-deny;
-only enforce mode blocks for ordinary policy decisions. If transferring a process
-marker to an executing nonleader thread fails, enforce mode rejects the execution
-with ENOMEM to preserve process selection. Audit and off permit execution; subsequent
-process tracking may be lost. The helper does not identify the precise failure
-cause; ENOMEM is the error chosen for the enforce-mode rejection.
-
-The fixed-size `process_health` array stores cumulative `failures` and a sticky
-`degraded` flag, independent of event delivery and policy generations. Degradation
-means marker continuity is no longer guaranteed; it does not prove the execution
-ultimately succeeded. Status includes `tracking_failures` and `tracking_degraded`
-snapshots on lifecycle and update activity, rather than periodic notifications.
-The map remains the persistent source when event buffers are full.
-
-Process policy transitions from audit or off to enforce require a new process
-launch with a fresh gadget instance; the running application cannot be rebound.
-This applies even when health is clean: a prior audit/off execution could still be in flight when an update reads health. Live
-updates within enforce, from enforce to audit/off, and between audit/off remain
-supported. Rejected promotions leave the active generation unchanged. Container
-mode changes retain their existing behavior.
-A shared 4 KiB ring buffer bounds pending reports.
-At most 100 report attempts per CPU per second are permitted, independently of
-verdict evaluation. Per-CPU kernel counters track denied/allowed decisions,
-submitted reports, buffer loss, path errors and rate-limited reports. The counters
-are available in the `counters` BPF map; periodic metric export remains to be wired.
-Enforcement continues when reports are dropped or rate limited.
-
-## Validation and scope
-
-```sh
-go test -race ./gadgets/enforce_exec/policy ./gadgets/enforce_exec/test/unit
-go vet ./gadgets/enforce_exec/policy ./gadgets/enforce_exec/test/unit
-```
-
-Unit tests compile the real WASM guest, test actual OCI admission and initialization,
-and exercise callbacks with mock map/data services, including failure retention.
-The [privileged tests and recorded evidence](test/kernel/README.md) run real BPF
-and the actual guest through IG on a disposable Linux host.
-
-This is an implementation spike. It protects future executions after target-bound
-status; it does not gate a container's first execution. Binding covers the supplied
-cgroup exactly, not all descendant cgroups. Discovery/removal notification delays
-are possible. Links are unpinned, so daemon death ends enforcement. Policies from
-multiple gadget instances compose through LSM (a denial from any remains a denial).
-Generation atomicity is per hook, not across script/interpreter hooks. The
-`trace_lsm` execution hook preserves earlier denials; its other hooks have not
-been audited for other enforcement gadgets. Executable integrity, crash fail-closed semantics, the full
-SandboxPolicy vocabulary and a kernel compatibility/performance matrix remain
-outside this implementation.
+See [privileged validation](test/kernel/README.md) for reproducible tests and
+coverage limits. Broader kernel/architecture validation, executable integrity,
+execveat/memfd/deleted-file coverage, crash persistence and production CRD
+integration remain outside this prototype.

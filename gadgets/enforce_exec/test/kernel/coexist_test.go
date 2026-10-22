@@ -73,14 +73,10 @@ func TestExecTraceLSMCoexistence(t *testing.T) {
 				if order == "observer-last" {
 					attach(observer.Programs[hook])
 				}
-				publish := func(deny uint32) {
-					policy, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 288, MaxEntries: 9})
-					require.NoError(t, err)
-					defer policy.Close()
-					require.NoError(t, policy.Put(uint32(0), entry{Generation: 1, Mode: 2, DefaultDeny: deny}))
-					require.NoError(t, policy.Freeze())
-					require.NoError(t, enforcement.Maps["bindings"].Put(st.Ino, policy))
-				}
+				policy := enforcement.Maps["policy"]
+				require.NoError(t, policy.Put(uint32(0), entry{Generation: 1, Mode: 2, DefaultDeny: 1}))
+				require.NoError(t, policy.Freeze())
+				require.NoError(t, enforcement.Maps["bindings"].Put(st.Ino, uint64(1)))
 				execute := func(managed, denied bool) {
 					cmd := exec.Command("/usr/bin/true")
 					if managed {
@@ -93,12 +89,11 @@ func TestExecTraceLSMCoexistence(t *testing.T) {
 						require.NoError(t, err)
 					}
 				}
-				publish(1)
 				execute(true, true)
 				execute(false, false)
-				publish(0)
+				require.NoError(t, enforcement.Maps["bindings"].Delete(st.Ino))
 				execute(true, false)
-				publish(1)
+				require.NoError(t, enforcement.Maps["bindings"].Put(st.Ino, uint64(1)))
 				execute(true, true)
 				require.NoError(t, enforcement.Maps["bindings"].Delete(st.Ino))
 				execute(true, false)

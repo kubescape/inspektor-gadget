@@ -66,8 +66,6 @@ type GadgetContext struct {
 	useInstance      bool
 	requestExtraInfo bool
 
-	updateMu       sync.Mutex
-	updatesReady   bool
 	onStarted      func() error
 	lock           sync.Mutex
 	dataSources    map[string]datasource.DataSource

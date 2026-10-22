@@ -5,7 +5,10 @@ package common
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -58,4 +61,98 @@ func TestContainersPublisherCgroupV2Path(t *testing.T) {
 			require.True(t, received)
 		})
 	}
+}
+
+func TestContainersPublisherReplayBeforeChanges(t *testing.T) {
+	for _, change := range []string{"remove", "add"} {
+		t.Run(change, func(t *testing.T) {
+			collection := &containercollection.ContainerCollection{}
+			require.NoError(t, collection.Initialize(containercollection.WithPubSub()))
+			defer collection.Close()
+			existing := &containercollection.Container{}
+			existing.Runtime.ContainerID = "existing"
+			collection.AddContainer(existing)
+			ctx := gadgetcontext.New(context.Background(), "test")
+			defer ctx.Cancel()
+			publisher, err := NewContainersPublisher(ctx, collection)
+			require.NoError(t, err)
+			defer publisher.Unsubscribe()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			defer once.Do(func() { close(release) })
+			var mu sync.Mutex
+			var events []string
+			require.NoError(t, publisher.containersDs.Subscribe(func(_ datasource.DataSource, data datasource.Data) error {
+				kind, _ := publisher.eventTypeField.String(data)
+				id, _ := publisher.idField.String(data)
+				if kind == "CREATED" && id == "existing" {
+					close(entered)
+					<-release
+				}
+				mu.Lock()
+				events = append(events, kind+":"+id)
+				mu.Unlock()
+				return nil
+			}, 0))
+			published := make(chan error, 1)
+			go func() { published <- publisher.PublishContainers(false, nil, containercollection.ContainerSelector{}) }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("snapshot did not start")
+			}
+			changed := make(chan struct{})
+			go func() {
+				if change == "remove" {
+					collection.RemoveContainer("existing")
+				} else {
+					added := &containercollection.Container{}
+					added.Runtime.ContainerID = "added"
+					collection.AddContainer(added)
+				}
+				close(changed)
+			}()
+			select {
+			case <-changed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("change was not queued")
+			}
+			mu.Lock()
+			beforeRelease := append([]string(nil), events...)
+			mu.Unlock()
+			require.Empty(t, beforeRelease, "live events overtook snapshot replay")
+			once.Do(func() { close(release) })
+			require.NoError(t, <-published)
+			expected := "DELETED:existing"
+			if change == "add" {
+				expected = "CREATED:added"
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, []string{"CREATED:existing", expected}, events)
+		})
+	}
+}
+
+func TestContainersPublisherReplayFailureUnsubscribes(t *testing.T) {
+	collection := &containercollection.ContainerCollection{}
+	require.NoError(t, collection.Initialize(containercollection.WithPubSub()))
+	defer collection.Close()
+	existing := &containercollection.Container{}
+	existing.Runtime.ContainerID = "existing"
+	collection.AddContainer(existing)
+	ctx := gadgetcontext.New(context.Background(), "test")
+	defer ctx.Cancel()
+	publisher, err := NewContainersPublisher(ctx, collection)
+	require.NoError(t, err)
+	defer publisher.Unsubscribe()
+	failure := errors.New("binding failed")
+	calls := 0
+	require.NoError(t, publisher.containersDs.Subscribe(func(_ datasource.DataSource, data datasource.Data) error {
+		calls++
+		return failure
+	}, 0))
+	require.ErrorIs(t, publisher.PublishContainers(false, nil, containercollection.ContainerSelector{}), failure)
+	collection.RemoveContainer("existing")
+	require.Equal(t, 1, calls, "failed startup left its subscription active")
 }

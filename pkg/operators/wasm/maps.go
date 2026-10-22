@@ -27,7 +27,6 @@ import (
 )
 
 func (i *wasmOperatorInstance) addMapFuncs(env wazero.HostModuleBuilder) {
-	exportFunction(env, "mapFreeze", i.mapFreeze, []wapi.ValueType{wapi.ValueTypeI32}, []wapi.ValueType{wapi.ValueTypeI32})
 	exportFunction(env, "newMap", i.newMap,
 		[]wapi.ValueType{
 			wapi.ValueTypeI64, // Map name
@@ -100,11 +99,6 @@ func isMapTypeSupportedForAccess(typ ebpf.MapType) error {
 		return fmt.Errorf("unknown map type %v", typ)
 	}
 
-	// Task-storage keys are host pidfds, not guest-visible integer keys.
-	if typ == ebpf.TaskStorage {
-		return fmt.Errorf("task storage requires BindProcess; raw pidfd keys are not exposed")
-	}
-
 	// We do not support map taking FD different than map FD to avoid leaking them
 	// in guest wasm.
 	if isMapTypeFDArray(typ) {
@@ -157,14 +151,9 @@ func (i *wasmOperatorInstance) newMap(ctx context.Context, m wapi.Module, stack 
 	}
 
 	mapHandle := i.addHandle(ebpfMap)
-	if mapHandle == 0 {
-		ebpfMap.Close()
-		stack[0] = 0
-		return
-	}
 
 	i.createdMapMutex.Lock()
-	i.createdMap[mapHandle] = ebpfMap
+	i.createdMap[mapHandle] = struct{}{}
 	i.createdMapMutex.Unlock()
 
 	stack[0] = wapi.EncodeU32(mapHandle)
@@ -261,16 +250,7 @@ func (i *wasmOperatorInstance) mapLookup(ctx context.Context, m wapi.Module, sta
 			return
 		}
 
-		handle := i.addHandle(innerMap)
-		if handle == 0 {
-			innerMap.Close()
-			stack[0] = 1
-			return
-		}
-		i.createdMapMutex.Lock()
-		i.createdMap[handle] = innerMap
-		i.createdMapMutex.Unlock()
-		binary.NativeEndian.PutUint32(value, handle)
+		binary.NativeEndian.PutUint32(value, i.addHandle(innerMap))
 	}
 
 	err = bufToStack(m, value, valuePtr)
@@ -439,17 +419,4 @@ func (i *wasmOperatorInstance) mapRelease(ctx context.Context, m wapi.Module, st
 	i.createdMapMutex.Unlock()
 
 	i.delHandle(mapHandle)
-}
-
-func (i *wasmOperatorInstance) mapFreeze(ctx context.Context, m wapi.Module, stack []uint64) {
-	bpfMap, ok := getHandle[*ebpf.Map](i, wapi.DecodeU32(stack[0]))
-	stack[0] = 1
-	if !ok {
-		return
-	}
-	if err := bpfMap.Freeze(); err != nil {
-		i.logger.Warnf("mapFreeze: %v", err)
-		return
-	}
-	stack[0] = 0
 }

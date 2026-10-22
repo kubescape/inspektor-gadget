@@ -9,12 +9,6 @@
 #define MAX_RULES 8
 #define PATH_SIZE 256
 
-// Tests override only marker creation; production always calls the real helper.
-#ifndef EXEC_PROCESS_MARKER_CREATE
-#define EXEC_PROCESS_MARKER_CREATE(task, value) \
-    bpf_task_storage_get(&process_targets, task, value, BPF_LOCAL_STORAGE_GET_F_CREATE)
-#endif
-
 extern int bpf_path_d_path(struct path *path, char *buf, size_t buf__sz) __ksym;
 
 // Slot 0 contains the generation header; remaining slots contain path rules.
@@ -28,42 +22,19 @@ struct exec_policy_entry {
     __u32 length;
     char path[PATH_SIZE];
 };
-struct policy_map {
+struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, MAX_RULES + 1);
+    __uint(map_flags, BPF_F_RDONLY_PROG);
     __type(key, __u32);
-    __uint(value_size, sizeof(struct exec_policy_entry));
-};
+    __type(value, struct exec_policy_entry);
+} policy SEC(".maps");
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
-    __uint(max_entries, 1);
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
     __type(key, __u64);
-    __array(values, struct policy_map);
-} bindings SEC(".maps");
-
-// The host seeds an actual task object via pidfd, never a reusable numeric PID.
-struct {
-    __uint(type, BPF_MAP_TYPE_TASK_STORAGE);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-    __type(key, __u32);
     __type(value, __u64);
-} process_targets SEC(".maps");
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __array(values, struct policy_map);
-} process_bindings SEC(".maps");
-
-
-// Persistent health is independent of event delivery and policy generations.
-struct process_health_value { __u64 failures; __u64 degraded; };
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32);
-    __type(value, struct process_health_value);
-} process_health SEC(".maps");
+} bindings SEC(".maps");
 
 struct exec_path_scratch { char path[PATH_SIZE]; };
 struct {
@@ -158,41 +129,12 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
         return ret;
     __u64 cgroup = bpf_get_current_cgroup_id();
     __u32 zero = 0;
-    struct task_struct *task = bpf_get_current_task_btf();
-    struct task_struct *leader = task->group_leader;
-    __u64 *marked = bpf_task_storage_get(&process_targets, leader, 0, 0);
-    // Read one inner map; the header and all rules share one generation.
-    void *policy;
-    if (marked)
-        policy = bpf_map_lookup_elem(&process_bindings, &zero);
-    else
-        policy = bpf_map_lookup_elem(&bindings, &cgroup);
-    if (!policy)
+    if (!bpf_map_lookup_elem(&bindings, &cgroup))
         return 0;
-    struct exec_policy_entry *header = bpf_map_lookup_elem(policy, &zero);
+    struct exec_policy_entry *header = bpf_map_lookup_elem(&policy, &zero);
     if (!header)
         return -1;
     __u32 mode = header->mode;
-    // A nonleader exec replaces the leader (de_thread). Preserve the marker
-    // even while off, so a later policy update can still address this process.
-    if (marked && task != leader) {
-        __u64 one = 1;
-        if (!EXEC_PROCESS_MARKER_CREATE(task, &one)) {
-            struct process_health_value *health = bpf_map_lookup_elem(&process_health, &zero);
-            if (health) {
-                __sync_fetch_and_add(&health->failures, 1);
-                if (mode != 2)
-                    __sync_fetch_and_or(&health->degraded, 1);
-            }
-            // NULL does not identify a precise errno. Choose ENOMEM when
-            // enforcing to avoid silently losing the selected process.
-            // Audit and off must never block solely to preserve tracking.
-            volatile long result = 0;
-            if (mode == 2)
-                result = -12;
-            return result;
-        }
-    }
     if (!mode)
         return 0;
     __u64 generation = header->generation;
@@ -217,7 +159,7 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
             if (i > rule_count)
                 break;
             __u32 key = i;
-            struct exec_policy_entry *rule = bpf_map_lookup_elem(policy, &key);
+            struct exec_policy_entry *rule = bpf_map_lookup_elem(&policy, &key);
             if (!rule)
                 continue;
             __u32 rule_len = rule->length;

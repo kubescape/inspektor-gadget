@@ -34,7 +34,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 
-	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 	instancemanager "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/instance-manager"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/k8sutil"
@@ -50,11 +49,6 @@ const (
 	gadgetTimeout  = "gadgetTimeout"
 )
 
-type instanceManager interface {
-	RemoveGadget(string) error
-	ReconcileGadget(context.Context, *api.GadgetInstance) error
-}
-
 type Store struct {
 	api.UnimplementedGadgetInstanceManagerServer
 	nodeName        string
@@ -62,7 +56,7 @@ type Store struct {
 	queue           workqueue.TypedRateLimitingInterface[string]
 	informer        cache.Controller
 	clientset       *kubernetes.Clientset
-	instanceMgr     instanceManager
+	instanceMgr     *instancemanager.Manager
 	gadgetNamespace string
 }
 
@@ -189,11 +183,9 @@ func (s *Store) reconcile(key string) error {
 		return fmt.Errorf("invalid key; expected %q, got %q", "namespace/name", key)
 	}
 
+	err = s.instanceMgr.RemoveGadget(namespacedName[1])
 	if !exists {
-		err := s.instanceMgr.RemoveGadget(namespacedName[1])
-		if errors.Is(err, instancemanager.ErrNotFound) {
-			return nil
-		}
+		// instance was deleted, so return the result of the deletion
 		return err
 	}
 
@@ -201,25 +193,17 @@ func (s *Store) reconcile(key string) error {
 	if !ok {
 		return fmt.Errorf("unexpected type: expected *corev1.ConfigMap, got %T", obj)
 	}
-	// Removing this node from the desired scope is an explicit administrator
-	// removal, like deleting the ConfigMap. It releases any active binding.
-	// Parameter-only changes below retain the running instance on rejection.
-	if nodes := configMap.Annotations[gadgetNodes]; nodes != "" && !slices.Contains(strings.Split(nodes, ","), s.nodeName) {
-		err := s.instanceMgr.RemoveGadget(configMap.Name)
-		if errors.Is(err, instancemanager.ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-
 	instance, err := configMapToGadgetInstance(configMap)
 	if err != nil {
 		return fmt.Errorf("converting configMap to gadgetInstance: %w", err)
 	}
+	if len(instance.Nodes) > 0 && !slices.Contains(instance.Nodes, s.nodeName) {
+		return nil
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	return s.instanceMgr.ReconcileGadget(ctx, instance)
+	log.Infof("starting gadget %q", configMap.Name)
+	s.instanceMgr.RunGadget(instance)
+	return nil
 }
 
 // handleErr checks if an error happened and makes sure we will retry later.
@@ -229,13 +213,6 @@ func (s *Store) handleErr(err error, key string) {
 		// This ensures that future processing of updates for this key is not delayed because of
 		// an outdated error history.
 		s.queue.Forget(key)
-		return
-	}
-
-	// Image pulling and operator startup can take longer than the failure
-	// retry budget. Keep the latest desired update queued until startup finishes.
-	if errors.Is(err, gadgetcontext.ErrNotRunning) {
-		s.queue.AddAfter(key, time.Second)
 		return
 	}
 
@@ -269,6 +246,7 @@ func (s *Store) CreateGadgetInstance(ctx context.Context, req *api.CreateGadgetI
 			return nil, fmt.Errorf("gadget instance with name '%s' already exists", req.GadgetInstance.Name)
 		}
 	}
+	tmpTrue := true
 	cmap := &corev1.ConfigMap{
 		TypeMeta: v1.TypeMeta{
 			Kind:       "ConfigMap",
@@ -289,6 +267,7 @@ func (s *Store) CreateGadgetInstance(ctx context.Context, req *api.CreateGadgetI
 				gadgetNodes:    strings.Join(req.GadgetInstance.Nodes, ","),
 			},
 		},
+		Immutable:  &tmpTrue,
 		Data:       req.GadgetInstance.GadgetConfig.ParamValues,
 		BinaryData: nil,
 	}

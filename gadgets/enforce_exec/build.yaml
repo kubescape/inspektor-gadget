@@ -1,2 +1,1 @@
 ebpf: program.bpf.c
-wasm: go/program.go

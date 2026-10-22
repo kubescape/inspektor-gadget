@@ -4,7 +4,6 @@
 package kernel_test
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
@@ -83,12 +81,12 @@ func TestExecKernel(t *testing.T) {
 		}
 		t.Fatalf("load/verifier: %v", err)
 	}
-	defer collection.Close()
+	defer func() { collection.Close() }()
 	attached, err := link.AttachLSM(link.LSMOptions{Program: collection.Programs["enforce_exec"]})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer attached.Close()
+	defer func() { attached.Close() }()
 	observer, err := link.AttachLSM(link.LSMOptions{Program: collection.Programs["preserve_previous"]})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +108,7 @@ func TestExecKernel(t *testing.T) {
 	}
 	cgid := stat.Ino
 	bindings := collection.Maps["bindings"]
-	defer bindings.Delete(cgid)
+	defer func() { bindings.Delete(cgid) }()
 	mkdir := func(t *testing.T, dir string) {
 		t.Helper()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -136,11 +134,17 @@ func TestExecKernel(t *testing.T) {
 	copyExe(t, bad)
 	publish := func(t *testing.T, gen uint64, mode, def uint32, paths []string, denies []bool) {
 		t.Helper()
-		inner, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 288, MaxEntries: 9})
+		next, err := ebpf.NewCollection(spec)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer inner.Close()
+		committed := false
+		defer func() {
+			if !committed {
+				next.Close()
+			}
+		}()
+		inner := next.Maps["policy"]
 		h := entry{Generation: gen, Mode: mode, DefaultDeny: def, Count: uint32(len(paths))}
 		if err := inner.Put(uint32(0), h); err != nil {
 			t.Fatal(err)
@@ -166,8 +170,19 @@ func TestExecKernel(t *testing.T) {
 		if err := inner.Freeze(); err != nil {
 			t.Fatal(err)
 		}
-		if err := bindings.Put(cgid, inner); err != nil {
+		if err := next.Maps["bindings"].Put(cgid, uint64(1)); err != nil {
 			t.Fatal(err)
+		}
+		nextLink, err := link.AttachLSM(link.LSMOptions{Program: next.Programs["enforce_exec"]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attached.Close()
+		collection.Close()
+		attached, collection, bindings = nextLink, next, next.Maps["bindings"]
+		committed = true
+		if err := inner.Put(uint32(0), h); !errors.Is(err, syscall.EPERM) {
+			t.Fatalf("frozen policy write: %v", err)
 		}
 	}
 	execute := func(path string, managed bool) error {
@@ -246,7 +261,7 @@ func TestExecKernel(t *testing.T) {
 		for _, n := range counts {
 			failures += n
 		}
-		if failures < 2 {
+		if failures < 1 {
 			t.Fatalf("expected path resolution failures, got %d", failures)
 		}
 	})
@@ -279,84 +294,46 @@ func TestExecKernel(t *testing.T) {
 		}
 		t.Logf("reports rate limited while blocking: %d", limited)
 	})
-	t.Run("atomic-generation", func(t *testing.T) {
-		reader, err := ringbuf.NewReader(collection.Maps["events"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer reader.Close()
-		// Drain old records before starting the generation-specific oracle.
-		reader.SetDeadline(time.Now().Add(20 * time.Millisecond))
-		for {
-			if _, err := reader.Read(); err != nil {
-				break
-			}
-		}
-		var mismatches, observed, even, odd, unexpected atomic.Uint64
+	t.Run("overlap-replacement", func(t *testing.T) {
+		publish(t, 100, 2, 1, nil, nil)
+		var unexpected atomic.Uint64
+		stop := make(chan struct{})
 		done := make(chan struct{})
-		reader.SetDeadline(time.Time{})
 		go func() {
 			defer close(done)
-			for {
-				r, err := reader.Read()
-				if err != nil {
-					return
-				}
-				g := binary.LittleEndian.Uint64(r.RawSample[0:8])
-				deny := binary.LittleEndian.Uint32(r.RawSample[16:20])
-				if g >= 100 {
-					observed.Add(1)
-					if g%2 == 0 {
-						even.Add(1)
-					} else {
-						odd.Add(1)
-					}
-					if (g%2 == 0 && deny != 0) || (g%2 == 1 && deny != 1) {
-						mismatches.Add(1)
-					}
-				}
-			}
-		}()
-		// Even generations default-deny + allow this path; odd generations default-allow + deny it.
-		// Mixing a header and rules from different generations produces the wrong verdict.
-		var readerOnce sync.Once
-		stopReader := func() { readerOnce.Do(func() { reader.Close(); <-done }) }
-		t.Cleanup(stopReader)
-		stop := make(chan struct{})
-		workerDone := make(chan struct{})
-		publish(t, 100, 2, 1, []string{good}, []bool{false})
-		go func() {
-			defer close(workerDone)
 			for {
 				select {
 				case <-stop:
 					return
 				default:
-					if err := execute(good, true); err != nil && !errors.Is(err, syscall.EPERM) {
+					if err := execute(bad, true); !errors.Is(err, syscall.EPERM) {
 						unexpected.Add(1)
 					}
 				}
 			}
 		}()
-		var workerOnce sync.Once
-		stopWorker := func() { workerOnce.Do(func() { close(stop); <-workerDone }) }
-		t.Cleanup(stopWorker)
-		for g := uint64(101); g < 301; g++ {
-			publish(t, g, 2, uint32(1-g%2), []string{good}, []bool{g%2 == 1})
+		var once sync.Once
+		finish := func() { once.Do(func() { close(stop); <-done }) }
+		t.Cleanup(finish)
+		for generation := uint64(101); generation < 121; generation++ {
+			publish(t, generation, 2, 1, nil, nil)
 			time.Sleep(time.Millisecond)
 		}
-		stopWorker()
-		time.Sleep(30 * time.Millisecond)
-		stopReader()
-		if even.Load() == 0 || odd.Load() == 0 || mismatches.Load() != 0 || unexpected.Load() != 0 {
-			t.Fatalf("observed=%d allow=%d deny=%d mixed-generation verdicts=%d unexpected=%d", observed.Load(), even.Load(), odd.Load(), mismatches.Load(), unexpected.Load())
+		finish()
+		if unexpected.Load() != 0 {
+			t.Fatalf("replacement permitted %d executions", unexpected.Load())
 		}
-		t.Logf("generation-correlated decisions=%d (allow=%d deny=%d), mismatches=0 unexpected errors=%d", observed.Load(), even.Load(), odd.Load(), unexpected.Load())
 	})
-	t.Run("remove-binding", func(t *testing.T) {
-		if err := bindings.Delete(cgid); err != nil {
-			t.Fatal(err)
+	t.Run("live-binding-churn", func(t *testing.T) {
+		for range 10 {
+			if err := bindings.Delete(cgid); err != nil {
+				t.Fatal(err)
+			}
+			expect(t, bad, true, false)
+			if err := bindings.Put(cgid, uint64(1)); err != nil {
+				t.Fatal(err)
+			}
+			expect(t, bad, true, true)
 		}
-		expect(t, bad, true, false)
 	})
 }

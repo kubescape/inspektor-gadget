@@ -189,30 +189,13 @@ is a bounded observability selection, not a sandbox; it still permits map writes
 sensitive reads and resource use. Trusted, administrator-approved gadget code
 remains the trust model.
 
+### Native enforcement control
 
-### Stored enforcement instance updates
-
-Images can declare `live-update-parameter`, `live-update-datasource`,
-`live-update-status` and `live-update-field` annotations to connect a WASM
-parameter to its update input and status acknowledgment. The host supplies an
-expected generation and request ID and requires the guest to acknowledge the
-same request and next generation. A missing or rejected acknowledgment is an
-update failure, not permission to restart an enforcement instance.
-
-For `enforce_exec`, changing a stored ConfigMap's
-`operator.oci.wasm.exec-policy` updates the running generation. A rejected policy
-retains the running instance and last-good configuration. Image changes and
-changes outside the declared parameter are rejected for these instances.
-Deleting the ConfigMap or removing this node from `gadgetNodes` explicitly
-removes enforcement. Gadgets without declared live-update support retain the
-existing restart behavior. This integration adds no public update RPC.
-
-Process bindings require an IG-owned blocked child created by `ig launch` or
-native `pkg/processlaunch`. Stored ConfigMap and daemon-file instances support
-container bindings; supplying a process identity cannot authorize attachment to
-an arbitrary running process. No public daemon registration transport is added.
-
-The standalone daemon's file store polls its existing `.gadget` instance files
-once per second and uses the same reconciliation path. Malformed files and
-rejected updates keep the last-good running instance. File deletion explicitly
-removes the instance; service shutdown stops the watcher.
+`enforce_exec` uses native, host-owned compiled map data and immutable rules per
+instance. `ig enforce-exec` provides the standalone CLI; an embedded owner can
+use the shared compiler, native binding controller and instance manager. Rule
+changes use create-before-remove replacement with startup and cleanup waits.
+There is no policy parameter update protocol, ConfigMap/file update reconciler,
+public policy RPC or process binding in this implementation. Ordinary upstream
+stores retain their existing behavior. See the [gadget guide](../../../gadgets/enforce_exec/README.md)
+for the control interface and replacement contract.

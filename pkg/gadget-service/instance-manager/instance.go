@@ -61,9 +61,6 @@ type GadgetInstance struct {
 	mgr                  *Manager
 	request              *api.GadgetRunRequest
 	mu                   sync.Mutex
-	updateMu             sync.Mutex
-	updateContext        parameterUpdateContext
-	updateError          error
 	gadgetInfoSerialized *api.GadgetEvent
 	gadgetInfo           *api.GadgetInfo
 	eventBuffer          []*bufferedEvent
@@ -73,7 +70,9 @@ type GadgetInstance struct {
 	cancel               func()
 	state                gadgetState
 	error                error
-	runCompleted         bool // protected by mu; set only after Run and its cleanup return
+	readyOnce            sync.Once
+	started              chan struct{}
+	stopped              chan struct{}
 	ready                chan struct{}
 }
 
@@ -85,6 +84,11 @@ func (p *GadgetInstance) GadgetInfo() (*api.GadgetInfo, error) {
 }
 
 func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan struct{} {
+	if _, err := p.GadgetInfo(); err != nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
 	log.Debugf("[%s] client connected", p.gadgetInfo.Id)
 	p.mu.Lock()
 	cl := NewGadgetInstanceClient(client)
@@ -143,6 +147,7 @@ func (p *GadgetInstance) Run(
 	ctx context.Context,
 	runtime runtime.Runtime,
 	logger logger.Logger,
+	options ...gadgetcontext.Option,
 ) error {
 	if p.request.Version != api.VersionGadgetRunProtocol {
 		return fmt.Errorf("expected version to be %d, got %d", api.VersionGadgetRunProtocol, p.request.Version)
@@ -198,39 +203,55 @@ func (p *GadgetInstance) Run(
 			gi.Name = p.name
 
 			d, _ := proto.Marshal(gi)
+			p.mu.Lock()
 			p.gadgetInfoSerialized = &api.GadgetEvent{
 				Type:    api.EventTypeGadgetInfo,
 				Payload: d,
 			}
 			p.gadgetInfo = gi
-			close(p.ready)
+			p.mu.Unlock()
+			p.readyOnce.Do(func() { close(p.ready) })
+			if p.mgr.asyncGadgetRunCreation {
+				p.mgr.waitingRoom.Range(func(key, value any) bool {
+					if value.(string) == p.id {
+						p.AddClient(key.(api.GadgetManager_RunGadgetServer))
+						p.mgr.waitingRoom.Delete(key)
+					}
+					return true
+				})
+			}
 			return nil
 		}),
 	)
 
 	ops := make([]operators.DataOperator, 0)
-	for op := range p.mgr.GetOperatorMap() {
-		ops = append(ops, op)
+	if p.mgr.Service != nil {
+		for op := range p.mgr.GetOperatorMap() {
+			ops = append(ops, op)
+		}
 	}
 	ops = append(ops, svc)
 
-	gadgetCtx := gadgetcontext.New(
-		ctx,
-		p.request.ImageName,
+	opts := []gadgetcontext.Option{
 		gadgetcontext.WithLogger(logger),
 		gadgetcontext.WithDataOperators(ops...),
 		gadgetcontext.WithAsRemoteCall(true),
 		gadgetcontext.WithName(p.name),
 		gadgetcontext.WithID(p.id),
-	)
+	}
+	opts = append(opts, options...)
+	// Manager startup notification must not be replaced by caller options.
+	opts = append(opts, gadgetcontext.WithOnStarted(func() error {
+		p.mu.Lock()
+		p.state = stateRunning
+		p.mu.Unlock()
+		close(p.started)
+		return nil
+	}))
+	gadgetCtx := gadgetcontext.New(ctx, p.request.ImageName, opts...)
 
 	runtimeParams := runtime.ParamDescs().ToParams()
 	runtimeParams.CopyFromMap(p.request.ParamValues, "runtime.")
-
-	p.mu.Lock()
-	p.state = stateRunning
-	p.updateContext = gadgetCtx
-	p.mu.Unlock()
 
 	return runtime.RunGadget(gadgetCtx, runtimeParams, p.request.ParamValues)
 }

@@ -267,14 +267,7 @@ const (
 )
 
 func (i *wasmOperatorInstance) callDsCallbackWithLock(ctx context.Context, cbID uint64, dsHandle uint64, dataHandle uint64) error {
-	if i.guestStopped.Load() {
-		return nil
-	}
 	i.dataSourceCallbackLock.Lock()
-	if i.guestStopped.Load() {
-		i.dataSourceCallbackLock.Unlock()
-		return nil
-	}
 	_, err := i.dataSourceCallback.Call(ctx, cbID, dsHandle, dataHandle)
 	i.dataSourceCallbackLock.Unlock()
 	return err

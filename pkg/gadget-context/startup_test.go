@@ -83,14 +83,12 @@ func TestOnStartedLifecycle(t *testing.T) {
 			callbackCalls := 0
 			gadgetCtx = New(ctx, "test", WithDataOperators(second, first), WithOnStarted(func() error {
 				callbackCalls++
-				require.True(t, gadgetCtx.updatesReady)
 				require.Equal(t, []string{"first_prestart", "second_prestart", "first_start", "second_start"}, calls)
 				calls = append(calls, "callback")
 				cancel()
 				return tc.callbackError
 			}))
 			err := gadgetCtx.Run(nil)
-			require.False(t, gadgetCtx.updatesReady)
 			if tc.failStart {
 				require.ErrorContains(t, err, "starting operator")
 				require.Zero(t, callbackCalls)
@@ -125,4 +123,67 @@ func TestOnStartedNotCalledForGadgetInfo(t *testing.T) {
 	defer ctx.Cancel()
 	require.NoError(t, ctx.PrepareGadgetInfo(nil))
 	require.False(t, called)
+}
+
+func TestAdditionalDataOperatorsParticipateInStartup(t *testing.T) {
+	var calls []string
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := &fakeOperator{name: "first", priority: 1, called: &calls}
+	second := &fakeOperator{name: "second", priority: 2, called: &calls}
+	gadgetCtx := New(ctx, "test", WithDataOperators(first), WithAdditionalDataOperators(second), WithOnStarted(func() error {
+		require.Equal(t, []string{"first_prestart", "second_prestart", "first_start", "second_start"}, calls)
+		cancel()
+		return nil
+	}))
+	require.NoError(t, gadgetCtx.Run(nil))
+}
+
+type readinessOperator struct {
+	*startupOperator
+	check func() error
+}
+
+func (o *readinessOperator) InstantiateDataOperator(operators.GadgetContext, api.ParamValues) (operators.DataOperatorInstance, error) {
+	return o, nil
+}
+
+func (o *readinessOperator) Ready(operators.GadgetContext) error {
+	*o.called = append(*o.called, o.name+"_ready")
+	return o.check()
+}
+
+func TestFinalReadinessAfterAllStarts(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "late coverage failure"}[fail], func(t *testing.T) {
+			var calls []string
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lateFailure := errors.New("late binding failed")
+			var discoveredError error
+			first := &readinessOperator{startupOperator: &startupOperator{fakeOperator: &fakeOperator{name: "first", priority: 1, called: &calls}}, check: func() error {
+				require.Equal(t, []string{"first_prestart", "second_prestart", "first_start", "second_start", "first_ready"}, calls)
+				return discoveredError
+			}}
+			second := &startupOperator{fakeOperator: &fakeOperator{name: "second", priority: 2, called: &calls}, afterStart: func() {
+				if fail {
+					discoveredError = lateFailure
+				}
+			}}
+			callbackCalls := 0
+			gc := New(ctx, "test", WithDataOperators(second, first), WithOnStarted(func() error { callbackCalls++; calls = append(calls, "callback"); cancel(); return nil }))
+			err := gc.Run(nil)
+			expected := []string{"first_prestart", "second_prestart", "first_start", "second_start", "first_ready"}
+			if fail {
+				require.ErrorIs(t, err, lateFailure)
+				require.Zero(t, callbackCalls)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, 1, callbackCalls)
+				expected = append(expected, "callback")
+			}
+			expected = append(expected, "second_prestop", "first_prestop", "second_stop", "first_stop", "second_poststop", "first_poststop", "second_close", "first_close")
+			require.Equal(t, expected, calls)
+		})
+	}
 }

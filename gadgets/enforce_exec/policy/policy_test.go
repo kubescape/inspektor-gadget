@@ -4,9 +4,7 @@
 package execpolicy
 
 import (
-	"errors"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -142,125 +140,26 @@ func TestDenyPrecedenceAndModes(t *testing.T) {
 	}
 }
 
-func TestProcessIdentity(t *testing.T) {
+func TestContainerBindingSet(t *testing.T) {
 	d := document(t)
-	d.Binding = Binding{Process: &Process{Node: "node-a", BootID: "boot-a", HostPID: 42, StartTimeTicks: 100}}
+	d.Binding = Binding{Containers: []Container{{Runtime: "containerd", ID: "one"}, {Runtime: "docker", ID: "two"}}}
 	if err := d.Validate(DefaultLimits()); err != nil {
 		t.Fatal(err)
 	}
-	d.Binding.Process.StartTimeTicks = 0
+	targets := d.Binding.Targets()
+	targets[0].ID = "mutated"
+	if d.Binding.Containers[0].ID != "one" {
+		t.Fatal("Targets exposed mutable selectors")
+	}
+	d.Binding.Containers = append(d.Binding.Containers, d.Binding.Containers[0])
 	if err := d.Validate(DefaultLimits()); err == nil {
-		t.Fatal("incomplete identity accepted")
+		t.Fatal("duplicate container accepted")
 	}
-}
-
-func TestLifecycle(t *testing.T) {
-	b := NewMemoryBackend(DefaultLimits())
-	d := document(t)
-	h, err := b.Prepare(d, 0)
-	if err != nil {
-		t.Fatal(err)
+	d.Binding.Container = &Container{Runtime: "docker", ID: "other"}
+	if err := d.Validate(DefaultLimits()); err == nil {
+		t.Fatal("ambiguous bindings accepted")
 	}
-	if b.Inspect().Active {
-		t.Fatal("prepare activated policy")
-	}
-	// Mutations after preparation must not change the candidate.
-	d.Policy.Exec.Rules[0].Target.Path[0] = "/tmp/**"
-	state, err := b.Activate(h)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Generation != 1 || state.Enforcement {
-		t.Fatalf("bad state %+v", state)
-	}
-	result, _ := b.Evaluate("/usr/bin/tool")
-	if result.Verdict != "allow" {
-		t.Fatal("candidate was not immutable")
-	}
-	state.Binding.Container.ID = "tampered"
-	if b.Inspect().Binding.Container.ID == "tampered" {
-		t.Fatal("inspection exposed mutable binding")
-	}
-	if _, err := b.Activate(h); err == nil {
-		t.Fatal("handle replay accepted")
-	}
-	bad := document(t)
-	bad.Policy.Mode = "invalid"
-	if _, err := b.Prepare(bad, 1); err == nil {
-		t.Fatal("bad replacement accepted")
-	}
-	if b.Inspect().Hash != state.Hash {
-		t.Fatal("bad replacement changed active generation")
-	}
-	different := document(t)
-	different.Binding.Container.ID = "different"
-	if _, err := b.Prepare(different, 1); err == nil {
-		t.Fatal("retargeting accepted")
-	}
-	d = document(t)
-	d.Policy.Mode = "audit"
-	h, err = b.Prepare(d, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = b.Prepare(d, 1); err == nil {
-		t.Fatal("unbounded pending storage")
-	}
-	b.Cancel(h)
-	b.Cancel(h)
-	h, err = b.Prepare(d, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err = b.Activate(h)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Generation != 2 {
-		t.Fatal("replacement did not advance generation")
-	}
-	if err = b.Remove(1); !errors.Is(err, ErrConflict) {
-		t.Fatalf("stale remove: %v", err)
-	}
-	if err = b.Remove(2); err != nil {
-		t.Fatal(err)
-	}
-	if b.Inspect().Active || b.Inspect().Generation != 3 {
-		t.Fatal("removal lost tombstone")
-	}
-	if err = b.Remove(3); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = b.Prepare(d, 2); !errors.Is(err, ErrConflict) {
-		t.Fatal("stale writer resurrected binding")
-	}
-	if _, err = b.Evaluate("/tmp/tool"); err == nil {
-		t.Fatal("removed policy evaluated")
-	}
-}
-
-func TestConcurrentPreparations(t *testing.T) {
-	b := NewMemoryBackend(DefaultLimits())
-	d := document(t)
-	var wg sync.WaitGroup
-	handles := make(chan Handle, 16)
-	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if h, err := b.Prepare(d, 0); err == nil {
-				handles <- h
-			}
-		}()
-	}
-	wg.Wait()
-	close(handles)
-	if len(handles) != 1 {
-		t.Fatalf("expected one prepared candidate, got %d", len(handles))
-	}
-	for h := range handles {
-		if _, err := b.Activate(h); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := Parse(strings.NewReader(strings.Replace(fixture, "container:\n    runtime: containerd\n    id: container-123", "process:\n    hostPID: 123", 1)), DefaultLimits()); err == nil {
+		t.Fatal("process binding accepted")
 	}
 }

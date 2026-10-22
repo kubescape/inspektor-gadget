@@ -251,12 +251,16 @@ func (c *GadgetContext) Run(paramValues api.ParamValues) error {
 		return fmt.Errorf("starting operators: %w", err)
 	}
 
-	c.updateMu.Lock()
-	c.updatesReady = true
-	c.updateMu.Unlock()
-
 	var errs []error
-	if c.onStarted != nil {
+	for _, op := range c.localOperators {
+		if ready, ok := op.(operators.Readiness); ok {
+			if err := ready.Ready(c); err != nil {
+				errs = append(errs, fmt.Errorf("checking operator %q readiness: %w", op.Name(), err))
+				break
+			}
+		}
+	}
+	if len(errs) == 0 && c.onStarted != nil {
 		if err := c.ctx.Err(); err != nil {
 			errs = append(errs, fmt.Errorf("startup canceled: %w", err))
 		} else if err := c.onStarted(); err != nil {
@@ -267,11 +271,6 @@ func (c *GadgetContext) Run(paramValues api.ParamValues) error {
 		c.Logger().Debugf("running...")
 		WaitForTimeoutOrDone(c)
 	}
-
-	// Wait for an acknowledged update before tearing down its operator.
-	c.updateMu.Lock()
-	defer c.updateMu.Unlock()
-	c.updatesReady = false
 
 	if err := c.preStop(); err != nil {
 		errs = append(errs, fmt.Errorf("pre-stopping operators: %w", err))

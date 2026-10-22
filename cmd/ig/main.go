@@ -104,7 +104,7 @@ func main() {
 	operators.RegisterDataOperator(ocihandler.OciHandler)
 
 	rootCmd.AddCommand(newDaemonCommand(runtime))
-	rootCmd.AddCommand(newLaunchCommand(runtime))
+	rootCmd.AddCommand(newEnforceExecCommand(runtime))
 	rootCmd.AddCommand(common.NewLoginCmd())
 	rootCmd.AddCommand(image.NewImageCmd(runtime, nil))
 	rootCmd.AddCommand(common.NewLogoutCmd())

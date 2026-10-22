@@ -372,11 +372,6 @@ Return value:
 
 ### eBPF Maps
 
-Maps created through `newMap` and file descriptors opened by map-of-maps lookups
-are owned by the WASM operator. Release them when no longer needed; the runtime
-also closes remaining owned maps on shutdown or failed startup. Handles from
-`getMap` borrow a gadget map and releasing them does not close that map.
-
 #### `newMap(name string, typ uint32, keySize uint32, valueSize uint32, maxEntries uint32) uint32`
 
 Create a new eBPF map.
@@ -440,22 +435,6 @@ Parameters:
 Return value:
 - 0 in case of success, 1 otherwise.
 
-#### `mapFreeze(m uint32) uint32`
-
-Prevent further userspace updates to a map. BPF programs can still update it.
-Populate a policy map before freezing and publishing it in a map of maps.
-
-Parameters:
-
-- `m` (u32): Map handle.
-
-Return value:
-
-- 0 in case of success, 1 otherwise.
-
-This host function is exported as `ig.mapFreeze`. A module importing it fails
-initialization on runtimes without the function, before gadget eBPF attachment.
-
 #### `mapRelease(m uint32) uint32`
 
 Close the map created by `newMap()`.
@@ -471,9 +450,7 @@ Return value:
 
 #### `releaseHandle(h uint32) uint32`
 
-Releases the handle. For an owned map, including a map-of-maps lookup result,
-this also closes its file descriptor. Borrowed `getMap` handles do not close the
-underlying gadget map.
+Releases the handle
 
 Parameters:
 - `h` (u32): handle
@@ -606,54 +583,3 @@ Parameters:
 
 Return value:
 - (u32) 1 if the mount namespace ID should be discarded, 0 otherwise.
-
-### Process binding
-
-#### `bindProcess(target uint32, node uint64, bootID uint64, hostPID uint32, startTicks uint64) uint32`
-
-Bind an IG-owned bootstrap waiting for launch and seed its task-storage entry
-with `uint64(1)`. Arbitrary running processes cannot be attached.
-The host uses a pidfd internally; raw file descriptors never enter WASM.
-
-Parameters:
-
-- `target` (u32): Handle to a task-storage map with a 4-byte key and 8-byte value.
-- `node` (u64): Encoded string buffer for the node name.
-- `bootID` (u64): Encoded string buffer for the host boot ID.
-- `hostPID` (u32): Host PID of the thread-group leader.
-- `startTicks` (u64): Process start time from field 22 of `/proc/PID/stat`.
-
-Return value:
-
-- (u32) 0 on success, 1 on validation, lifecycle, or map-update failure.
-
-Call during `gadgetStart`, after registering and subscribing to
-`process_lifecycle` with `event_type` (string), `host_pid` (uint32), and
-`start_time_ticks` (uint64). The host emits `EXITED` with the supplied identity
-after process exit, once `gadgetStart` has returned. One binding is supported
-per instance. IG must run in the host PID namespace; the node must match
-`NODE_NAME`, or the hostname when that variable is unset.
-
-Task storage belongs to the actual task and is reclaimed on exit. The host
-closes its monitoring pidfd on exit or shutdown. Normal map lookup, update,
-and delete operations reject task storage. See the [Go API process binding
-section](./gadget-wasm-api-go.md#binding-a-process) for identity ownership and
-nonleader-exec semantics.
-
-The `enforce_exec` program rejects a nonleader exec with the chosen error `ENOMEM`
-if marker propagation fails in enforce mode. Audit/off permit the exec and record
-possible tracking loss in persistent `process_health` state. Process policy
-transitions from audit/off to enforce require a new process launch and fresh
-gadget instance, including when health appears clean. See the Go API section
-above for health reporting and transition semantics; these belong to the gadget
-policy.
-
-This function is exported as `ig.bindProcess`. Runtimes without the function
-reject modules importing it during initialization.
-
-Native `pkg/processlaunch` must supply a private context capability for its
-blocked child and owned pidfd. The supplied identity must match that capability;
-policy identity fields alone cannot authorize a binding. The launcher releases
-the child after binding and full operator startup, then the child executes the
-application in the same process. This needs no ptrace activation and retains the
-same WASM signature and BPF task-storage marker.

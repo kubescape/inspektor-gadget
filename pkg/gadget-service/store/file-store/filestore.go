@@ -36,27 +36,15 @@ const (
 	GadgetInstanceDir = "/var/lib/ig/gadgets"
 )
 
-type instanceManager interface {
-	RunGadget(*api.GadgetInstance)
-	RemoveGadget(string) error
-	ReconcileGadget(context.Context, *api.GadgetInstance) error
-}
-
 type FileStore struct {
 	api.GadgetInstanceManagerServer
-	instanceMgr instanceManager
+	instanceMgr *instancemanager.Manager
 	mu          sync.Mutex
-	directory   string
-	observed    map[string]string
-	watchCancel context.CancelFunc
-	watchWG     sync.WaitGroup
 }
 
 func New(mgr *instancemanager.Manager) (store.Store, error) {
 	fs := &FileStore{
 		instanceMgr: mgr,
-		directory:   GadgetInstanceDir,
-		observed:    make(map[string]string),
 	}
 	err := fs.init()
 	if err != nil {
@@ -92,15 +80,12 @@ func loadGadgetFile(filename string) (*api.CreateGadgetInstanceRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal gadget info for file %q: %w", filename, err)
 	}
-	if gadget.GadgetInstance == nil || gadget.GadgetInstance.GadgetConfig == nil {
-		return nil, fmt.Errorf("missing gadget instance or configuration in %q", filename)
-	}
 	return gadget, nil
 }
 
 // getGadgets returns a list of all installed gadget configurations
 func (s *FileStore) getGadgets() ([]*api.CreateGadgetInstanceRequest, error) {
-	files, err := os.ReadDir(s.directory)
+	files, err := os.ReadDir(GadgetInstanceDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading gadgets: %w", err)
 	}
@@ -110,7 +95,7 @@ func (s *FileStore) getGadgets() ([]*api.CreateGadgetInstanceRequest, error) {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".gadget") {
 			continue
 		}
-		gadget, err := loadGadgetFile(filepath.Join(s.directory, file.Name()))
+		gadget, err := loadGadgetFile(filepath.Join(GadgetInstanceDir, file.Name()))
 		if err != nil {
 			log.Warnf("could not read gadget file: %v", err)
 			continue
@@ -120,24 +105,28 @@ func (s *FileStore) getGadgets() ([]*api.CreateGadgetInstanceRequest, error) {
 	return res, nil
 }
 
+func (s *FileStore) ResumeStoredGadgets() error {
+	gadgets, err := s.getGadgets()
+	if err != nil {
+		return fmt.Errorf("reading existing gadgets: %w", err)
+	}
+
+	for _, gadget := range gadgets {
+		log.Infof("loading gadget instance %q", gadget.GadgetInstance.Id)
+		s.instanceMgr.RunGadget(gadget.GadgetInstance)
+	}
+	return nil
+}
+
 func (s *FileStore) CreateGadgetInstance(ctx context.Context, req *api.CreateGadgetInstanceRequest) (*api.CreateGadgetInstanceResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Store to gadget file
-	gadgetBlob, err := protojson.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("encoding gadget information: %w", err)
-	}
+	gadgetBlob, _ := protojson.Marshal(req)
 
 	// req.GadgetInstance.Id is sanitized in service-store.go
-	filename := filepath.Join(s.directory, fmt.Sprintf("%s.gadget", req.GadgetInstance.Id))
-
-	// A removed file may still own a live instance until the watcher handles
-	// deletion. Creating the same ID must not orphan that retained instance.
-	if _, tracked := s.observed[req.GadgetInstance.Id]; tracked {
-		return nil, fmt.Errorf("gadget with id %q already exists", req.GadgetInstance.Id)
-	}
+	filename := filepath.Join(GadgetInstanceDir, fmt.Sprintf("%s.gadget", req.GadgetInstance.Id))
 
 	// check whether a gadget with the given id or name already exists
 	gadgets, err := s.getGadgets()
@@ -153,24 +142,13 @@ func (s *FileStore) CreateGadgetInstance(ctx context.Context, req *api.CreateGad
 		}
 	}
 
-	// Reserve the ID independently of the file's contents. Invalid desired
-	// configuration may still own a running last-good instance, and an external
-	// writer can create the file after the parsed-name checks above.
-	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if errors.Is(err, os.ErrExist) {
-		return nil, fmt.Errorf("gadget with id %q already exists", req.GadgetInstance.Id)
-	}
+	err = os.WriteFile(filename, gadgetBlob, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("creating gadget file: %w", err)
-	}
-	_, writeErr := file.Write(gadgetBlob)
-	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return nil, fmt.Errorf("storing gadget information: %w", errors.Join(err, os.Remove(filename)))
+		return nil, fmt.Errorf("storing gadget information: %w", err)
 	}
 
 	log.Debugf("installing new gadget %q", req.GadgetInstance.Id)
 	s.instanceMgr.RunGadget(req.GadgetInstance)
-	s.observed[req.GadgetInstance.Id] = string(gadgetBlob)
 	return &api.CreateGadgetInstanceResponse{
 		Result:         0,
 		GadgetInstance: req.GadgetInstance,
@@ -196,7 +174,7 @@ func (s *FileStore) GetGadgetInstance(ctx context.Context, req *api.GadgetInstan
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	path := filepath.Join(s.directory, fmt.Sprintf("%s.gadget", req.Id))
+	path := filepath.Join(GadgetInstanceDir, fmt.Sprintf("%s.gadget", req.Id))
 	gadget, err := loadGadgetFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("loading gadget: %w", err)
@@ -208,27 +186,19 @@ func (s *FileStore) RemoveGadgetInstance(ctx context.Context, request *api.Gadge
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	path := filepath.Join(s.directory, fmt.Sprintf("%s.gadget", request.Id))
-	// Removal addresses the file's sanitized ID, never its desired contents.
-	// The last-good instance may still run after an invalid administrator edit.
-	_, err := os.Lstat(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	path := filepath.Join(GadgetInstanceDir, fmt.Sprintf("%s.gadget", request.Id))
+	_, err := loadGadgetFile(path)
+	if err != nil {
 		return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		if _, tracked := s.observed[request.Id]; !tracked {
-			return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
-		}
 	}
 
 	err = s.instanceMgr.RemoveGadget(request.Id)
-	if err != nil && !errors.Is(err, instancemanager.ErrNotFound) {
+	if err != nil {
 		return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
 	}
 	err = os.Remove(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil {
 		return &api.StatusResponse{Result: 1, Message: err.Error()}, nil
 	}
-	delete(s.observed, request.Id)
 	return &api.StatusResponse{Result: 0}, nil
 }

@@ -33,18 +33,12 @@ type Document struct {
 }
 
 type Binding struct {
-	Container *Container `yaml:"container,omitempty" json:"container,omitempty"`
-	Process   *Process   `yaml:"process,omitempty" json:"process,omitempty"`
+	Container  *Container  `yaml:"container,omitempty" json:"container,omitempty"`
+	Containers []Container `yaml:"containers,omitempty" json:"containers,omitempty"`
 }
 type Container struct {
 	Runtime string `yaml:"runtime" json:"runtime"`
 	ID      string `yaml:"id" json:"id"`
-}
-type Process struct {
-	Node           string `yaml:"node" json:"node"`
-	BootID         string `yaml:"bootID" json:"bootID"`
-	HostPID        int    `yaml:"hostPID" json:"hostPID"`
-	StartTimeTicks uint64 `yaml:"startTimeTicks" json:"startTimeTicks"`
 }
 type Policy struct {
 	Mode string  `yaml:"mode" json:"mode"`
@@ -73,26 +67,6 @@ func Parse(r io.Reader, limits Limits) (Document, error) {
 		return Document{}, err
 	}
 	if err := d.Validate(limits); err != nil {
-		return Document{}, err
-	}
-	return d, nil
-}
-
-// ParseLaunch reads a policy with no binding. The launcher supplies the exact
-// process identity; even an empty or null user-provided binding is rejected.
-func ParseLaunch(r io.Reader, limits Limits, process Process) (Document, error) {
-	var input struct {
-		Version int    `yaml:"version"`
-		Policy  Policy `yaml:"policy"`
-	}
-	if err := decode(r, limits, &input); err != nil {
-		return Document{}, err
-	}
-	d := Document{Version: input.Version, Policy: input.Policy, Binding: Binding{Process: &process}}
-	if err := d.Validate(limits); err != nil {
-		return Document{}, err
-	}
-	if _, err := CompileKernel(d, 1); err != nil {
 		return Document{}, err
 	}
 	return d, nil
@@ -128,14 +102,18 @@ func (d Document) Validate(limits Limits) error {
 	if d.Version != 1 {
 		return fmt.Errorf("unsupported version %d", d.Version)
 	}
-	if (d.Binding.Container == nil) == (d.Binding.Process == nil) {
-		return fmt.Errorf("exactly one container or process binding is required")
+	if d.Binding.Container != nil && len(d.Binding.Containers) > 0 {
+		return fmt.Errorf("use container or containers, not both")
 	}
-	if c := d.Binding.Container; c != nil && (strings.TrimSpace(c.Runtime) == "" || strings.TrimSpace(c.ID) == "") {
-		return fmt.Errorf("container runtime and ID are required")
+	if len(d.Binding.Targets()) == 0 || len(d.Binding.Targets()) > KernelMaxBindings {
+		return fmt.Errorf("require 1 to %d container targets", KernelMaxBindings)
 	}
-	if p := d.Binding.Process; p != nil && (p.Node == "" || p.BootID == "" || p.HostPID <= 0 || p.HostPID > 2147483647 || p.StartTimeTicks == 0) {
-		return fmt.Errorf("process binding requires node, bootID, positive hostPID and startTimeTicks")
+	seen := map[Container]bool{}
+	for _, c := range d.Binding.Targets() {
+		if strings.TrimSpace(c.Runtime) == "" || strings.TrimSpace(c.ID) == "" || seen[c] {
+			return fmt.Errorf("container runtime and ID must be nonempty and unique")
+		}
+		seen[c] = true
 	}
 	if d.Policy.Mode != "audit" && d.Policy.Mode != "enforce" && d.Policy.Mode != "off" {
 		return fmt.Errorf("mode must be audit, enforce or off")
@@ -191,4 +169,12 @@ func validAction(s string) bool { return s == "allow" || s == "deny" }
 func (d Document) Hash() string {
 	data, _ := json.Marshal(d)
 	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+// Targets returns the initial discovery selectors, independently of live map membership.
+func (b Binding) Targets() []Container {
+	if b.Container != nil {
+		return []Container{*b.Container}
+	}
+	return append([]Container(nil), b.Containers...)
 }

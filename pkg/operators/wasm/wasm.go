@@ -22,7 +22,6 @@ import (
 	"io"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -96,27 +95,18 @@ func (w *wasmOperator) InstantiateImageOperator(
 		handleMap:   map[uint32]any{},
 		logger:      gadgetCtx.Logger(),
 		paramValues: paramValues,
-		createdMap:  map[uint32]*ebpf.Map{},
+		createdMap:  map[uint32]struct{}{},
 	}
 
 	if configVar, ok := gadgetCtx.GetVar("config"); ok {
 		instance.config, _ = configVar.(*viper.Viper)
 	}
 
-	var err error
-	instance.parameterUpdates, err = readUpdateProtocol(instance.config)
-	if err != nil {
-		return nil, err
-	}
 	if err := instance.init(gadgetCtx, target, desc, w.cache); err != nil {
 		instance.Close(gadgetCtx)
 		return nil, fmt.Errorf("initializing wasm: %w", err)
 	}
 
-	if err := instance.initParameterUpdates(); err != nil {
-		instance.Close(gadgetCtx)
-		return nil, err
-	}
 	if instance.config != nil {
 		extraParams := map[string]*api.Param{}
 		err := instance.config.UnmarshalKey("params.wasm", &extraParams)
@@ -145,23 +135,18 @@ type wasmOperatorInstance struct {
 	// https://github.com/tetratelabs/wazero/blob/610c202ec48f3a7c729f2bf11707330127ab3689/api/wasm.go#L378-L381
 	dataSourceCallbackLock sync.Mutex
 	dataSourceCallback     wapi.Function
-	guestStopped           atomic.Bool
-	processWatchActive     atomic.Bool
-	processWatchWG         sync.WaitGroup
-	processLifecycleReady  chan struct{}
 
 	// Golang objects are exposed to the wasm module by using a handleID
 	handleMap       map[uint32]any
 	lastHandleIndex uint32
 	handleLock      sync.RWMutex
 
-	config           *viper.Viper
-	parameterUpdates *parameterUpdates
+	config *viper.Viper
 
 	extraParams api.Params
 	paramValues map[string]string
 
-	createdMap      map[uint32]*ebpf.Map
+	createdMap      map[uint32]struct{}
 	createdMapMutex sync.RWMutex
 
 	syscallsDeclarations map[string]syscalls.SyscallDeclaration
@@ -234,13 +219,6 @@ func getHandle[T any](i *wasmOperatorInstance, handleID uint32) (T, bool) {
 }
 
 func (i *wasmOperatorInstance) delHandle(handleID uint32) {
-	i.createdMapMutex.Lock()
-	owned := i.createdMap[handleID]
-	delete(i.createdMap, handleID)
-	i.createdMapMutex.Unlock()
-	if owned != nil {
-		owned.Close()
-	}
 	i.handleLock.Lock()
 	defer i.handleLock.Unlock()
 	delete(i.handleMap, handleID)
@@ -271,7 +249,6 @@ func (i *wasmOperatorInstance) init(
 	i.addSyscallsDeclarationsFuncs(igModuleBuilder)
 	i.addPerfFuncs(igModuleBuilder)
 	i.addKallsymsFuncs(igModuleBuilder)
-	i.addProcessFuncs(igModuleBuilder)
 	i.addFilterFuncs(igModuleBuilder)
 
 	if _, err := igModuleBuilder.Instantiate(ctx); err != nil {
@@ -355,7 +332,6 @@ func (i *wasmOperatorInstance) PreStart(gadgetCtx operators.GadgetContext) error
 	// that gadgetInit uses the gadgetContext instead, which will be cancelled whenever the gadgetCtx is cancelled
 	// (and so are any callbacks registered in gadgetInit)
 	i.ctx, i.cancel = context.WithCancel(context.Background())
-	i.processLifecycleReady = make(chan struct{})
 	return i.callGuestFunction(i.ctx, "gadgetPreStart")
 }
 
@@ -368,24 +344,20 @@ func (i *wasmOperatorInstance) Start(gadgetCtx operators.GadgetContext) error {
 		i.mntNsIDMap, _ = mntnsVar.(*ebpf.Map)
 	}
 
-	defer close(i.processLifecycleReady)
 	return i.callGuestFunction(i.ctx, "gadgetStart")
 }
 
 func (i *wasmOperatorInstance) Stop(gadgetCtx operators.GadgetContext) error {
-	if i.guestStopped.Swap(true) {
-		return nil
-	}
-	if i.cancel != nil {
-		i.cancel()
-	}
-	i.processWatchWG.Wait()
-	i.dataSourceCallbackLock.Lock()
-	defer i.dataSourceCallbackLock.Unlock()
-	defer i.closeMaps()
-	if i.mod == nil {
-		return nil
-	}
+	i.cancel()
+	defer func() {
+		i.handleLock.Lock()
+		i.handleMap = nil
+		i.handleLock.Unlock()
+
+		i.createdMapMutex.Lock()
+		i.createdMap = nil
+		i.createdMapMutex.Unlock()
+	}()
 
 	// We need a new context in here, as gadgetCtx has already been cancelled
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*42)
@@ -399,14 +371,6 @@ func (i *wasmOperatorInstance) PostStop(gadgetCtx operators.GadgetContext) error
 }
 
 func (i *wasmOperatorInstance) Close(gadgetCtx operators.GadgetContext) error {
-	i.guestStopped.Store(true)
-	if i.cancel != nil {
-		i.cancel()
-	}
-	i.processWatchWG.Wait()
-	i.dataSourceCallbackLock.Lock()
-	defer i.dataSourceCallbackLock.Unlock()
-	defer i.closeMaps()
 	var errs []error
 
 	if i.rt != nil {
@@ -421,18 +385,4 @@ func (i *wasmOperatorInstance) Close(gadgetCtx operators.GadgetContext) error {
 
 func init() {
 	operators.RegisterOperatorForMediaType(wasmObjectMediaType, newWasmOperator())
-}
-
-// closeMaps releases owned FDs, including those acquired before startup failed.
-func (i *wasmOperatorInstance) closeMaps() {
-	i.createdMapMutex.Lock()
-	owned := i.createdMap
-	i.createdMap = make(map[uint32]*ebpf.Map)
-	i.createdMapMutex.Unlock()
-	for _, m := range owned {
-		m.Close()
-	}
-	i.handleLock.Lock()
-	clear(i.handleMap)
-	i.handleLock.Unlock()
 }
