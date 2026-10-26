@@ -30,6 +30,7 @@ type (
 		Cgroup                                 uint64
 		PID, Mntns, Expected, Mismatch, Denied uint32
 		PathResult                             int32
+		Userns                                 uint32
 		Path                                   [256]byte
 	}
 )
@@ -91,12 +92,16 @@ func main() {
 			mu.Lock()
 			events = append(events, e)
 			mu.Unlock()
-			raw, _ := json.Marshal(map[string]interface{}{"pid": e.PID, "cgroup": e.Cgroup, "mntns": e.Mntns, "expected": e.Expected, "mismatch": e.Mismatch, "denied": e.Denied, "path_result": e.PathResult, "path": strings.SplitN(string(e.Path[:]), "\x00", 2)[0]})
+			raw, _ := json.Marshal(map[string]interface{}{"pid": e.PID, "userns": e.Userns, "cgroup": e.Cgroup, "mntns": e.Mntns, "expected": e.Expected, "mismatch": e.Mismatch, "denied": e.Denied, "path_result": e.PathResult, "path": strings.SplitN(string(e.Path[:]), "\x00", 2)[0]})
 			fmt.Println(string(raw))
 		}
 	}()
 	defer func() { reader.Close(); wg.Wait() }()
 	hostns := uint32(inode("/proc/1/ns/mnt"))
+	if os.Getenv("IG_SPIKE_ADMISSION") == "1" {
+		runAdmission(coll, hostns, func() []event { mu.Lock(); defer mu.Unlock(); return append([]event(nil), events...) })
+		return
+	}
 	hostDir, err := os.MkdirTemp("/tmp", "ig-hostns-denied-")
 	must(err)
 	defer os.RemoveAll(hostDir)

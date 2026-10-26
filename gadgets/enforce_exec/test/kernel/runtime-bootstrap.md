@@ -70,3 +70,10 @@ access to the actual host mount namespace still bypasses the exception, as
 demonstrated with `--privileged --pid=host` and `nsenter`. Any production proposal
 must define and enforce that host-access boundary; the experiment does not add
 an exception to production bindings.
+
+The [admission-boundary matrix](../mntns-spike/admission-results.md) now validates
+direct setns refusal without SYS_ADMIN despite a supplied namespace descriptor,
+child user namespace behavior, effective-capability restoration and a later
+privileged runtime exec counterexample. The [candidate owner contract](../mntns-spike/admission-contract.md)
+requires durable capability restrictions and coverage of all workload entrants;
+init-only inspection and `privileged: false` alone are insufficient.

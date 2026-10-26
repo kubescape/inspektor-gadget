@@ -17,6 +17,7 @@ struct event {
     __u64 cgroup;
     __u32 pid, mntns, expected, mismatch, denied;
     __s32 path_result;
+    __u32 userns;
     char path[256];
 };
 struct {
@@ -38,6 +39,7 @@ long BPF_PROG(mntns_spike, struct linux_binprm *bprm, long ret)
     e->cgroup = cgroup;
     e->pid = bpf_get_current_pid_tgid() >> 32;
     e->mntns = mntns;
+    e->userns = BPF_CORE_READ(task, cred, user_ns, ns.inum);
     e->expected = cfg->mntns;
     e->mismatch = mntns != cfg->mntns;
     int n = bpf_path_d_path(&bprm->file->f_path, e->path, sizeof(e->path));

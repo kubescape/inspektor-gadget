@@ -61,3 +61,26 @@ See [first-spike results](results.md) and [host-only follow-up](host-only-result
 rootless runtimes, shared namespaces, namespace reuse/lifetime, CRI/Kubernetes
 exec and first-exec binding races need separate analysis before any production
 change. This harness does not test live container-cache integration.
+
+## Admission-boundary matrix
+
+The opt-in extension isolates direct setns authority from handle access and tests
+later runtime execs and child user namespaces. Its helper deliberately receives
+a host namespace FD from the test server. Run only on a disposable host:
+
+```sh
+CC=clang go build -race -o /tmp/mntns-spike ./gadgets/enforce_exec/test/mntns-spike
+cc -static -Wall -Wextra -Werror -O2 \
+  gadgets/enforce_exec/test/mntns-spike/fixtures/capability.c -o /tmp/capability-helper
+# Recompile the BPF object with the command above (event layout now includes userns).
+sudo env IG_EXEC_KERNEL_TEST=1 IG_SPIKE_ADMISSION=1 \
+  IG_SPIKE_CAP_HELPER=/tmp/capability-helper \
+  /tmp/mntns-spike /tmp/mntns-spike.bpf.o
+```
+
+The static C fixture requires a host C compiler and static libc development
+files. The matrix builds a temporary Docker image with util-linux and removes
+its own containers/image on completion. It disables seccomp/AppArmor only in
+those disposable test profiles. No BPF map/program is pinned.
+See [measured admission results](admission-results.md) and the
+[candidate contract](admission-contract.md); this adds no production admission API.
