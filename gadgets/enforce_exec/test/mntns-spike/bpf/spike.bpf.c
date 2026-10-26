@@ -6,7 +6,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 extern int bpf_path_d_path(struct path *path, char *buf, size_t buf__sz) __ksym;
-struct config { __u32 mntns; __u32 skip_mismatch; };
+struct config { __u32 mntns; __u32 mode; __u32 host_mntns; };
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 8);
@@ -48,7 +48,12 @@ long BPF_PROG(mntns_spike, struct linux_binprm *bprm, long ret)
         __builtin_memcmp(e->path, "/sbin/", 6) == 0 ||
         __builtin_memcmp(e->path, "/usr/bin/", 9) == 0 ||
         __builtin_memcmp(e->path, "/usr/sbin/", 10) == 0);
-    bool skip = cfg->skip_mismatch && mntns && e->mismatch;
+    // Mode 1 is the previous unsafe mismatch exemption (negative control).
+    // Mode 2 exempts only the separately recorded host namespace, and never
+    // exempts a target whose configured namespace is itself the host namespace.
+    bool skip = mntns && e->mismatch &&
+        (cfg->mode == 1 || (cfg->mode == 2 && cfg->host_mntns &&
+                            mntns == cfg->host_mntns));
     e->denied = !skip && !allow;
     bool denied = e->denied;
     bpf_ringbuf_submit(e, 0);

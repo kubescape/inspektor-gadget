@@ -63,3 +63,10 @@ namespace. Skipping mismatches removed helper denials and preserved normal
 workload denials, including a workload-owned `/runc`. However, a privileged
 workload bypassed that filter using `unshare --mount`, so it is not suitable
 as a general exemption. Production enforcement remains unchanged.
+
+The [host-only follow-up](../mntns-spike/host-only-results.md) closes that specific
+new-namespace bypass and removes the observed helper denial. A workload given
+access to the actual host mount namespace still bypasses the exception, as
+demonstrated with `--privileged --pid=host` and `nsenter`. Any production proposal
+must define and enforce that host-access boundary; the experiment does not add
+an exception to production bindings.
