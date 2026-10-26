@@ -1,21 +1,27 @@
 # enforce_exec kernel validation
 
-Run only on a disposable Linux amd64 host with root, cgroup v2, BPF LSM enabled,
+Run only on a disposable Linux amd64 or arm64 host with root, cgroup v2, BPF LSM enabled,
 kernel BTF, `bpf_path_d_path`, Clang, libbpf headers and bpftool. Kernel version
 alone does not establish support. Nothing attaches without `IG_EXEC_KERNEL_TEST=1`.
 
 ```sh
-clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
-  -Iinclude/gadget/amd64 -Iinclude \
+case "$(uname -m)" in
+  x86_64) bpf_arch=x86; gadget_arch=amd64 ;;
+  aarch64|arm64) bpf_arch=arm64; gadget_arch=arm64 ;;
+  *) echo "unsupported architecture" >&2; exit 1 ;;
+esac
+export CC=clang # Go's race detector requires cgo and a host C compiler.
+clang -O2 -g -target bpf -D__TARGET_ARCH_${bpf_arch} \
+  -Iinclude/gadget/${gadget_arch} -Iinclude \
   -c gadgets/enforce_exec/program.bpf.c -o /tmp/enforce-exec.bpf.o
-clang -O2 -g -target bpf -D__TARGET_ARCH_x86 \
-  -Iinclude/gadget/amd64 -Iinclude \
+clang -O2 -g -target bpf -D__TARGET_ARCH_${bpf_arch} \
+  -Iinclude/gadget/${gadget_arch} -Iinclude \
   -c gadgets/trace_lsm/program.bpf.c -o /tmp/trace-lsm.bpf.o
 IG_EXEC_KERNEL_TEST=1 \
 IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
 IG_EXEC_METADATA="$PWD/gadgets/enforce_exec/gadget.yaml" \
 IG_EXEC_TRACE_LSM_OBJECT=/tmp/trace-lsm.bpf.o \
-  go test -v -count=3 -timeout=5m ./gadgets/enforce_exec/test/kernel
+  go test -race -v -count=3 -timeout=5m ./gadgets/enforce_exec/test/kernel
 ```
 
 For `TestExecKernel`, the wrapper source and `include/` must also be available.
@@ -42,8 +48,8 @@ and cache replay ordering. These replace the removed parameter-handshake and
 process/launcher tests.
 
 A runtime or overlap test does not establish first-container-exec protection,
-crash persistence or exhaustive scheduling coverage. Only amd64 runtime behavior
-has been exercised; arm64 compilation is checked separately.
+crash persistence or exhaustive scheduling coverage. The maintainer-run validation below covers amd64; the separately reported arm64
+results identify their author and environment.
 
 ## Validation on 2026-10-22
 
@@ -53,3 +59,47 @@ A separate native CLI check used two real Docker containers: the selected
 container was denied, the control container remained unaffected, verdicts carried
 revision 71, and stopping IG released enforcement. Production BPF objects also
 compiled for amd64 and arm64.
+
+## Docker bootstrap regression
+
+Build the host CLI and local gadget image using the gadget README. On a disposable
+BPF LSM host with Docker, Python 3 and access to `alpine:3.21`, run:
+
+```sh
+sudo env IG_EXEC_KERNEL_TEST=1 python3 gadgets/enforce_exec/test/kernel/docker-bootstrap.py \
+  --ig /tmp/ig-enforce-exec --image enforce_exec:spike --runtime runc
+```
+
+The test creates and removes two containers. It checks default-deny in audit and
+enforce modes, an allowed command, a copied executable outside allowed folders,
+an unaffected control, revision-tagged workload verdicts and release on shutdown.
+A workload-owned `/runc` must also remain denied in enforce mode.
+Other denied paths are printed separately as possible bootstrap activity, so a
+successful runtime fallback does not conceal helper denials. Their identity is
+not inferred from the path. An absent workload verdict fails the test even if
+Docker failed for another reason. Repeat with each configured Docker runtime
+(e.g. `--runtime crun`); this does not validate Kubernetes/CRI exec paths.
+
+## External arm64 validation
+
+[Alon reported](https://github.com/kubescape/inspektor-gadget/pull/15#issuecomment-6399479960)
+three complete race-enabled kernel-suite passes at `20cc8d4`, with no skips or
+races, on Apple Silicon/Lima, Debian 13, kernel
+`6.12.111+deb13-cloud-arm64`, BPF LSM enabled, Docker 26.1.5, containerd 2.4.1
+and runc 1.5.2. His two-container CLI check covered allowed system binaries, a
+denied copied `/tmp/busybox`, audit verdicts, revision and release on shutdown.
+He also observed `/runc` denials while Docker exec succeeded. These are externally
+reported results, not runs of the new regression script above.
+
+## Host capability checks
+
+Check `/sys/kernel/security/lsm` for `bpf`, kernel BTF for `bpf_path_d_path`,
+cgroup v2 and successful program load/attachment. Neither a distribution name
+nor a version number alone proves support. Alon's Ubuntu 24.04 GA kernel
+`6.8.0-142-generic` lacked that BTF function and did not enable BPF LSM by default;
+he did not attempt loading there. Such a host needs a kernel with the required
+capability and boot-time LSM configuration before testing.
+
+The new Docker regression script has passed Python syntax and CLI checks, but
+has not yet been executed on a disposable host. The earlier kernel and CLI
+results above do not validate this new script.

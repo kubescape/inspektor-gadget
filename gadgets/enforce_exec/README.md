@@ -94,6 +94,28 @@ separately; allowing an interpreter does not constrain the code it interprets.
 Resolution failures deny in enforce mode and permit in audit mode. Off permits
 without ordinary verdict reporting.
 
+## Runtime bootstrap compatibility
+
+Binding selects a cgroup, including runtime helpers temporarily executing there.
+A default-deny policy can therefore deny a runtime helper before the requested
+workload starts, potentially breaking `docker exec` or `kubectl exec`. Successful
+commands do not prove that no helper was denied.
+
+[Alon's arm64 test](https://github.com/kubescape/inspektor-gadget/pull/15#issuecomment-6399479960)
+observed `/runc` denials followed by successful workload execution. In
+[runc v1.5.2](https://github.com/opencontainers/runc/blob/v1.5.2/libcontainer/process_linux.go),
+`startWithCgroupFD` retries a failed start without `CLONE_INTO_CGROUP`, and
+`setnsProcess.start` subsequently adds the process to the cgroup. This supports
+the fallback explanation; the verdict alone does not establish the exact
+sequence. Other runtimes/versions may behave differently.
+
+There is no automatic helper exemption. Neither the gadget nor node-agent should
+blindly allow `/runc`: a path does not authenticate a host runtime binary. See
+[the bootstrap investigation](test/kernel/runtime-bootstrap.md) for the safe
+identification requirements and remaining work. Validate your runtime using the
+[Docker regression](test/kernel/README.md#docker-bootstrap-regression) before
+using default-deny. This compatibility issue remains unresolved in the prototype.
+
 ## Embedded owner
 
 The compiler and native controller are ordinary IG Go packages:
