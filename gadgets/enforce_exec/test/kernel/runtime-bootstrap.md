@@ -54,3 +54,12 @@ produce the same path as a real helper, so path alone cannot distinguish them.
 Repeat on each runtime/version and sealing mode of interest. Rootless operation,
 crun and Kubernetes/CRI exec remain unvalidated. Passing through a runtime's
 fallback is not evidence that the underlying compatibility problem is solved.
+
+## Mount-namespace experiment (2026-10-26)
+
+The [disposable-host spike](../mntns-spike/results.md) observed runc 1.5.2's
+helper exec in the host mount namespace and workload execs in the container
+namespace. Skipping mismatches removed helper denials and preserved normal
+workload denials, including a workload-owned `/runc`. However, a privileged
+workload bypassed that filter using `unshare --mount`, so it is not suitable
+as a general exemption. Production enforcement remains unchanged.
