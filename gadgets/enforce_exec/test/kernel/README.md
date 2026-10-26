@@ -103,3 +103,44 @@ capability and boot-time LSM configuration before testing.
 The new Docker regression script has passed Python syntax and CLI checks, but
 has not yet been executed on a disposable host. The earlier kernel and CLI
 results above do not validate this new script.
+
+## Restricted-binding integration
+
+The production OCI image, native controller and actual instance manager are
+exercised by `TestExecRestrictedDocker` and `TestExecRestrictedCRI`. Both create
+restricted workload and control containers, corroborate init credentials, replay
+bindings through a native startup owner, and test:
+
+- Strict runtime-helper denial, followed by its absence after the host-namespace
+  exception is enabled. Set `IG_EXEC_EXPECT_RUNC_HELPER=1` when testing runc 1.5.2
+  to require reproduction; other runtime versions may not attempt that helper exec.
+- Failed owner admission retaining the old instance; strict-to-restricted
+  create-before-remove replacement with conflicting rule sets during overlap.
+- Workload denial including a workload-owned `/runc`, revision-tagged verdicts,
+  caller namespace FDs closed after admission, child namespace enforcement, live
+  binding churn and final release.
+
+After building the objects and setting the ordinary kernel variables above, add:
+
+```sh
+IG_EXEC_KERNEL_TEST=1 IG_EXEC_DOCKER_TEST=1 IG_EXEC_CRI_TEST=1 \
+IG_EXEC_EXPECT_RUNC_HELPER=1 \
+IG_EXEC_CRI_ENDPOINT=unix:///run/containerd/containerd.sock \
+IG_EXEC_BPF_OBJECT=/tmp/enforce-exec.bpf.o \
+IG_EXEC_METADATA="$PWD/gadgets/enforce_exec/gadget.yaml" \
+IG_EXEC_TRACE_LSM_OBJECT=/tmp/trace-lsm.bpf.o \
+  go test -race -v -count=3 -timeout=8m ./gadgets/enforce_exec/test/kernel
+```
+
+Docker needs access to `alpine:3.21`. The CRI case requires crictl (tested v1.32.0),
+containerd with its CRI plugin enabled, and access to Alpine and its configured
+sandbox image. It uses host networking to avoid a CNI installation; PID/mount
+namespaces remain separate. CRI container profiles explicitly use unconfined
+seccomp/AppArmor only for this disposable test. The owner controls creation and
+all test exec requests; it does not infer the future-entry contract from init.
+
+For the tested containerd 1.7.24 CRI exec path,
+[the implementation reuses the configured process specification](https://github.com/containerd/containerd/blob/88bf19b2105c8b17560993bee28a01ddc2f97182/pkg/cri/server/container_execsync.go#L132-L163).
+The test also reads `/proc/self/status` through a real CRI exec to corroborate
+capabilities and `no_new_privs`. This is not a Kubernetes cluster or node-agent
+CRD integration test, and does not establish the contract for arbitrary runtimes.

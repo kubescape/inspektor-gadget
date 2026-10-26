@@ -50,31 +50,7 @@ func TestExecRuntime(t *testing.T) {
 	require.NoError(t, rlimit.RemoveMemlock())
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	read := func(name string) []byte {
-		t.Helper()
-		p := os.Getenv(name)
-		require.NotEmpty(t, p)
-		b, e := os.ReadFile(p)
-		require.NoError(t, e)
-		return b
-	}
-	store := memory.New()
-	push := func(media string, b []byte) ocispec.Descriptor {
-		d := content.NewDescriptorFromBytes(media, b)
-		require.NoError(t, store.Push(ctx, d, bytes.NewReader(b)))
-		return d
-	}
-	cfg := push("application/vnd.gadget.config.v1+yaml", read("IG_EXEC_METADATA"))
-	layers := []ocispec.Descriptor{push("application/vnd.gadget.ebpf.program.v1+binary", read("IG_EXEC_BPF_OBJECT"))}
-	raw, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: cfg, Layers: layers})
-	require.NoError(t, err)
-	desc := push(ocispec.MediaTypeImageManifest, raw)
-	desc.Platform = &ocispec.Platform{Architecture: goruntime.GOARCH, OS: "linux"}
-	raw, err = json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []ocispec.Descriptor{desc}})
-	require.NoError(t, err)
-	desc = push(ocispec.MediaTypeImageIndex, raw)
-	const image = "ghcr.io/inspektor-gadget/gadget/enforce_exec:native-runtime-test"
-	require.NoError(t, store.Tag(ctx, desc, image))
+	store, image := executionImage(t)
 	runtime := local.New()
 	require.NoError(t, runtime.Init(nil))
 	defer runtime.Close()
@@ -269,4 +245,36 @@ func TestExecRuntime(t *testing.T) {
 	require.Equal(t, uint64(43), b.Status().Revision)
 	require.NoError(t, manager.StopGadget(ctx, "new"))
 	require.NoError(t, execute(never))
+}
+
+func executionImage(t *testing.T) (*memory.Store, string) {
+	t.Helper()
+	ctx := context.Background()
+	read := func(name string) []byte {
+		t.Helper()
+		p := os.Getenv(name)
+		require.NotEmpty(t, p)
+		b, e := os.ReadFile(p)
+		require.NoError(t, e)
+		return b
+	}
+	store := memory.New()
+	push := func(media string, b []byte) ocispec.Descriptor {
+		d := content.NewDescriptorFromBytes(media, b)
+		require.NoError(t, store.Push(ctx, d, bytes.NewReader(b)))
+		return d
+	}
+	cfg := push("application/vnd.gadget.config.v1+yaml", read("IG_EXEC_METADATA"))
+	layers := []ocispec.Descriptor{push("application/vnd.gadget.ebpf.program.v1+binary", read("IG_EXEC_BPF_OBJECT"))}
+	raw, err := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: cfg, Layers: layers})
+	require.NoError(t, err)
+	desc := push(ocispec.MediaTypeImageManifest, raw)
+	desc.Platform = &ocispec.Platform{Architecture: goruntime.GOARCH, OS: "linux"}
+	raw, err = json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []ocispec.Descriptor{desc}})
+	require.NoError(t, err)
+	desc = push(ocispec.MediaTypeImageIndex, raw)
+	const image = "ghcr.io/inspektor-gadget/gadget/enforce_exec:native-runtime-test"
+	require.NoError(t, store.Tag(ctx, desc, image))
+
+	return store, image
 }

@@ -1,8 +1,10 @@
 # Candidate admission contract for a host mount namespace exception
 
-This is a supported-scope proposal informed by the diagnostic spike, not an
-implemented admission check or a production exception. The gadget currently
-continues enforcing every bound cgroup without an automatic helper exemption.
+This records the supported-scope proposal from the diagnostic spike. The
+subsequent [native binding API](../../README.md#opt-in-restricted-bindings) now
+implements the descriptor/credential checks for explicit owner-admitted bindings.
+It does not discover or enforce future-entry/delegation guarantees. Strict cgroup
+scope remains the default; there is no automatic helper exemption.
 
 ## Kernel boundary
 
@@ -101,6 +103,7 @@ Kubescape: node-agent can supply verified runtime/CRD facts, while standalone IG
 needs an equally explicit supported-runtime contract. A boolean derived only
 from `privileged: false` or init credentials would be misleading.
 
-No automated owner eligibility implementation, Kubernetes admission controller,
-per-exec credential enforcement or production namespace exception is added by
-this experiment. See [measured results](admission-results.md).
+The diagnostic experiment itself added no production exception. The subsequent
+native prototype accepts owner-admitted bindings with validated credentials and
+namespace references; automatic owner eligibility, Kubernetes admission and
+per-exec credential enforcement remain unimplemented. See [measured results](admission-results.md).

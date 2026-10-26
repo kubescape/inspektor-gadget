@@ -39,7 +39,7 @@ func (m *fakeMap) Delete(k interface{}) error {
 
 func controller() (*Bindings, *fakeMap) {
 	m := &fakeMap{values: map[uint64]uint64{}}
-	return &Bindings{config: Config{Entries: [9]execpolicy.KernelEntry{{Generation: 7}}}, ready: true, members: m, active: map[uint64]ContainerIdentity{}, desired: map[execpolicy.Container]ContainerIdentity{}}, m
+	return &Bindings{config: Config{Entries: [9]execpolicy.KernelEntry{{Generation: 7}}}, ready: true, hostNamespaceSupported: true, members: m, active: map[uint64]ContainerIdentity{}, desired: map[execpolicy.Container]ContainerIdentity{}}, m
 }
 
 func identity(id uint64) ContainerIdentity {

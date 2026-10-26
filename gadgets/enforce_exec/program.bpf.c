@@ -4,6 +4,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 #include <gadget/macros.h>
 
 #define MAX_RULES 8
@@ -33,6 +34,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, __u64);
+    // Zero selects strict cgroup scope; otherwise the pinned host mount ns inode.
     __type(value, __u64);
 } bindings SEC(".maps");
 
@@ -129,8 +131,17 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
         return ret;
     __u64 cgroup = bpf_get_current_cgroup_id();
     __u32 zero = 0;
-    if (!bpf_map_lookup_elem(&bindings, &cgroup))
+    __u64 *host_mntns = bpf_map_lookup_elem(&bindings, &cgroup);
+    if (!host_mntns)
         return 0;
+    if (*host_mntns) {
+        struct task_struct *task = (void *)bpf_get_current_task_btf();
+        __u32 mntns = BPF_CORE_READ(task, nsproxy, mnt_ns, ns.inum);
+        // Only native owner-admitted restricted bindings carry an exception.
+        // Unknown/child mount namespaces continue through ordinary enforcement.
+        if (mntns && mntns == *host_mntns)
+            return 0;
+    }
     struct exec_policy_entry *header = bpf_map_lookup_elem(&policy, &zero);
     if (!header)
         return -1;

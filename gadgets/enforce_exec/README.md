@@ -21,8 +21,10 @@ Each instance has two ordinary maps:
   Native code fills it once and freezes it. `BPF_F_RDONLY_PROG` also prevents BPF
   writes. Rules never change while this instance runs.
 - `bindings`: up to 1,024 cgroup-v2 identities. Adding/removing a container is a
-  synchronous map operation serialized by the native controller. Membership can
-  change without restarting or changing policy.
+  synchronous map operation serialized by the native controller. A zero value
+  selects strict cgroup scope; an owner-admitted restricted binding instead stores
+  the pinned host mount namespace inode. Membership can change without restarting
+  or changing policy.
 
 Rule changes create a new instance. Both programs enforce during replacement;
 there is no map-of-maps publication protocol or writable standby rule map.
@@ -109,12 +111,14 @@ observed `/runc` denials followed by successful workload execution. In
 the fallback explanation; the verdict alone does not establish the exact
 sequence. Other runtimes/versions may behave differently.
 
-There is no automatic helper exemption. Neither the gadget nor node-agent should
+Strict bindings have no helper exemption. Neither the gadget nor node-agent should
 blindly allow `/runc`: a path does not authenticate a host runtime binary. See
 [the bootstrap investigation](test/kernel/runtime-bootstrap.md) for the safe
 identification requirements and remaining work. Validate your runtime using the
 [Docker regression](test/kernel/README.md#docker-bootstrap-regression) before
-using default-deny. This compatibility issue remains unresolved in the prototype.
+using default-deny. The native opt-in interface below resolves the observed helper denial for an
+explicitly restricted workload scope. It is not a general runtime-helper
+identity mechanism.
 
 ## Embedded owner
 
@@ -141,7 +145,7 @@ fail startup instead of being accepted as readiness.
 `GetBindings(gadgetContext)` returns the per-instance controller. Its
 `Bind(ContainerIdentity)` and `Unbind(ContainerIdentity)` methods return the map
 operation result synchronously; `Status()` returns revision, bound count,
-readiness and the latest binding error. Startup errors remain sticky until the
+readiness, restricted-binding count and the latest binding error. Startup errors remain sticky until the
 final readiness check, even if another binding operation succeeds. Identities include runtime, full ID,
 nonzero cgroup ID and clean non-root cgroup-v2 path. Stale deletions cannot remove
 a newer identity. Map handles remain private and writes are rejected after stop.
@@ -159,6 +163,71 @@ The Kubescape SandboxPolicy CRD adapter belongs in node-agent. It owns CRD
 watching, translation, policy merging and controller status. IG stays independent
 of that CRD and Kubescape packages. This PR adds no ConfigMap/file policy watcher
 or public policy RPC. Existing upstream stores retain their normal operation.
+
+## Opt-in restricted bindings
+
+`Bind` and `ig enforce-exec` keep strict cgroup scope. An embedded trusted owner
+can opt a binding into the host mount namespace exception with `BindRestricted`:
+
+```go
+err := bindings.BindRestricted(identity, execruntime.RestrictedWorkload{
+    HostMountNamespace: hostMountNS, // actual node namespace, authenticated by owner
+    MountNamespace:     workloadMountNS,
+    UserNamespace:      workloadUserNS,
+    Credentials: execruntime.WorkloadCredentials{
+        NoNewPrivileges: true,
+        Effective: effectiveMask, Permitted: permittedMask,
+        Inheritable: inheritableMask, Ambient: ambientMask, Bounding: boundingMask,
+    },
+    OwnerContract: execruntime.RestrictedWorkloadContract{
+        AllWorkloadEntriesRestricted: true,
+        NoHostDelegation:             true,
+    },
+})
+```
+
+These contract fields are **trusted-owner commitments**, not facts IG can infer
+from an init snapshot. Only set them when the owner controls subsequent workload
+exec privileges and excludes host process/service delegation. In particular,
+`docker exec --privileged` violates the contract. The credential masks describe
+final workload privileges; the API rejects privileged workloads, missing
+`no_new_privs`, and `SYS_ADMIN` or `SYS_PTRACE` in any capability set.
+
+Pass open namespace files, not inode numbers or arbitrary paths. The API validates
+namespace types using namespace ioctls, requires a distinct workload mount
+namespace, and checks that the workload user namespace and both mount namespace
+owners are the same supported host user namespace. Rootless/remapped initial
+layouts are rejected. The owner must authenticate the actual host and associate
+the supplied workload namespaces with the exact container; IG cannot authenticate
+that association from a cgroup ID or caller-supplied descriptors alone.
+
+The controller duplicates and retains both mount namespace references. The caller
+may close its originals after the call. References are released after successful
+map deletion; a failed deletion retains them until the framework's post-stop phase
+after BPF detachment. Each restricted binding uses two owned namespace FDs, in
+addition to ordinary map resources. Image metadata must advertise
+`annotations.enforce-exec-host-namespace`; older images reject the request.
+
+The BPF exception applies **only** when the executing task is in the recorded host
+mount namespace. Tasks in the workload namespace or a newly created namespace
+remain subject to the policy. Existing LSM denials are preserved. Exempted helper
+execs do not produce ordinary policy verdicts. This is a scope boundary, not
+proof that an executable is a trusted runtime binary.
+
+Use a native startup operator after the binding controller to replay owner-admitted
+bindings before readiness. Leave `Config.Targets` empty when the owner supplies
+restricted bindings; built-in discovery performs strict `Bind` calls. Strict and
+restricted scopes cannot silently replace one another: an incompatible live bind
+returns an error and preserves the existing binding. Prefer instance replacement
+for a gapless scope change. Explicit unbind/rebind intentionally has a gap.
+
+`Status().RestrictedBindings` exposes the current count. Rejected eligibility
+returns `ErrRestrictedWorkload` and never removes an existing strict binding.
+The [admission contract](test/mntns-spike/admission-contract.md) and
+[integration evidence](test/kernel/README.md#restricted-binding-integration)
+describe the supported prototype boundary. No CLI flag asserts this contract on
+the user's behalf, and there is no Kubescape dependency. The node-agent adapter
+must supply its own verified runtime facts and entry guarantees.
 
 ## Rule replacement
 

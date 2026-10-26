@@ -4,6 +4,7 @@ description: "Enforce immutable execution path rules for a live set of container
 annotations:
   enable-containers-datasource: "true"
   enforce-exec: "true"
+  enforce-exec-host-namespace: "true"
 datasources:
   verdict:
     fields:

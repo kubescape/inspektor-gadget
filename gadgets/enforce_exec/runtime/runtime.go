@@ -60,10 +60,11 @@ func (c ContainerIdentity) selector() execpolicy.Container {
 }
 
 type Status struct {
-	Revision uint64
-	Bound    int
-	Ready    bool
-	Error    error
+	Revision           uint64
+	Bound              int
+	RestrictedBindings int
+	Ready              bool
+	Error              error
 }
 type bindingMap interface {
 	Put(interface{}, interface{}) error
@@ -72,15 +73,17 @@ type bindingMap interface {
 
 // Bindings serializes all writes. Map handles are borrowed from the eBPF operator.
 type Bindings struct {
-	mu              sync.Mutex
-	config          Config
-	desired         map[execpolicy.Container]ContainerIdentity
-	active          map[uint64]ContainerIdentity
-	members         bindingMap
-	ready, stopped  bool
-	startupComplete bool
-	startupError    error
-	lastError       error
+	mu                     sync.Mutex
+	config                 Config
+	desired                map[execpolicy.Container]ContainerIdentity
+	active                 map[uint64]ContainerIdentity
+	members                bindingMap
+	restricted             map[uint64]*namespaceRefs
+	hostNamespaceSupported bool
+	ready, stopped         bool
+	startupComplete        bool
+	startupError           error
+	lastError              error
 }
 
 // GetBindings is called from an operator lifecycle hook or after instance
@@ -101,7 +104,7 @@ func (b *Bindings) Status() Status {
 	if !b.startupComplete && b.startupError != nil {
 		err = b.startupError
 	}
-	return Status{Revision: b.config.Entries[0].Generation, Bound: len(b.active), Ready: b.ready && b.startupComplete && !b.stopped, Error: err}
+	return Status{Revision: b.config.Entries[0].Generation, Bound: len(b.active), RestrictedBindings: len(b.restricted), Ready: b.ready && b.startupComplete && !b.stopped, Error: err}
 }
 
 // Bind synchronously authorizes one exact container after this operator starts.
@@ -143,12 +146,27 @@ func (b *Bindings) Ready(operators.GadgetContext) error {
 }
 
 func (b *Bindings) bind(c ContainerIdentity) error {
+	return b.bindWithScope(c, nil)
+}
+
+// bindWithScope takes ownership of refs on every path, including rejection.
+func (b *Bindings) bindWithScope(c ContainerIdentity, refs *namespaceRefs) error {
+	stored := false
+	defer func() {
+		if refs != nil && !stored {
+			refs.close()
+		}
+	}()
 	if err := c.validate(); err != nil {
 		return err
 	}
 	if previous, ok := b.active[c.CgroupID]; ok {
 		if previous != c {
 			return fmt.Errorf("cgroup identity conflicts with active binding")
+		}
+		previousRefs := b.restricted[c.CgroupID]
+		if (previousRefs == nil) != (refs == nil) || (refs != nil && !previousRefs.same(refs)) {
+			return fmt.Errorf("binding scope differs; explicitly unbind before changing scope")
 		}
 		return nil
 	}
@@ -160,10 +178,21 @@ func (b *Bindings) bind(c ContainerIdentity) error {
 	if len(b.active) >= execpolicy.KernelMaxBindings {
 		return fmt.Errorf("container binding capacity exceeded")
 	}
-	if err := b.members.Put(c.CgroupID, uint64(1)); err != nil {
+	value := uint64(0) // zero selects strict cgroup-only enforcement
+	if refs != nil {
+		value = refs.hostID.Inode
+	}
+	if err := b.members.Put(c.CgroupID, value); err != nil {
 		return fmt.Errorf("writing container binding: %w", err)
 	}
 	b.active[c.CgroupID] = c
+	if refs != nil {
+		if b.restricted == nil {
+			b.restricted = map[uint64]*namespaceRefs{}
+		}
+		b.restricted[c.CgroupID] = refs
+		stored = true
+	}
 	return nil
 }
 
@@ -187,6 +216,10 @@ func (b *Bindings) unbind(c ContainerIdentity) error {
 		return fmt.Errorf("removing container binding: %w", err)
 	}
 	delete(b.active, c.CgroupID)
+	if refs := b.restricted[c.CgroupID]; refs != nil {
+		delete(b.restricted, c.CgroupID)
+		return refs.close()
+	}
 	return nil
 }
 
@@ -264,7 +297,7 @@ func (*operator) InstantiateDataOperator(gc operators.GadgetContext, _ api.Param
 		}
 		seen[target] = true
 	}
-	b := &Bindings{config: config, desired: map[execpolicy.Container]ContainerIdentity{}, active: map[uint64]ContainerIdentity{}}
+	b := &Bindings{config: config, desired: map[execpolicy.Container]ContainerIdentity{}, active: map[uint64]ContainerIdentity{}, hostNamespaceSupported: metadata.GetBool("annotations.enforce-exec-host-namespace")}
 	if len(config.InitialBindings) > execpolicy.KernelMaxBindings {
 		return nil, fmt.Errorf("too many initial bindings")
 	}
@@ -365,6 +398,32 @@ func (b *Bindings) Stop(operators.GadgetContext) error {
 	defer b.mu.Unlock()
 	b.stopped = true
 	b.ready = false
-	return nil
+	// Remove exception values before releasing their namespace references. Strict
+	// bindings have no owned resources and are released by the eBPF operator.
+	var errs []error
+	for cgroup := range b.restricted {
+		if err := b.unbind(b.active[cgroup]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
+
+// PostStop runs after all operators' Stop methods, including eBPF link detach.
+// Only this boundary may release references retained after failed map deletion.
+func (b *Bindings) PostStop(operators.GadgetContext) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.stopped {
+		return fmt.Errorf("namespace cleanup requires stopped operators")
+	}
+	var errs []error
+	for cgroup, refs := range b.restricted {
+		errs = append(errs, refs.close())
+		delete(b.restricted, cgroup)
+		delete(b.active, cgroup)
+	}
+	return errors.Join(errs...)
+}
+
 func (b *Bindings) Close(gc operators.GadgetContext) error { return b.Stop(gc) }
