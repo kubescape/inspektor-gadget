@@ -83,9 +83,12 @@ func (p *GadgetInstance) GadgetInfo() (*api.GadgetInfo, error) {
 	return p.gadgetInfo, p.error
 }
 
-func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan struct{} {
+// AddClient returns the attachment result after metadata delivery and streaming finish.
+// The result is buffered so asynchronous callers need not wait for it.
+func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan error {
+	done := make(chan error, 1)
 	if _, err := p.GadgetInfo(); err != nil {
-		done := make(chan struct{})
+		done <- err
 		close(done)
 		return done
 	}
@@ -109,13 +112,13 @@ func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) cha
 	cl.seq = uint32(len(replayBuf))
 	p.mu.Unlock()
 
-	done := make(chan struct{})
 	err := client.Send(p.gadgetInfoSerialized)
 	if err != nil {
 		p.mu.Lock()
 		delete(p.clients, cl)
 		p.mu.Unlock()
 		log.Debugf("[%s] client disconnected (failed to send gadget info): %c", p.gadgetInfo.Id, err)
+		done <- err
 		close(done)
 		return done
 	}
@@ -130,6 +133,7 @@ func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) cha
 		p.mu.Lock()
 		delete(p.clients, cl)
 		p.mu.Unlock()
+		done <- err
 		close(done)
 	}()
 	return done
