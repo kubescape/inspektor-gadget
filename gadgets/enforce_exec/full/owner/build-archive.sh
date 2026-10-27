@@ -20,8 +20,9 @@ done
 version=$("$clang" --version)
 [[ "$version" =~ clang\ version\ 21\.1\.8([^0-9.]|$) ]] || fail 'the proved owner requires Clang 21.1.8'
 [[ $(stat -Lc %s -- "$btf") -le 134217728 ]] || fail 'BTF exceeds 128 MiB'
-# Keep aligned with fullruntime.SupportedKernelBTF; additions require kernel proof.
+# Keep aligned with fullruntime kernel_matrix.go; additions require kernel proof.
 expected_btf=12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b
+kubernetes_btf=759807546ae2feaf616dc65c73167439867bb393dc468a4bd39c0ab1bc267d51
 owner=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$owner/../../../.." && pwd)
 archive=$(realpath -m -- "$archive")
@@ -34,7 +35,10 @@ trap 'exit 143' TERM
 # Snapshot before checking: compilation must use the bytes whose digest was checked.
 head -c 134217729 -- "$btf" > "$work/vmlinux.btf"
 [[ $(stat -c %s -- "$work/vmlinux.btf") -le 134217728 ]] || fail 'BTF exceeds 128 MiB'
-[[ $(sha256sum "$work/vmlinux.btf" | cut -d ' ' -f1) == "$expected_btf" ]] || fail 'BTF is outside the proved amd64 owner matrix'
+case $(sha256sum "$work/vmlinux.btf" | cut -d ' ' -f1) in
+    "$expected_btf"|"$kubernetes_btf") ;;
+    *) fail 'BTF is outside the proved amd64 owner matrix' ;;
+esac
 "$bpftool" btf dump file "$work/vmlinux.btf" format c > "$work/vmlinux.h"
 "$clang" -target bpf -O2 -g -D__TARGET_ARCH_x86 -DENFORCE_EXEC_PERSISTENT_OWNER \
     -Wno-missing-declarations -fdebug-compilation-dir=/src \

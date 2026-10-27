@@ -14,7 +14,7 @@ build:
 	$(IG) image build -t "$(IMAGE)" "$$context"
 
 # Explicit supported amd64 path; does not use/upgrade the default IG builder.
-# VMLINUX_BTF must be a trusted artifact matching fullruntime.SupportedKernelBTF.
+# VMLINUX_BTF must be a trusted artifact matching an exact fullruntime kernel matrix digest.
 # Requires Clang 21.1.8; does not load BPF or claim arm64/general kernel support.
 # Example: make archive VMLINUX_BTF=/trusted/vmlinux.btf \
 #   IMAGE=localhost/enforce-exec-owner:abi2 ARCHIVE=/tmp/owner.tar

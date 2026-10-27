@@ -15,10 +15,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// SupportedKernelBTF identifies the sole currently proved artifact. This is NOT a general Linux
-// or released-kernel support claim. Expanding it requires new isolated proof,
-// especially for private overlay fields, task lifecycle and the mutex barrier.
+// SupportedKernelBTF identifies the original isolated proof artifact. This is NOT
+// a general Linux or released-kernel support claim. Expanding the exact matrix
+// requires isolated proof of overlay fields, task lifecycle and the mutex barrier.
 const SupportedKernelBTF = "12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b"
+
+// SupportedKubernetesKernelBTF identifies the same pinned Linux source with the
+// additional fanotify, networking and CPU bandwidth configuration needed by the
+// isolated Kubernetes proof. It does not admit other builds of that source.
+const SupportedKubernetesKernelBTF = "759807546ae2feaf616dc65c73167439867bb393dc468a4bd39c0ab1bc267d51"
+
+func supportedKernelBTF(digest string) bool {
+	switch digest {
+	case SupportedKernelBTF, SupportedKubernetesKernelBTF:
+		return true
+	default:
+		return false
+	}
+}
 
 func verifySupportedKernel() error {
 	if runtime.GOARCH != "amd64" {
@@ -41,7 +55,7 @@ func verifySupportedKernel() error {
 	if err != nil {
 		return err
 	}
-	if n > 128<<20 || hex.EncodeToString(h.Sum(nil)) != SupportedKernelBTF {
+	if n > 128<<20 || !supportedKernelBTF(hex.EncodeToString(h.Sum(nil))) {
 		return fmt.Errorf("kernel BTF is outside proved persistent-owner matrix")
 	}
 	return checkKernelControls()

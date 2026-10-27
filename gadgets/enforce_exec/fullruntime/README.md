@@ -179,10 +179,18 @@ its own filesystem marker before activating scope. The lease must authenticate
 runtime ownership, genuine host identity, stable root/mount constraints and any
 complete image-origin evidence. It must not reenter Owner methods.
 
-The sole admitted kernel matrix currently uses exact x86_64 BTF digest
-`12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b`
-(the archived pinned test kernel), active BPF LSM and enabled ftrace. There is no
-claim of general released-kernel or arm64 support. Unknown matrices refuse.
+The exact x86_64 kernel matrix retains the original archived BTF digest
+`12f7d6270d8090e944941d3ff77c13339cebe1c394f4ef0d27be1bff0d09561b`.
+The additional individually proved artifact has BTF digest
+`759807546ae2feaf616dc65c73167439867bb393dc468a4bd39c0ab1bc267d51`:
+same Linux source `6b4b543fa18757297ac756a6fe6e64f506b7844a`, with fanotify,
+redirect/NAT and CPU bandwidth configuration needed by Kubernetes, plus a
+separate local version. Its complete isolated upstream proof and artifact hashes
+are recorded in [KERNEL-MATRIX.md](KERNEL-MATRIX.md); private Kubernetes/OTLP
+integration remains separate and pending. Both exact gates require
+active BPF LSM and enabled ftrace. Unknown digests refuse; neither a matching
+release string nor the same source commit establishes support. No general
+released-kernel or arm64 support is claimed.
 
 Lifecycle ordering is deliberate:
 1. Construct Owner; pass WithOwner and the native data operator to the manager.
@@ -218,7 +226,7 @@ make -C gadgets/enforce_exec/full/owner archive \
   IMAGE=localhost/enforce-exec-owner:abi2 ARCHIVE=/tmp/owner.tar
 ```
 
-This requires Clang 21.1.8 and the `SupportedKernelBTF` digest; it never loads BPF.
+This requires Clang 21.1.8 and an exact admitted BTF digest; it never loads BPF.
 The archive contains the unchanged owner metadata and a single amd64 platform.
 Its compiler/BTF/input bytes are trusted build inputs, not policy-provided code.
 Compilation alone is not verifier proof: Clang 19 produced a refused object on
