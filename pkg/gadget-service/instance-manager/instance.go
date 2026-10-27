@@ -87,7 +87,19 @@ func (p *GadgetInstance) GadgetInfo() (*api.GadgetInfo, error) {
 // The result is buffered so asynchronous callers need not wait for it.
 func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) chan error {
 	done := make(chan error, 1)
-	if _, err := p.GadgetInfo(); err != nil {
+	ctx := client.Context()
+	var err error
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+	case <-p.ready:
+		// Prefer cancellation if both readiness and the client deadline are ready.
+		err = ctx.Err()
+		if err == nil {
+			_, err = p.GadgetInfo()
+		}
+	}
+	if err != nil {
 		done <- err
 		close(done)
 		return done
@@ -112,7 +124,7 @@ func (p *GadgetInstance) AddClient(client api.GadgetManager_RunGadgetServer) cha
 	cl.seq = uint32(len(replayBuf))
 	p.mu.Unlock()
 
-	err := client.Send(p.gadgetInfoSerialized)
+	err = client.Send(p.gadgetInfoSerialized)
 	if err != nil {
 		p.mu.Lock()
 		delete(p.clients, cl)

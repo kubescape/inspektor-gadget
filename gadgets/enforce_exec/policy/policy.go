@@ -142,7 +142,7 @@ func (d Document) Validate(limits Limits) error {
 			if pattern == "/**" {
 				base = "/"
 			}
-			if !path.IsAbs(base) || path.Clean(base) != base || strings.ContainsAny(base, "*?[]\\\x00") {
+			if path.Clean(pattern) != pattern || !path.IsAbs(base) || path.Clean(base) != base || strings.ContainsAny(base, "*?[]\\\x00") {
 				return fmt.Errorf("unsupported path %q: use a clean absolute path or directory/**", pattern)
 			}
 		}

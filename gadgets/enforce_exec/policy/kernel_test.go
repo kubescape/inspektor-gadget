@@ -200,6 +200,8 @@ func TestValidateKernelNativePaths(t *testing.T) {
 		{"/", 0, true},
 		{"/bin/", 1, true},
 		{"/", 1, true},
+		{"//", 1, false},
+		{"///", 1, false},
 		{"/bin/**/", 1, false},
 		{"/bin//", 1, false},
 	} {
@@ -210,6 +212,27 @@ func TestValidateKernelNativePaths(t *testing.T) {
 			copy(entries[1].Path[:], tc.path)
 			if err := ValidateKernel(entries); (err == nil) != tc.valid {
 				t.Fatalf("ValidateKernel(path=%q, prefix=%d) = %v, valid=%v", tc.path, tc.prefix, err, tc.valid)
+			}
+		})
+	}
+}
+
+func TestCompileKernelRejectsNoncanonicalPatterns(t *testing.T) {
+	for _, pattern := range []string{"//**", "///**", "/bin//**", "/bin/../**"} {
+		t.Run(pattern, func(t *testing.T) {
+			d := document(t)
+			d.Policy.Exec.Default = "allow"
+			d.Policy.Exec.Rules[0].Action = "deny"
+			d.Policy.Exec.Rules[0].Target.Path = []string{pattern}
+			if err := d.Validate(DefaultLimits()); err == nil {
+				t.Error("noncanonical authoring path accepted")
+			}
+			entries, err := CompileKernel(d, 1)
+			if err == nil {
+				t.Fatal("noncanonical path compiled")
+			}
+			if entries != ([KernelMaxRules + 1]KernelEntry{}) {
+				t.Fatal("rejected policy returned partial entries")
 			}
 		})
 	}

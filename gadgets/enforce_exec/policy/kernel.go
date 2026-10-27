@@ -110,8 +110,8 @@ func ValidateKernel(entries [KernelMaxRules + 1]KernelEntry) error {
 		}
 		p := string(e.Path[:e.Length])
 		if e.Prefix == 1 {
-			if !strings.HasSuffix(p, "/") {
-				return fmt.Errorf("prefix must end in slash")
+			if !strings.HasSuffix(p, "/") || strings.HasSuffix(p, "//") {
+				return fmt.Errorf("prefix must end in exactly one slash")
 			}
 			// Prefix entries encode the directory including its trailing slash.
 			// Exact entries must retain every byte for wildcard validation.
