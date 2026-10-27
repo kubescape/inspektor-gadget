@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -13,8 +14,9 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
 // TestProgramSlotKernel proves native frozen map-in-map publication only. It
@@ -48,7 +50,7 @@ func TestProgramSlotKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), btf, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), btf, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_PROGRAM_SLOT_BPF_SOURCE")

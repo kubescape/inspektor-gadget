@@ -229,6 +229,7 @@ func Compile(policies []Policy) (*Program, error) {
 	sort.Slice(p.policies, func(i, j int) bool { return p.policies[i].source.ID < p.policies[j].source.ID })
 	return p, nil
 }
+
 func cloneBool(b *bool) *bool {
 	if b == nil {
 		return nil
@@ -236,12 +237,14 @@ func cloneBool(b *bool) *bool {
 	c := *b
 	return &c
 }
+
 func validateString(s string) error {
 	if s == "" || len(s) > MaxStringBytes || strings.ContainsRune(s, 0) || !utf8.ValidString(s) {
 		return fmt.Errorf("string must contain 1..%d non-NUL bytes", MaxStringBytes)
 	}
 	return nil
 }
+
 func cloneStrings(in []string) ([]string, error) {
 	if len(in) > MaxValues {
 		return nil, fmt.Errorf("list capacity exceeds %d", MaxValues)
@@ -253,6 +256,7 @@ func cloneStrings(in []string) ([]string, error) {
 	}
 	return append([]string(nil), in...), nil
 }
+
 func compilePaths(in []string, total *int) ([]*regexp.Regexp, error) {
 	if len(in) > MaxValues {
 		return nil, fmt.Errorf("path list exceeds %d", MaxValues)
@@ -308,12 +312,13 @@ func glob(pattern string) (*regexp.Regexp, error) {
 				i++
 			}
 			for chars[i] != ']' {
-				if chars[i] == '\\' {
+				switch chars[i] {
+				case '\\':
 					i++
 					fmt.Fprintf(&classPattern, "\\x{%x}", chars[i])
-				} else if chars[i] == '-' {
+				case '-':
 					classPattern.WriteByte('-')
-				} else {
+				default:
 					fmt.Fprintf(&classPattern, "\\x{%x}", chars[i])
 				}
 				i++
@@ -327,13 +332,14 @@ func glob(pattern string) (*regexp.Regexp, error) {
 				return nil, fmt.Errorf("malformed glob %q: %w", pattern, err)
 			}
 			var ranges []rune
-			if class.Op == syntax.OpLiteral {
+			switch class.Op {
+			case syntax.OpLiteral:
 				for _, r := range class.Rune {
 					ranges = append(ranges, r, r)
 				}
-			} else if class.Op == syntax.OpCharClass {
+			case syntax.OpCharClass:
 				ranges = class.Rune
-			} else {
+			default:
 				return nil, fmt.Errorf("unsupported character class")
 			}
 			b.WriteByte('[')

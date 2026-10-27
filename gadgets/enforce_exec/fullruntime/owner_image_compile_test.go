@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -97,7 +99,7 @@ grep -q 'enforce-exec-owner-abi: "2"' "$context/gadget.yaml"
 ! grep -q '^  enforce-exec-full:' "$context/gadget.yaml"
 clang -target bpf -O2 -g -D__TARGET_ARCH_x86 -Wno-missing-declarations -I"$(dirname "$IG_EXEC_OWNER_VMLINUX")" -I"$OWNER_INCLUDE" -c "$context/program.bpf.c" -o "$OWNER_OBJECT"
 `
-	if err = os.WriteFile(script, []byte(body), 0700); err != nil {
+	if err = os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	object := filepath.Join(dir, "packaged.o")

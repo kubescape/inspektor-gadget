@@ -1,9 +1,11 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package ebpfoperator
 
 import (
 	"github.com/cilium/ebpf"
+
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -25,6 +27,7 @@ func (i *ebpfInstance) publishCommandPrograms(gc operators.GadgetContext) {
 		}
 	}
 }
+
 func (i *ebpfInstance) unpublishCommandPrograms(gc operators.GadgetContext) {
 	for name, program := range i.collection.Programs {
 		key := operators.ProgramPrefix + name

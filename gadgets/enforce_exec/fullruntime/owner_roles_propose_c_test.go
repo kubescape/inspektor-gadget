@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -34,7 +35,7 @@ func TestOwnerRoleProposalFaultScope(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "proposal.c")
 	binary := filepath.Join(dir, "proposal")
-	if err = os.WriteFile(file, []byte(source), 0600); err != nil {
+	if err = os.WriteFile(file, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(cc, "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", file, "-o", binary).CombinedOutput(); err != nil {

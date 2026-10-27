@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -9,10 +10,11 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
-var slotFailure = errors.New("injected slot failure")
+var errSlotFailure = errors.New("injected slot failure")
 
 type fakeSlotImage struct {
 	closed   int
@@ -36,6 +38,7 @@ func (m *fakeSlotWriter) Put(k, v interface{}) error {
 	m.rows[k] = v
 	return nil
 }
+
 func (m *fakeSlotWriter) Delete(k interface{}) error {
 	m.deletes++
 	if m.deleteErr != nil {
@@ -47,6 +50,7 @@ func (m *fakeSlotWriter) Delete(k interface{}) error {
 	delete(m.rows, k)
 	return nil
 }
+
 func slotFixture(t *testing.T) (*ProgramSlot, *fakeSlotWriter, *fakeSlotWriter, *[]*fakeSlotImage) {
 	t.Helper()
 	g, _ := testGate(t)
@@ -63,6 +67,7 @@ func slotFixture(t *testing.T) (*ProgramSlot, *fakeSlotWriter, *fakeSlotWriter, 
 	}
 	return p, outer, epochs, images
 }
+
 func slotProgram(t *testing.T, p *ProgramSlot, generation uint64, ids ...string) *fullpolicy.KernelProgram {
 	t.Helper()
 	var policies []fullpolicy.Policy
@@ -75,6 +80,7 @@ func slotProgram(t *testing.T, p *ProgramSlot, generation uint64, ids ...string)
 	}
 	return program
 }
+
 func publishSlot(t *testing.T, p *ProgramSlot, program *fullpolicy.KernelProgram) *ProgramUpdate {
 	t.Helper()
 	u, err := p.Begin(t.Context(), program)
@@ -90,6 +96,7 @@ func publishSlot(t *testing.T, p *ProgramSlot, program *fullpolicy.KernelProgram
 	}
 	return u
 }
+
 func TestProgramSlotCommitBoundaryAndRetainedEpochs(t *testing.T) {
 	p, outer, epochs, images := slotFixture(t)
 	a := slotProgram(t, p, 1, "uid-a")
@@ -145,6 +152,7 @@ func TestProgramSlotCommitBoundaryAndRetainedEpochs(t *testing.T) {
 		t.Fatal("abort changed accepted history")
 	}
 }
+
 func TestProgramSlotFailedCandidateDoesNotEstablishRoot(t *testing.T) {
 	p, outer, epochs, images := slotFixture(t)
 	publishSlot(t, p, slotProgram(t, p, 1, "old"))
@@ -152,10 +160,10 @@ func TestProgramSlotFailedCandidateDoesNotEstablishRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer.putErr = slotFailure
+	outer.putErr = errSlotFailure
 	outer.failKey = uint32(0)
 	result, err := u.Commit()
-	if !errors.Is(err, slotFailure) || result.Committed {
+	if !errors.Is(err, errSlotFailure) || result.Committed {
 		t.Fatal(result, err)
 	}
 	if len(epochs.rows) != 1 || p.Epochs()["new"] != 0 || p.Generation() != 1 {
@@ -182,6 +190,7 @@ func TestProgramSlotFailedCandidateDoesNotEstablishRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestProgramSlotHistoryFailureIsCommittedAndClosed(t *testing.T) {
 	p, outer, epochs, images := slotFixture(t)
 	publishSlot(t, p, slotProgram(t, p, 1, "old"))
@@ -189,9 +198,9 @@ func TestProgramSlotHistoryFailureIsCommittedAndClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	epochs.putErr = slotFailure
+	epochs.putErr = errSlotFailure
 	result, err := u.Commit()
-	if !result.Committed || result.Generation != 2 || !errors.Is(err, slotFailure) {
+	if !result.Committed || result.Generation != 2 || !errors.Is(err, errSlotFailure) {
 		t.Fatal(result, err)
 	}
 	if p.Generation() != 2 || p.Epochs()["new"] != 2 || outer.rows[uint32(0)] != (*images)[1] {
@@ -230,14 +239,14 @@ func TestProgramSlotStagingCleanupRetainsExactlyOneResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer.deleteErr = slotFailure
-	if err = u.Abort(); !errors.Is(err, slotFailure) {
+	outer.deleteErr = errSlotFailure
+	if err = u.Abort(); !errors.Is(err, errSlotFailure) {
 		t.Fatal(err)
 	}
 	if len(p.garbage) != 1 || (*images)[1].closed != 0 || (*images)[0].closed != 0 {
 		t.Fatal("untracked staging resource")
 	}
-	if _, err = p.Begin(t.Context(), slotProgram(t, p, 3, "new")); !errors.Is(err, slotFailure) {
+	if _, err = p.Begin(t.Context(), slotProgram(t, p, 3, "new")); !errors.Is(err, errSlotFailure) {
 		t.Fatal("cleanup bypass", err)
 	}
 	if len(*images) != 2 {
@@ -251,6 +260,7 @@ func TestProgramSlotStagingCleanupRetainsExactlyOneResource(t *testing.T) {
 		t.Fatal("staging cleanup lifetime")
 	}
 }
+
 func TestProgramSlotPostcommitCleanupDoesNotRollback(t *testing.T) {
 	p, outer, _, images := slotFixture(t)
 	publishSlot(t, p, slotProgram(t, p, 1, "old"))
@@ -261,8 +271,8 @@ func TestProgramSlotPostcommitCleanupDoesNotRollback(t *testing.T) {
 	if r, err := u.Commit(); err != nil || !r.Committed {
 		t.Fatal(r, err)
 	}
-	outer.deleteErr = slotFailure
-	if err = u.Finish(); !errors.Is(err, slotFailure) {
+	outer.deleteErr = errSlotFailure
+	if err = u.Finish(); !errors.Is(err, errSlotFailure) {
 		t.Fatal(err)
 	}
 	if p.Generation() != 2 || p.Epochs()["new"] != 2 || (*images)[0].closed != 1 || (*images)[1].closed != 0 {
@@ -274,6 +284,7 @@ func TestProgramSlotPostcommitCleanupDoesNotRollback(t *testing.T) {
 	}
 	requireState(t, p.gate, false, 0)
 }
+
 func TestProgramSlotTimeoutAndEpochRefusal(t *testing.T) {
 	p, _, _, images := slotFixture(t)
 	publishSlot(t, p, slotProgram(t, p, 1, "old"))
@@ -303,6 +314,7 @@ func TestProgramSlotTimeoutAndEpochRefusal(t *testing.T) {
 		t.Fatal("refusal mutated history")
 	}
 }
+
 func TestProgramSlotCloseAfterDetachOwnsOnlyItsResources(t *testing.T) {
 	for _, committed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "before", true: "after"}[committed], func(t *testing.T) {
@@ -374,6 +386,7 @@ func TestProgramSlotRetirePendingUpdateWithoutReopening(t *testing.T) {
 		})
 	}
 }
+
 func TestProgramSlotRetireTimeoutKeepsLastGood(t *testing.T) {
 	p, _, _, images := slotFixture(t)
 	publishSlot(t, p, slotProgram(t, p, 1, "old"))

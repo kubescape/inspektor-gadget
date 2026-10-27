@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -52,7 +53,7 @@ int main(void){
 	dir := t.TempDir()
 	file := filepath.Join(dir, "rows.c")
 	binary := filepath.Join(dir, "rows")
-	if err = os.WriteFile(file, []byte(source), 0600); err != nil {
+	if err = os.WriteFile(file, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-Werror", file, "-o", binary).CombinedOutput(); err != nil {

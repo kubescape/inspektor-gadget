@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -21,19 +22,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type bootstrapSeed struct{ Owner, UID, Role, Epoch uint64 }
-type bootstrapState struct {
-	Lock, Owned           uint32
-	Role                  bootstrapSeed
-	Child, OriginalCgroup uint64
-	Slot, Padding         uint32
-	TokenOwner            uint64
-}
-type bootstrapGate struct{ Word, Faults, Credits, Admitted, Success, Failed, Late, IO, Exits, CompletionCgroup, Owner uint64 }
-type bootstrapPause struct {
-	Cgroup                         uint64
-	Hold, Phase, Timedout, Padding uint32
-}
+type (
+	bootstrapSeed  struct{ Owner, UID, Role, Epoch uint64 }
+	bootstrapState struct {
+		Lock, Owned           uint32
+		Role                  bootstrapSeed
+		Child, OriginalCgroup uint64
+		Slot, Padding         uint32
+		TokenOwner            uint64
+	}
+)
+
+type (
+	bootstrapGate  struct{ Word, Faults, Credits, Admitted, Success, Failed, Late, IO, Exits, CompletionCgroup, Owner uint64 }
+	bootstrapPause struct {
+		Cgroup                         uint64
+		Hold, Phase, Timedout, Padding uint32
+	}
+)
 
 func bootstrapFixture(t *testing.T) *ebpf.CollectionSpec {
 	t.Helper()
@@ -48,7 +54,7 @@ func bootstrapFixture(t *testing.T) *ebpf.CollectionSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_BOOTSTRAP_BPF_SOURCE")
@@ -65,6 +71,7 @@ func bootstrapFixture(t *testing.T) *ebpf.CollectionSpec {
 	}
 	return spec
 }
+
 func bootstrapLoad(t *testing.T, spec *ebpf.CollectionSpec) *ebpf.Collection {
 	t.Helper()
 	c, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{Programs: ebpf.ProgramOptions{LogSizeStart: 8 * 1024 * 1024}})
@@ -78,6 +85,7 @@ func bootstrapLoad(t *testing.T, spec *ebpf.CollectionSpec) *ebpf.Collection {
 	t.Cleanup(c.Close)
 	return c
 }
+
 func bootstrapAttach(t *testing.T, c *ebpf.Collection, name string) link.Link {
 	t.Helper()
 	var l link.Link
@@ -93,6 +101,7 @@ func bootstrapAttach(t *testing.T, c *ebpf.Collection, name string) link.Link {
 	t.Cleanup(func() { l.Close() })
 	return l
 }
+
 func TestBootstrapGateABI(t *testing.T) {
 	spec := bootstrapFixture(t)
 	for _, name := range []string{"bg_admit", "bg_hold", "bg_newtask", "bg_copy_done", "bg_exit", "bg_io_done"} {
@@ -118,7 +127,7 @@ func TestBootstrapGateKernel(t *testing.T) {
 	spec := bootstrapFixture(t)
 	tmp := t.TempDir()
 	helper := filepath.Join(tmp, "helper")
-	if err := os.WriteFile(helper+".c", []byte(bootstrapHelper), 0600); err != nil {
+	if err := os.WriteFile(helper+".c", []byte(bootstrapHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("cc", "-O2", "-pthread", helper+".c", "-o", helper).CombinedOutput(); err != nil {
@@ -136,7 +145,7 @@ func TestBootstrapGateKernel(t *testing.T) {
 			cgpath := fmt.Sprintf("/sys/fs/cgroup/ig-bootstrap-%d-%s", os.Getpid(), name)
 			otherpath := cgpath + "-other"
 			for _, path := range []string{cgpath, otherpath} {
-				if err := os.Mkdir(path, 0755); err != nil {
+				if err := os.Mkdir(path, 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -154,7 +163,7 @@ func TestBootstrapGateKernel(t *testing.T) {
 						}
 						// Kill only descendants in this exact disposable fixture
 						// if an assertion interrupted their IPC handshake.
-						_ = os.WriteFile(filepath.Join(path, "cgroup.kill"), []byte("1"), 0600)
+						_ = os.WriteFile(filepath.Join(path, "cgroup.kill"), []byte("1"), 0o600)
 						time.Sleep(10 * time.Millisecond)
 					}
 				}
@@ -273,14 +282,15 @@ func TestBootstrapGateKernel(t *testing.T) {
 				if err := c.Maps["bg_gates"].Lookup(uint32(0), &during); err != nil {
 					t.Fatal(err)
 				}
-				if name == "migration-owned-token" {
+				switch name {
+				case "migration-owned-token":
 					if during.Word != 1 {
 						t.Fatalf("admission not counted: %+v", during)
 					}
-					if err := os.WriteFile(filepath.Join(otherpath, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0600); err != nil {
+					if err := os.WriteFile(filepath.Join(otherpath, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o600); err != nil {
 						t.Fatal(err)
 					}
-				} else if name == "late-preattachment" {
+				case "late-preattachment":
 					if during.Admitted != 0 {
 						t.Fatal("late case already counted")
 					}
@@ -316,17 +326,18 @@ func TestBootstrapGateKernel(t *testing.T) {
 			} else {
 				result = line()
 			}
-			if name == "signal-interrupt" {
+			switch name {
+			case "signal-interrupt":
 				// No child becomes runnable after the interrupted copy.
-			} else if name == "closed-refusal" {
+			case "closed-refusal":
 				if result != "E11" {
 					t.Fatalf("closed fork: %s", result)
 				}
-			} else if name == "failed-copy" {
+			case "failed-copy":
 				if result != "E14" {
 					t.Fatalf("failed copy: %s", result)
 				}
-			} else if name == "io-thread" {
+			case "io-thread":
 				if result != "I0" {
 					t.Fatalf("io_uring SQPOLL unavailable (not coverage proof): %s", result)
 				}
@@ -334,7 +345,7 @@ func TestBootstrapGateKernel(t *testing.T) {
 				if line() != "D" {
 					t.Fatal("io teardown")
 				}
-			} else {
+			default:
 				child, err := strconv.Atoi(result)
 				if err != nil {
 					t.Fatalf("child result %q: %v", result, err)
@@ -496,7 +507,7 @@ func TestBootstrapHelperCompiles(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	source := filepath.Join(tmp, "helper.c")
-	if err := os.WriteFile(source, []byte(bootstrapHelper), 0600); err != nil {
+	if err := os.WriteFile(source, []byte(bootstrapHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(cc, "-O2", "-pthread", source, "-o", filepath.Join(tmp, "helper")).CombinedOutput(); err != nil {

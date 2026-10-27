@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullpolicy
 
 import (
@@ -14,6 +15,7 @@ func ptr[T any](v T) *T { return &v }
 func base() Policy {
 	return Policy{ID: "policy-uid", Revision: "revision", Mode: Enforce, RootRole: "agent", Default: Allow}
 }
+
 func compile(t *testing.T, policies ...Policy) *Program {
 	t.Helper()
 	p, e := Compile(policies)
@@ -22,6 +24,7 @@ func compile(t *testing.T, policies ...Policy) *Program {
 	}
 	return p
 }
+
 func TestFullPredicateConjunction(t *testing.T) {
 	p := base()
 	p.Rules = []Rule{{Name: "combined", Action: Deny, Actor: Actor{Path: []string{"/usr/bin/*"}, FromImage: ptr(true), Ancestor: &Ancestor{Path: []string{"/init"}, Depth: 2}, Role: []string{"agent"}, UID: []int64{1000}, Container: []string{"app"}}, Target: Target{Path: []string{"/tmp/**/tool?"}, FromImage: ptr(false), FSType: []string{"tmpfs"}, Argv: &Argv{Contains: []string{"-c", "--unsafe"}, Prefix: []string{"--option="}, StdinIsPipe: ptr(true)}}}}
@@ -43,6 +46,7 @@ func TestFullPredicateConjunction(t *testing.T) {
 		})
 	}
 }
+
 func TestUnknownFactsNeverBecomeFalse(t *testing.T) {
 	for name, target := range map[string]Target{"image": {FromImage: ptr(false)}, "fs": {FSType: []string{"tmpfs"}}, "argv": {Argv: &Argv{Contains: []string{"-c"}}}, "stdin": {Argv: &Argv{StdinIsPipe: ptr(false)}}} {
 		t.Run(name, func(t *testing.T) {
@@ -63,6 +67,7 @@ func TestUnknownFactsNeverBecomeFalse(t *testing.T) {
 		t.Fatalf("genuine root: %+v %v", d, e)
 	}
 }
+
 func TestOrderFreeMixedModesAndDefaults(t *testing.T) {
 	p := base()
 	p.Default = Deny
@@ -96,6 +101,7 @@ func TestOrderFreeMixedModesAndDefaults(t *testing.T) {
 		t.Fatalf("merged matching allow shadowed by unrelated default: %+v %v", d, e)
 	}
 }
+
 func TestPolicyLocalRolesAndSuccessfulExecStaging(t *testing.T) {
 	p := base()
 	p.Rules = []Rule{{Name: "transition", Action: Allow, Actor: Actor{Role: []string{"agent"}}, Target: Target{SetRole: "tool"}}}
@@ -117,6 +123,7 @@ func TestPolicyLocalRolesAndSuccessfulExecStaging(t *testing.T) {
 		t.Fatal("conflicting roles chosen by order")
 	}
 }
+
 func TestGlobs(t *testing.T) {
 	tests := []struct {
 		pattern, value string
@@ -139,6 +146,7 @@ func TestGlobs(t *testing.T) {
 		}
 	}
 }
+
 func TestBudgetsAndOwnership(t *testing.T) {
 	p := base()
 	for i := range MaxRules {
@@ -189,6 +197,7 @@ func TestPathClassEscapes(t *testing.T) {
 		}
 	}
 }
+
 func TestMissingRoleIsNotRoot(t *testing.T) {
 	p := base()
 	p.Rules = []Rule{{Name: "root-only", Action: Allow, Actor: Actor{Role: []string{"agent"}}}}
@@ -205,6 +214,7 @@ func TestInvalidObservedUTF8CannotAliasPath(t *testing.T) {
 		t.Fatal("invalid bytes aliased an exact allowed path")
 	}
 }
+
 func TestMetadataBudgets(t *testing.T) {
 	for _, mutate := range []func(*Policy){func(p *Policy) { p.ID = strings.Repeat("x", MaxStringBytes+1) }, func(p *Policy) { p.Revision = "x\x00y" }, func(p *Policy) { p.Rules[0].Name = strings.Repeat("n", MaxStringBytes+1) }, func(p *Policy) { p.Rules[0].Origin = strings.Repeat("o", MaxStringBytes+1) }} {
 		p := base()

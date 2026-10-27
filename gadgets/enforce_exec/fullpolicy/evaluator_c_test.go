@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullpolicy
 
 import (
@@ -18,28 +19,31 @@ type evaluatorPath struct {
 	Length uint32
 	Bytes  [256]byte
 }
-type evaluatorRole struct{ PolicyUID, Role uint64 }
-type evaluatorFacts struct {
-	ActorPath, TargetPath            evaluatorPath
-	ActorImage, TargetImage          int32
-	UID, UIDKnown                    uint32
-	Ancestors                        [16]evaluatorPath
-	AncestorCount, AncestorsComplete uint32
-	Roles                            [8]evaluatorRole
-	RoleCount, FSMask, FSKnown       uint32
-	Argv                             [4096]byte
-	Argc                             uint32
-	Offsets                          [64]uint32
-	ArgBytes, ArgComplete            uint32
-	Stdin                            int32
-	Padding                          uint32
-}
+type (
+	evaluatorRole  struct{ PolicyUID, Role uint64 }
+	evaluatorFacts struct {
+		ActorPath, TargetPath            evaluatorPath
+		ActorImage, TargetImage          int32
+		UID, UIDKnown                    uint32
+		Ancestors                        [16]evaluatorPath
+		AncestorCount, AncestorsComplete uint32
+		Roles                            [8]evaluatorRole
+		RoleCount, FSMask, FSKnown       uint32
+		Argv                             [4096]byte
+		Argc                             uint32
+		Offsets                          [64]uint32
+		ArgBytes, ArgComplete            uint32
+		Stdin                            int32
+		Padding                          uint32
+	}
+)
 
 func evaluatorPathOf(s string) evaluatorPath {
 	p := evaluatorPath{Length: uint32(len(s))}
 	copy(p.Bytes[:], s)
 	return p
 }
+
 func evaluatorTri(p *bool) int32 {
 	if p == nil {
 		return -1
@@ -49,6 +53,7 @@ func evaluatorTri(p *bool) int32 {
 	}
 	return 0
 }
+
 func evaluatorFactBytes(t *testing.T, p *KernelProgram, policies []Policy, f Facts) evaluatorFacts {
 	t.Helper()
 	out := evaluatorFacts{ActorPath: evaluatorPathOf(f.ActorPath), TargetPath: evaluatorPathOf(f.TargetPath), ActorImage: evaluatorTri(f.ActorFromImage), TargetImage: evaluatorTri(f.TargetFromImage), Stdin: evaluatorTri(f.StdinIsPipe), AncestorCount: uint32(len(f.Ancestors))}
@@ -115,6 +120,7 @@ func evaluatorFactBytes(t *testing.T, p *KernelProgram, policies []Policy, f Fac
 	}
 	return out
 }
+
 func buildEvaluatorRunner(t *testing.T, flags ...string) string {
 	t.Helper()
 	clang, err := exec.LookPath("clang")
@@ -129,6 +135,7 @@ func buildEvaluatorRunner(t *testing.T, flags ...string) string {
 	}
 	return path
 }
+
 func runCEvaluator(t *testing.T, runner string, p *KernelProgram, facts evaluatorFacts) []uint64 {
 	t.Helper()
 	dir := t.TempDir()
@@ -136,7 +143,7 @@ func runCEvaluator(t *testing.T, runner string, p *KernelProgram, facts evaluato
 	for _, entry := range p.Entries {
 		program.Write(entry[:])
 	}
-	if err := os.WriteFile(filepath.Join(dir, "program"), program.Bytes(), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "program"), program.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var data bytes.Buffer
@@ -146,7 +153,7 @@ func runCEvaluator(t *testing.T, runner string, p *KernelProgram, facts evaluato
 	if data.Len() != 9216 {
 		t.Fatalf("facts ABI size %d", data.Len())
 	}
-	if err := os.WriteFile(filepath.Join(dir, "facts"), data.Bytes(), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "facts"), data.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output, err := exec.Command(runner, filepath.Join(dir, "program"), filepath.Join(dir, "facts")).CombinedOutput()
@@ -171,6 +178,7 @@ func runCEvaluator(t *testing.T, runner string, p *KernelProgram, facts evaluato
 	}
 	return values
 }
+
 func TestCEvaluatorReferenceParity(t *testing.T) {
 	runner := buildEvaluatorRunner(t)
 	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {

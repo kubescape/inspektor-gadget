@@ -1,13 +1,12 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/cilium/ebpf/link"
-	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
@@ -38,7 +40,7 @@ func TestRolesABI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_ROLES_BPF_SOURCE")
@@ -90,7 +92,7 @@ func TestRolesLifecycleKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_ROLES_BPF_SOURCE")
@@ -106,7 +108,7 @@ func TestRolesLifecycleKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	cgpath := fmt.Sprintf("/sys/fs/cgroup/ig-roles-%d", os.Getpid())
-	if err := os.Mkdir(cgpath, 0755); err != nil {
+	if err := os.Mkdir(cgpath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(cgpath)
@@ -120,7 +122,7 @@ func TestRolesLifecycleKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	helper := filepath.Join(tmp, "launcher")
-	if err := os.WriteFile(helper+".c", []byte(rolesHelper), 0600); err != nil {
+	if err := os.WriteFile(helper+".c", []byte(rolesHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("cc", "-O2", "-pthread", helper+".c", "-o", helper).CombinedOutput(); err != nil {
@@ -132,14 +134,14 @@ func TestRolesLifecycleKernel(t *testing.T) {
 	}
 	target, interp, script, bad := filepath.Join(tmp, "target"), filepath.Join(tmp, "interp"), filepath.Join(tmp, "script"), filepath.Join(tmp, "bad")
 	for _, path := range []string{target, interp} {
-		if err := os.WriteFile(path, binary, 0755); err != nil {
+		if err := os.WriteFile(path, binary, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(script, []byte("#!"+interp+"\n"), 0755); err != nil {
+	if err := os.WriteFile(script, []byte("#!"+interp+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bad, []byte("not an executable\n"), 0755); err != nil {
+	if err := os.WriteFile(bad, []byte("not an executable\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	type entry struct{ UID, Roles uint64 }
@@ -314,7 +316,8 @@ func TestRolesLifecycleKernel(t *testing.T) {
 			if tc.path == script && got.Tx.Checks < 2 {
 				t.Fatalf("script did not exercise repeat checks: %+v", got.Tx)
 			}
-			if tc.action == 'r' || tc.action == 'u' {
+			switch tc.action {
+			case 'r', 'u':
 				next := seed{Revision: 2}
 				if tc.action == 'r' {
 					next.Entries[0] = entry{7, 1}
@@ -350,7 +353,7 @@ func TestRolesLifecycleKernel(t *testing.T) {
 					t.Fatalf("exhausted UID slots changed state: %+v", merged)
 				}
 				write.Write([]byte{'q'})
-			} else if tc.action == 'f' || tc.action == 'b' || tc.action == 'v' || tc.action == 't' {
+			case 'f', 'b', 'v', 't':
 				if tc.action == 'v' || tc.action == 't' {
 					cfg.Actor = 2
 					cfg.Grant = 4
@@ -424,7 +427,7 @@ func TestRolesLifecycleKernel(t *testing.T) {
 					}
 					write.Write([]byte{'q'})
 				}
-			} else {
+			default:
 				write.Write([]byte{'q'})
 			}
 			if err := cmd.Wait(); err != nil {
@@ -536,7 +539,7 @@ int main(void){
  for(int i=0;i<FR_ACTIVE;i++)assert(!tx.pending[i].uid&&!tx.pending[i].roles);
  return 0;
 }
-`), 0600); err != nil {
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(cc, "-O2", "-I"+root, source, "-o", binary).CombinedOutput(); err != nil {
@@ -546,7 +549,7 @@ int main(void){
 		t.Fatalf("merge: %v %s", err, out)
 	}
 	helper := filepath.Join(tmp, "helper.c")
-	if err := os.WriteFile(helper, []byte(rolesHelper), 0600); err != nil {
+	if err := os.WriteFile(helper, []byte(rolesHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(cc, "-O2", "-pthread", helper, "-o", filepath.Join(tmp, "helper")).CombinedOutput(); err != nil {

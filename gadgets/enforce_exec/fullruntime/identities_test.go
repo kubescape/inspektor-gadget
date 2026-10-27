@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -18,6 +19,7 @@ func identityCandidate(t *testing.T, id string, generation uint64) *fullpolicy.K
 	}
 	return p
 }
+
 func TestHistoricalIdentityReservation(t *testing.T) {
 	var r IdentityRegistry
 	p := identityCandidate(t, "uid-a", 1)
@@ -43,6 +45,7 @@ func TestHistoricalIdentityReservation(t *testing.T) {
 		t.Fatal("invalid candidate mutated history")
 	}
 }
+
 func TestHistoricalCollisionAndCapacityAreAtomic(t *testing.T) {
 	p := identityCandidate(t, "uid-a", 1)
 	for id := range p.Identities {
@@ -60,6 +63,7 @@ func TestHistoricalCollisionAndCapacityAreAtomic(t *testing.T) {
 		t.Fatal("capacity changed history")
 	}
 }
+
 func TestHistoricalConcurrentReservation(t *testing.T) {
 	var r IdentityRegistry
 	p := identityCandidate(t, "uid-a", 1)

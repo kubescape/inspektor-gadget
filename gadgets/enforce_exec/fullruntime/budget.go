@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -7,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
@@ -20,12 +22,15 @@ const (
 	OwnerHistoryLimit     uint64 = 2 * fullpolicy.MaxRoleEpochHistory // identity registry + successful UID catalogue
 )
 
-type BudgetLimits struct{ Owners, MapPayloadBytes, ProgramInstructions, HistoryEntries uint64 }
-type Budget struct {
-	mu           sync.Mutex
-	limits, used BudgetLimits
-	scopes       map[uint64]*budgetAllocation
-}
+type (
+	BudgetLimits struct{ Owners, MapPayloadBytes, ProgramInstructions, HistoryEntries uint64 }
+	Budget       struct {
+		mu           sync.Mutex
+		limits, used BudgetLimits
+		scopes       map[uint64]*budgetAllocation
+	}
+)
+
 type budgetAllocation struct {
 	owner *Budget
 	scope uint64
@@ -39,6 +44,7 @@ func NewBudget(limits BudgetLimits) (*Budget, error) {
 	}
 	return &Budget{limits: limits, scopes: map[uint64]*budgetAllocation{}}, nil
 }
+
 func (b *Budget) reserve(scope uint64) (*budgetReservation, error) {
 	if b == nil || scope == 0 {
 		return nil, fmt.Errorf("shared aggregate owner budget and exact scope required")
@@ -59,6 +65,7 @@ func (b *Budget) reserve(scope uint64) (*budgetReservation, error) {
 	b.scopes[scope] = allocation
 	return &budgetReservation{state: allocation}, nil
 }
+
 func (r *budgetReservation) release() {
 	if r == nil || r.state == nil {
 		return

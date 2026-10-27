@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -20,10 +21,11 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullruntime"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullruntime"
 )
 
 const ownerExecHelper = `
@@ -70,7 +72,7 @@ func TestFullOwnerImageKernel(t *testing.T) {
 	require.NotEmpty(t, root)
 	header, e := exec.Command("bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c").Output()
 	require.NoError(t, e)
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600))
 	obj := filepath.Join(tmp, "owner.o")
 	out, e := exec.Command("clang", "-target", "bpf", "-O2", "-g", "-D__TARGET_ARCH_x86", "-DENFORCE_EXEC_PERSISTENT_OWNER", "-Wno-missing-declarations", "-I"+tmp, "-I"+filepath.Join(root, "include"), "-I"+filepath.Join(root, "gadgets/enforce_exec/fullpolicy/bpf"), "-c", source, "-o", obj).CombinedOutput()
 	require.NoError(t, e, string(out))
@@ -95,7 +97,7 @@ func TestFullOwnerImageKernel(t *testing.T) {
 		var verifier *ebpf.VerifierError
 		if errors.As(e, &verifier) {
 			if path := os.Getenv("IG_FULL_OWNER_VERIFIER_LOG"); path != "" {
-				require.NoError(t, os.WriteFile(path, []byte(strings.Join(verifier.Log, "\n")), 0600))
+				require.NoError(t, os.WriteFile(path, []byte(strings.Join(verifier.Log, "\n")), 0o600))
 			}
 			t.Fatalf("assembled owner verifier: %v\n%-80v", e, verifier)
 		}
@@ -167,17 +169,17 @@ func TestFullOwnerImageKernel(t *testing.T) {
 	slot, e = fullruntime.NewProgramSlot(gate, collection.Maps["eo_programs"], collection.Maps["eo_epochs"])
 	require.NoError(t, e)
 	cgpath = fmt.Sprintf("/sys/fs/cgroup/ig-full-owner-%d", os.Getpid())
-	require.NoError(t, os.Mkdir(cgpath, 0755))
+	require.NoError(t, os.Mkdir(cgpath, 0o755))
 	cg, e = os.Open(cgpath)
 	require.NoError(t, e)
 	var cgstat syscall.Stat_t
 	require.NoError(t, syscall.Fstat(int(cg.Fd()), &cgstat))
 	helper := filepath.Join(tmp, "owner-helper")
 	workerTarget := filepath.Join(tmp, "worker-target")
-	require.NoError(t, os.WriteFile(workerTarget+".c", []byte("int main(void){return 0;}"), 0600))
+	require.NoError(t, os.WriteFile(workerTarget+".c", []byte("int main(void){return 0;}"), 0o600))
 	out, e = exec.Command("cc", "-O2", workerTarget+".c", "-o", workerTarget).CombinedOutput()
 	require.NoError(t, e, string(out))
-	require.NoError(t, os.WriteFile(helper+".c", []byte("#define OWNER_WORKER_TARGET "+strconv.Quote(workerTarget)+"\n"+ownerExecHelper), 0600))
+	require.NoError(t, os.WriteFile(helper+".c", []byte("#define OWNER_WORKER_TARGET "+strconv.Quote(workerTarget)+"\n"+ownerExecHelper), 0o600))
 	out, e = exec.Command("cc", "-O2", helper+".c", "-o", helper).CombinedOutput()
 	require.NoError(t, e, string(out))
 	process = exec.CommandContext(ctx, helper)

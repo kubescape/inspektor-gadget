@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -28,6 +29,7 @@ func readPinnedProc(file *os.File, name string) ([]byte, error) {
 	}
 	return data, nil
 }
+
 func readPinnedInitStart(file *os.File, pid uint32) (string, error) {
 	if file == nil || pid == 0 {
 		return "", fmt.Errorf("exact pinned init required")
@@ -63,6 +65,7 @@ func readPinnedInitStart(file *os.File, pid uint32) (string, error) {
 	}
 	return start, nil
 }
+
 func parsePinnedStat(data []byte, pid uint32) (string, error) {
 	text := string(data)
 	begin, end := strings.IndexByte(text, '('), strings.LastIndexByte(text, ')')

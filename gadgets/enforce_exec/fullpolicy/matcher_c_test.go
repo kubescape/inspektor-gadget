@@ -26,6 +26,7 @@ func buildMatcherRunner(t *testing.T) string {
 	}
 	return binary
 }
+
 func runCMatcher(t *testing.T, runner string, entries []Blob, key uint32, input []byte) int {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "program.bin")
@@ -52,6 +53,7 @@ func runCMatcher(t *testing.T, runner string, entries []Blob, key uint32, input 
 	}
 	return result
 }
+
 func compileMatcherPattern(t *testing.T, pattern string) (*KernelProgram, uint32) {
 	t.Helper()
 	p, err := CompileKernel([]Policy{{ID: "policy", Revision: "revision", Mode: Enforce, Rules: []Rule{{Name: "rule", Action: Allow, Target: Target{Path: []string{pattern}}}}}}, 1, "container")
@@ -61,6 +63,7 @@ func compileMatcherPattern(t *testing.T, pattern string) (*KernelProgram, uint32
 	rule := mustDecode[KernelRule](t, p, KernelRuleBase)
 	return p, rule.TargetPath.Base
 }
+
 func TestCMatcherReferenceParity(t *testing.T) {
 	runner := buildMatcherRunner(t)
 	patterns := []string{"/**", "/usr/*", "/a?/x", "/[a-cx-z]", "/[^a-c]", "/[\\d]", "/工具/**", "/file\\*", "/line?", "/*a*a*a*a*a*", "/**/**/**", "/😀?", "/[α-ω]"}
@@ -85,6 +88,7 @@ func TestCMatcherReferenceParity(t *testing.T) {
 		})
 	}
 }
+
 func TestCMatcherRejectsInvalidOrIncompleteBytes(t *testing.T) {
 	runner := buildMatcherRunner(t)
 	p, key := compileMatcherPattern(t, "/**")
@@ -100,6 +104,7 @@ func TestCMatcherRejectsInvalidOrIncompleteBytes(t *testing.T) {
 		t.Fatal("invalid suffix treated as ordinary mismatch", got)
 	}
 }
+
 func TestCMatcherBoundsAndEpsilonCycles(t *testing.T) {
 	runner := buildMatcherRunner(t)
 	makeEntries := func(pattern KernelPattern, code []KernelInstruction) []Blob {
@@ -202,7 +207,7 @@ char LICENSE[] SEC("license") = "GPL";
 	dir := t.TempDir()
 	cpath := filepath.Join(dir, "matcher.bpf.c")
 	object := filepath.Join(dir, "matcher.bpf.o")
-	if err := os.WriteFile(cpath, []byte(source), 0600); err != nil {
+	if err := os.WriteFile(cpath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output, err := exec.Command(clang, "-target", "bpf", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", cpath, "-o", object).CombinedOutput()

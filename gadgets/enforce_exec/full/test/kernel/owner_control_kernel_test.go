@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -16,10 +17,11 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullruntime"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullruntime"
 )
 
 type ocConfig struct {
@@ -55,7 +57,7 @@ func TestOwnerControlKernel(t *testing.T) {
 	tmp := t.TempDir()
 	header, e := exec.Command("bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c").Output()
 	require.NoError(t, e)
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600))
 	source := os.Getenv("IG_OWNER_CONTROL_BPF_SOURCE")
 	if source == "" {
 		source = "bpf/owner_control_compile.bpf.c"
@@ -115,7 +117,7 @@ func TestOwnerControlKernel(t *testing.T) {
 	slot, gate, e := gates.Allocate()
 	require.NoError(t, e)
 	path := fmt.Sprintf("/sys/fs/cgroup/ig-owner-control-%d", os.Getpid())
-	require.NoError(t, os.Mkdir(path, 0755))
+	require.NoError(t, os.Mkdir(path, 0o755))
 	t.Cleanup(func() { os.Remove(path) })
 	cg, e := os.Open(path)
 	require.NoError(t, e)
@@ -123,7 +125,7 @@ func TestOwnerControlKernel(t *testing.T) {
 	var stat syscall.Stat_t
 	require.NoError(t, syscall.Fstat(int(cg.Fd()), &stat))
 	helper := filepath.Join(tmp, "helper")
-	require.NoError(t, os.WriteFile(helper+".c", []byte(inventoryHelper), 0600))
+	require.NoError(t, os.WriteFile(helper+".c", []byte(inventoryHelper), 0o600))
 	output, e = exec.Command("cc", "-pthread", "-O2", helper+".c", "-o", helper).CombinedOutput()
 	require.NoError(t, e, string(output))
 	process, input, lines := startInventoryHelper(t, helper, "normal", cg)
@@ -135,7 +137,7 @@ func TestOwnerControlKernel(t *testing.T) {
 	require.NoError(t, collection.Maps["eo_configuration"].Freeze())
 	require.NoError(t, collection.Maps["eo_commands"].Put(uint32(0), ocCommand{Nonce: nonce, Operation: 1}))
 	barrier := filepath.Join(path, "barrier")
-	require.NoError(t, os.Mkdir(barrier, 0755))
+	require.NoError(t, os.Mkdir(barrier, 0o755))
 	t.Cleanup(func() { os.Remove(barrier) })
 	health := func() ocHealth {
 		var h ocHealth

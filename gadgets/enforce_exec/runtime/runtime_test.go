@@ -12,9 +12,10 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 
 	execpolicy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
@@ -200,13 +201,15 @@ func TestReadinessSeparatesStartupFromRuntimeErrors(t *testing.T) {
 
 func fullConfig(t *testing.T) Config {
 	t.Helper()
-	program, err := fullpolicy.CompileKernel([]fullpolicy.Policy{{ID: "policy", Revision: "revision", Mode: fullpolicy.Enforce, Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{{Name: "allow-tool", Action: fullpolicy.Allow,
+	program, err := fullpolicy.CompileKernel([]fullpolicy.Policy{{ID: "policy", Revision: "revision", Mode: fullpolicy.Enforce, Default: fullpolicy.Deny, Rules: []fullpolicy.Rule{{
+		Name: "allow-tool", Action: fullpolicy.Allow,
 		Actor:  fullpolicy.Actor{Path: []string{"/usr/**"}, Ancestor: &fullpolicy.Ancestor{Path: []string{"/sbin/init"}, Depth: 3}, UID: []int64{0}, Container: []string{"worker"}},
 		Target: fullpolicy.Target{Path: []string{"/bin/tool"}, Argv: &fullpolicy.Argv{Contains: []string{"--safe"}, Prefix: []string{"tool"}}},
 	}}}}, 7, "worker")
 	require.NoError(t, err)
 	return Config{Full: program, Entries: [execpolicy.KernelMaxRules + 1]execpolicy.KernelEntry{{Generation: 7, Mode: 2}}, InitialBindings: []ContainerIdentity{identity(1)}}
 }
+
 func newFullBindings(t *testing.T, config Config) *Bindings {
 	t.Helper()
 	gc := gadgetcontext.New(context.Background(), "test-full")
@@ -216,6 +219,7 @@ func newFullBindings(t *testing.T, config Config) *Bindings {
 	require.NoError(t, err)
 	return instance.(*Bindings)
 }
+
 func TestFullConfigurationImageGuards(t *testing.T) {
 	for _, tc := range []struct {
 		name, metadata string
@@ -252,6 +256,7 @@ func TestFullConfigurationImageGuards(t *testing.T) {
 	_, err := New().InstantiateDataOperator(gc, nil)
 	require.Error(t, err, "full image cannot silently bypass native enforcement")
 }
+
 func TestFullConfigurationSnapshot(t *testing.T) {
 	config := fullConfig(t)
 	option := WithConfig(config)
@@ -275,6 +280,7 @@ func TestFullConfigurationSnapshot(t *testing.T) {
 	require.Equal(t, expectedName, snapshot.Full.Identities[expectedID])
 	require.NoError(t, fullpolicy.ValidateKernelProgram(snapshot.Full))
 }
+
 func TestFullCapabilityAndHeaderRefusals(t *testing.T) {
 	for _, feature := range []string{"actor-role", "set-role", "actor-image", "target-image"} {
 		t.Run(feature, func(t *testing.T) {
@@ -358,6 +364,7 @@ func (m *fakeImmutableMap) Freeze() error {
 	m.frozen = true
 	return nil
 }
+
 func fullMaps() (*fakeImmutableMap, *fakeImmutableMap, *fakeImmutableMap, *[]string) {
 	events := []string{}
 	makeMap := func(name string, kind ebpf.MapType, key, value, capacity, flags uint32) *fakeImmutableMap {
@@ -365,6 +372,7 @@ func fullMaps() (*fakeImmutableMap, *fakeImmutableMap, *fakeImmutableMap, *[]str
 	}
 	return makeMap("policy", ebpf.Array, 4, 288, execpolicy.KernelMaxRules+1, unix.BPF_F_RDONLY_PROG), makeMap("bindings", ebpf.Hash, 8, 8, execpolicy.KernelMaxBindings, 0), makeMap("full", ebpf.Hash, 4, fullpolicy.KernelBlobSize, fullpolicy.MaxKernelEntries, unix.BPF_F_RDONLY_PROG), &events
 }
+
 func TestFullMapsFreezeBeforeStrictBinding(t *testing.T) {
 	config := fullConfig(t)
 	b := newFullBindings(t, config)
@@ -382,6 +390,7 @@ func TestFullMapsFreezeBeforeStrictBinding(t *testing.T) {
 	require.ErrorContains(t, b.startMaps(policy, members, full, fullFaultMap(), fakeImageMaps()), "already started")
 	require.Equal(t, writes, full.puts, "no full-map updates in place")
 }
+
 func TestFullMapFailuresNeverPublishBindings(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -459,6 +468,7 @@ func TestFullFeatureAdmission(t *testing.T) {
 func fullFaultMap() *fakeImmutableMap {
 	return &fakeImmutableMap{kind: ebpf.Array, keySize: 4, valueSize: 8, capacity: 1, flags: unix.BPF_F_RDONLY, values: map[interface{}]interface{}{}}
 }
+
 func (m *fakeImmutableMap) Lookup(key, out interface{}) error {
 	if m.putErr != nil {
 		return m.putErr
@@ -467,6 +477,7 @@ func (m *fakeImmutableMap) Lookup(key, out interface{}) error {
 	*out.(*uint64) = value
 	return nil
 }
+
 func TestFullOperationalFaultRetainsEnforcement(t *testing.T) {
 	b := newFullBindings(t, fullConfig(t))
 	p, m, f, _ := fullMaps()
@@ -487,6 +498,7 @@ func TestFullOperationalFaultRetainsEnforcement(t *testing.T) {
 	faults.putErr = errors.New("closed handle")
 	require.NotContains(t, b.Status().Error.Error(), "closed handle")
 }
+
 func TestFullFaultMapRequiredBeforeBindings(t *testing.T) {
 	for _, mutate := range []func(*fakeImmutableMap){func(m *fakeImmutableMap) { m.kind = ebpf.Hash }, func(m *fakeImmutableMap) { m.keySize = 8 }, func(m *fakeImmutableMap) { m.valueSize = 4 }, func(m *fakeImmutableMap) { m.capacity = 2 }, func(m *fakeImmutableMap) { m.flags = 0 }, func(m *fakeImmutableMap) { m.putErr = errors.New("lookup failed") }} {
 		b := newFullBindings(t, fullConfig(t))
@@ -510,7 +522,8 @@ func fakeImageMaps() imageMaps {
 func TestImageOriginSnapshotValidation(t *testing.T) {
 	valid := ImageOriginKey{Inode: 42, Major: 8, Minor: 1}
 	for _, snapshot := range []*ImageOriginSnapshot{
-		{Complete: false}, {Complete: true, Keys: []ImageOriginKey{{}}},
+		{Complete: false},
+		{Complete: true, Keys: []ImageOriginKey{{}}},
 		{Complete: true, Keys: []ImageOriginKey{{Inode: 1, Major: 1 << 12}}},
 		{Complete: true, Keys: []ImageOriginKey{{Inode: 1, Minor: 1 << 20}}},
 		{Complete: true, Keys: []ImageOriginKey{valid, valid}},
@@ -551,6 +564,7 @@ func TestImageOriginSnapshotValidation(t *testing.T) {
 		require.NoError(t, validateFullFeatures(c, "path,image"))
 	}
 }
+
 func TestImageMapsAreFrozenBeforeBindings(t *testing.T) {
 	c := fullConfig(t)
 	key := ImageOriginKey{Inode: 1, Major: 8, Minor: 1}
@@ -571,6 +585,7 @@ func TestImageMapsAreFrozenBeforeBindings(t *testing.T) {
 	require.Equal(t, uint32(1), ready.values[uint32(0)])
 	require.Equal(t, []string{"origins:put", "origins:freeze", "origin-ready:put", "origin-ready:freeze", "bindings:put"}, (*events)[len(*events)-5:])
 }
+
 func TestImageMapFailuresPreventBindings(t *testing.T) {
 	for _, mutate := range []func(imageMaps){
 		func(m imageMaps) { m.origins.(*fakeImmutableMap).keySize = 8 }, func(m imageMaps) { m.origins.(*fakeImmutableMap).valueSize = 8 }, func(m imageMaps) { m.origins.(*fakeImmutableMap).capacity-- }, func(m imageMaps) { m.origins.(*fakeImmutableMap).flags = 0 },

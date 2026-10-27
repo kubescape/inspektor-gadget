@@ -609,8 +609,10 @@ func validateFullFeatures(config Config, annotation string) error {
 			{"image", rule.ActorImage != -1 || rule.TargetImage != -1},
 			{"stdin", rule.Stdin != -1},
 			{"fs", rule.FSType.Count > 0},
-			{"uid", rule.UID.Count > 0}, {"argv", rule.ArgContains.Count > 0 || rule.ArgPrefix.Count > 0},
-			{"actor-path", rule.ActorPath.Count > 0}, {"ancestor", rule.AncestorPath.Count > 0},
+			{"uid", rule.UID.Count > 0},
+			{"argv", rule.ArgContains.Count > 0 || rule.ArgPrefix.Count > 0},
+			{"actor-path", rule.ActorPath.Count > 0},
+			{"ancestor", rule.AncestorPath.Count > 0},
 		}
 		for _, feature := range required {
 			if feature.used {
@@ -675,6 +677,7 @@ func (m imageMaps) validate() error {
 	}
 	return nil
 }
+
 func (m imageMaps) populate(snapshot *ImageOriginSnapshot) error {
 	var ready uint32
 	if snapshot != nil {

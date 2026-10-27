@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -41,6 +42,7 @@ func TestPinnedInitIdentityAndClosedDescriptor(t *testing.T) {
 		t.Fatal("non-directory proc file accepted")
 	}
 }
+
 func TestPinnedStatParsing(t *testing.T) {
 	fields := make([]string, 20)
 	for i := range fields {

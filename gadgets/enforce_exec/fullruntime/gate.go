@@ -66,6 +66,7 @@ func NewGateWord(word *uint64) (*Gate, error) {
 	}
 	return &Gate{word: word, memory: &gateMemory{}}, nil
 }
+
 func (g *Gate) load() (uint64, error) {
 	g.memory.mu.RLock()
 	defer g.memory.mu.RUnlock()
@@ -74,6 +75,7 @@ func (g *Gate) load() (uint64, error) {
 	}
 	return atomic.LoadUint64(g.word), nil
 }
+
 func (g *Gate) cas(old, next uint64) (bool, error) {
 	g.memory.mu.RLock()
 	defer g.memory.mu.RUnlock()
@@ -322,6 +324,7 @@ func NewGateMap(m *ebpf.Map) (*GateMap, error) {
 	}
 	return &GateMap{memory: &gateMemory{mapped: mapped}, words: words}, nil
 }
+
 func (m *GateMap) Allocate() (uint32, *Gate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

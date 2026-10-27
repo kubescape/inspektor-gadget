@@ -31,7 +31,7 @@ const (
 // absolute map keys except regex PCs, which are relative to Pattern.CodeBase.
 type Blob [KernelBlobSize]byte
 
-// Header offsets: generation0, policyCount8, ruleBase12, ruleCount16,
+// KernelHeader offsets: generation0, policyCount8, ruleBase12, ruleCount16,
 // containerRef20. Policies always occupy keys1..8; rules begin at9.
 type KernelHeader struct {
 	Generation                                     uint64
@@ -39,7 +39,7 @@ type KernelHeader struct {
 	Padding                                        [264]byte
 }
 
-// Policy offsets: UID0, rootRole8, default16 (0 absent,1 allow,2 deny),
+// KernelPolicy offsets: UID0, rootRole8, default16 (0 absent,1 allow,2 deny),
 // mode20 (1 audit,2 enforce), rootEpoch24. Stable hashes are not generation-local IDs.
 // RootEpoch identifies the UID's first successful activation, not the current
 // revision. A persistent owner retains it across removal/re-addition; staged role
@@ -52,7 +52,7 @@ type KernelPolicy struct {
 }
 type KernelList struct{ Base, Count uint32 }
 
-// Rule offsets: policyIndex0 (zero based), mode4, deny8, actorImage12,
+// KernelRule offsets: policyIndex0 (zero based), mode4, deny8, actorImage12,
 // targetImage16, stdin20, ancestorDepth24, reserved28, setRole32, lists40.
 // Tri-state predicates encode -1 absent,0 false,1 true. Rule mode is resolved
 // against the policy at compile time. SetRole0 means no transition.
@@ -65,7 +65,7 @@ type KernelRule struct {
 	Padding                                                                                        [176]byte
 }
 
-// String bytes are UTF-8, without a terminator in Length; the remaining bytes
+// KernelString bytes are UTF-8, without a terminator in Length; the remaining bytes
 // are zero. The maximum authored length255 leaves an explicit trailing NUL.
 type KernelString struct {
 	Length  uint32
@@ -95,7 +95,7 @@ const (
 	KernelEndText    uint32 = 8
 )
 
-// Instruction offsets: op0,out4,arg8,count12,ranges16. Arg is an alternate PC
+// KernelInstruction offsets: op0,out4,arg8,count12,ranges16. Arg is an alternate PC
 // for Alt, an EmptyWidth mask for EmptyWidth, and zero otherwise. Count is the
 // number of inclusive rune pairs (not the number of endpoints).
 type KernelInstruction struct {
@@ -129,6 +129,7 @@ func Decode[T any](blob Blob) (T, error) {
 	err := binary.Read(bytes.NewReader(blob[:]), binary.LittleEndian, &result)
 	return result, err
 }
+
 func encode(value any) (Blob, error) {
 	var result Blob
 	if binary.Size(value) != KernelBlobSize {
@@ -141,6 +142,7 @@ func encode(value any) (Blob, error) {
 	copy(result[:], b.Bytes())
 	return result, nil
 }
+
 func stableHash(value string) uint64 {
 	sum := sha256.Sum256([]byte(value))
 	return binary.LittleEndian.Uint64(sum[:8])
@@ -328,12 +330,14 @@ func compileKernel(policies []Policy, generation uint64, container string, hash 
 	result.Entries = c.entries
 	return result, nil
 }
+
 func kernelMode(mode Mode) uint32 {
 	if mode == Enforce {
 		return 2
 	}
 	return 1
 }
+
 func tri(value *bool) int32 {
 	if value == nil {
 		return -1
@@ -343,6 +347,7 @@ func tri(value *bool) int32 {
 	}
 	return 0
 }
+
 func (c *kernelCompiler) identifier(value string) (uint64, error) {
 	id := c.hash(value)
 	if id == 0 {
@@ -354,6 +359,7 @@ func (c *kernelCompiler) identifier(value string) (uint64, error) {
 	c.names[id] = value
 	return id, nil
 }
+
 func (c *kernelCompiler) reserve(count int) (KernelList, error) {
 	if count == 0 {
 		return KernelList{}, nil
@@ -365,6 +371,7 @@ func (c *kernelCompiler) reserve(count int) (KernelList, error) {
 	c.entries = append(c.entries, make([]Blob, count)...)
 	return list, nil
 }
+
 func (c *kernelCompiler) put(index uint32, value any) error {
 	if int(index) >= len(c.entries) {
 		return fmt.Errorf("entry index out of bounds")
@@ -376,6 +383,7 @@ func (c *kernelCompiler) put(index uint32, value any) error {
 	c.entries[index] = blob
 	return nil
 }
+
 func (c *kernelCompiler) strings(values []string) (KernelList, error) {
 	list, err := c.reserve(len(values))
 	if err != nil {
@@ -393,6 +401,7 @@ func (c *kernelCompiler) strings(values []string) (KernelList, error) {
 	}
 	return list, nil
 }
+
 func (c *kernelCompiler) values(values []uint64) (KernelList, error) {
 	list, err := c.reserve(len(values))
 	if err != nil {
@@ -405,6 +414,7 @@ func (c *kernelCompiler) values(values []uint64) (KernelList, error) {
 	}
 	return list, nil
 }
+
 func (c *kernelCompiler) pathList(patterns []*regexp.Regexp) (KernelList, error) {
 	list, err := c.reserve(len(patterns))
 	if err != nil {
@@ -425,6 +435,7 @@ func (c *kernelCompiler) pathList(patterns []*regexp.Regexp) (KernelList, error)
 	}
 	return list, nil
 }
+
 func (c *kernelCompiler) regex(expression string) (KernelPattern, error) {
 	re, err := syntax.Parse(expression, syntax.Perl)
 	if err != nil {
@@ -456,6 +467,7 @@ func (c *kernelCompiler) regex(expression string) (KernelPattern, error) {
 	c.instructions += len(program.Inst)
 	return KernelPattern{CodeBase: code.Base, Start: uint32(program.Start), Count: code.Count}, nil
 }
+
 func packInstruction(in syntax.Inst) (KernelInstruction, error) {
 	out := KernelInstruction{Out: in.Out}
 	var ranges []rune

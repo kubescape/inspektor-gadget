@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -58,7 +59,7 @@ type publicationAttempt struct {
 	committed  bool
 }
 
-// prepared is required on first startup: Begin must close admission and stage
+// NewPublisher requires prepared on first startup: Begin must close admission and stage
 // the first program BEFORE NewOwnerControl freezes/activates the configuration.
 // This prevents a gap with active membership but no immutable program. Pass nil
 // only for an already published owner with no pending transaction.
@@ -114,6 +115,7 @@ func (p *Publisher) Publish(ctx context.Context, program *fullpolicy.KernelProgr
 	}
 	return result, err
 }
+
 func (p *Publisher) result() PublicationResult {
 	generation := p.slot.Generation()
 	r := PublicationResult{Generation: generation, Committed: p.pending != nil && p.pending.committed}
@@ -121,10 +123,12 @@ func (p *Publisher) result() PublicationResult {
 	r.Admitting = err == nil && !closed && count <= MaxAdmittedExecs && !p.retired
 	return r
 }
+
 func (p *Publisher) call(ctx context.Context, operation uint32, mask uint32) error {
 	_, err := p.control.Call(ctx, ControlCommand{Operation: operation, Generation: p.pending.generation, NewUIDMask: mask})
 	return err
 }
+
 func (p *Publisher) identity(ctx context.Context) error {
 	if err := p.verify(ctx); err != nil {
 		return err
@@ -138,6 +142,7 @@ func (p *Publisher) identity(ctx context.Context) error {
 	}
 	return nil
 }
+
 func (p *Publisher) healthy(generation uint64) error {
 	h, err := p.control.Health()
 	if err != nil {
@@ -169,6 +174,7 @@ func (p *Publisher) Resume(ctx context.Context) (PublicationResult, error) {
 	}
 	return p.resume(ctx)
 }
+
 func (p *Publisher) resume(ctx context.Context) (PublicationResult, error) {
 	a := p.pending
 	if err := ctx.Err(); err != nil {
@@ -279,6 +285,7 @@ func (p *Publisher) Abort(ctx context.Context) error {
 	defer p.mu.Unlock()
 	return p.abort(ctx)
 }
+
 func (p *Publisher) abort(ctx context.Context) error {
 	a := p.pending
 	if a == nil {

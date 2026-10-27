@@ -1,20 +1,23 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/cilium/ebpf"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
+
+	"github.com/spf13/viper"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
-	"github.com/spf13/viper"
 )
 
 func ownerTestConfig(t *testing.T) OwnerConfig {
@@ -28,6 +31,7 @@ func ownerTestConfig(t *testing.T) OwnerConfig {
 		return nil, errors.New("unexpected acquire")
 	}}
 }
+
 func TestOwnerReservationsAndImmutableInput(t *testing.T) {
 	budget := testBudget(t, 2)
 	config := ownerTestConfig(t)
@@ -72,6 +76,7 @@ func TestOwnerReservationsAndImmutableInput(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestFreshOwnerRejectsPastEpochAndMissingBudget(t *testing.T) {
 	config := ownerTestConfig(t)
 	if _, err := NewOwner(config, nil); err == nil {
@@ -90,6 +95,7 @@ func TestFreshOwnerRejectsPastEpochAndMissingBudget(t *testing.T) {
 		t.Fatal("invalid program consumed reservation")
 	}
 }
+
 func TestOwnerAdmissionBeforeAnyAcquire(t *testing.T) {
 	budget := testBudget(t, 1)
 	owner, err := NewOwner(ownerTestConfig(t), budget)
@@ -120,6 +126,7 @@ func TestOwnerAdmissionBeforeAnyAcquire(t *testing.T) {
 		t.Fatal(instance, err)
 	}
 }
+
 func TestOwnerResumeTracksCommittedCandidate(t *testing.T) {
 	publisher, control, _, _ := publicationFixture(t)
 	candidate := slotProgram(t, publisher.slot, 2, "uid")
@@ -140,6 +147,7 @@ func TestOwnerResumeTracksCommittedCandidate(t *testing.T) {
 		t.Fatal("refusal changed native active provenance", result, err)
 	}
 }
+
 func TestOwnerDrainTimeoutRetainsUsableLastGood(t *testing.T) {
 	publisher, _, _, _ := publicationFixture(t)
 	if _, err := publisher.Publish(t.Context(), slotProgram(t, publisher.slot, 1, "uid")); err != nil {
@@ -168,6 +176,7 @@ func TestOwnerDrainTimeoutRetainsUsableLastGood(t *testing.T) {
 		t.Fatal("retired owner permits further publication")
 	}
 }
+
 func TestOwnerRequiresEveryLiveHook(t *testing.T) {
 	gc := gadgetcontext.New(t.Context(), "trusted:test")
 	defer gc.Cancel()
@@ -203,15 +212,15 @@ func TestOwnerCheckRetriesFinalizedCleanupWithoutRepublishing(t *testing.T) {
 	}
 	owner := &Owner{publisher: publisher, slot: publisher.slot, gate: publisher.slot.gate, prepared: true, current: initial}
 	candidate := slotProgram(t, publisher.slot, 2, "uid", "new")
-	outer.deleteErr = slotFailure
+	outer.deleteErr = errSlotFailure
 	result, err := owner.Update(t.Context(), candidate)
-	if !errors.Is(err, slotFailure) || !result.Committed || !result.Admitting || owner.pending != nil || !owner.slot.staging {
+	if !errors.Is(err, errSlotFailure) || !result.Committed || !result.Admitting || owner.pending != nil || !owner.slot.staging {
 		t.Fatal("expected finalized commit with auxiliary cleanup pending", result, err)
 	}
 	generation, attempted, accepted := owner.Generation(), owner.slot.attempted, owner.Epochs()
 	active := owner.current
 	slotPuts, epochPuts, deletes := outer.puts, epochs.puts, outer.deletes
-	if err = owner.Check(t.Context()); !errors.Is(err, slotFailure) || outer.deletes != deletes+1 {
+	if err = owner.Check(t.Context()); !errors.Is(err, errSlotFailure) || outer.deletes != deletes+1 {
 		t.Fatal("same-generation health did not retry cleanup", err, outer.deletes)
 	}
 	canceled, cancel := context.WithCancel(t.Context())
@@ -222,7 +231,7 @@ func TestOwnerCheckRetriesFinalizedCleanupWithoutRepublishing(t *testing.T) {
 	outer.deleteErr = nil
 	// This unit owner has no native identity pins: cleanup success is not proof
 	// of runtime health. Check must continue to attestation and still refuse Ready.
-	if err = owner.Check(t.Context()); err == nil || errors.Is(err, slotFailure) || owner.slot.staging || outer.deletes != deletes+2 {
+	if err = owner.Check(t.Context()); err == nil || errors.Is(err, errSlotFailure) || owner.slot.staging || outer.deletes != deletes+2 {
 		t.Fatal("cleanup recovery skipped attestation or retained staging", err)
 	}
 	if err = owner.Check(t.Context()); err == nil || outer.deletes != deletes+2 {
@@ -383,10 +392,10 @@ func TestOwnerAbortPendingPreservesCommittedHistory(t *testing.T) {
 			}
 			control.hook, control.fail = nil, 0
 			if cleanupFailure {
-				outer.deleteErr = slotFailure
+				outer.deleteErr = errSlotFailure
 			}
 			err := owner.AbortPending(t.Context())
-			if (cleanupFailure && !errors.Is(err, slotFailure)) || (!cleanupFailure && err != nil) {
+			if (cleanupFailure && !errors.Is(err, errSlotFailure)) || (!cleanupFailure && err != nil) {
 				t.Fatal("unexpected abort result", err)
 			}
 			if owner.pending != nil || publisher.pending != nil || owner.Generation() != 1 || owner.current != initial || !reflect.DeepEqual(owner.Epochs(), accepted) || outer.puts != puts || epochs.puts != epochPuts || epochs.deletes != 0 {

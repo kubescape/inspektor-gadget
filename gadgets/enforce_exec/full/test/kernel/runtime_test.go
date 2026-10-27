@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -18,6 +19,14 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	specs "github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+	"gopkg.in/yaml.v3"
+	"oras.land/oras-go/v2/content"
+	"oras.land/oras-go/v2/content/memory"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	execpolicy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
 	execruntime "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/runtime"
@@ -30,13 +39,6 @@ import (
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/simple"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/runtime/local"
-	specs "github.com/opencontainers/image-spec/specs-go"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
-	"gopkg.in/yaml.v3"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
 )
 
 // Only explicitly supplied, locally built object/metadata bytes enter this
@@ -103,7 +105,7 @@ func testFullExecRuntime(t *testing.T, imageCapability bool) {
 	manager, err := instancemanager.New(rt)
 	require.NoError(t, err)
 	cgpath := fmt.Sprintf("/sys/fs/cgroup/ig-full-native-%d", os.Getpid())
-	require.NoError(t, os.Mkdir(cgpath, 0755))
+	require.NoError(t, os.Mkdir(cgpath, 0o755))
 	defer os.Remove(cgpath)
 	cg, err := os.Open(cgpath)
 	require.NoError(t, err)
@@ -116,7 +118,7 @@ func testFullExecRuntime(t *testing.T, imageCapability bool) {
 	binary, err := os.ReadFile("/usr/bin/true")
 	require.NoError(t, err)
 	for _, p := range []string{first, second} {
-		require.NoError(t, os.WriteFile(p, binary, 0755))
+		require.NoError(t, os.WriteFile(p, binary, 0o755))
 	}
 	run := func(path string, args ...string) error {
 		cmd := exec.Command(path, args...)

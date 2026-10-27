@@ -45,13 +45,19 @@ func TestKernelLayouts(t *testing.T) {
 		t.Fatal("wrong encode layout accepted")
 	}
 }
+
 func kernelFixture() []Policy {
 	yes, no := true, false
-	return []Policy{{ID: "policy-z", Revision: "r2", Mode: Audit, RootRole: "runner", Rules: []Rule{{Name: "all-fields", Origin: "test-source", Action: Allow, Mode: Enforce,
-		Actor:  Actor{Path: []string{"/usr/**"}, FromImage: &no, Ancestor: &Ancestor{Path: []string{"/sbin/init"}, Depth: 3}, Role: []string{"agent", "runner"}, UID: []int64{0, 4294967295}, Container: []string{"worker"}},
-		Target: Target{Path: []string{"/bin/t?ol"}, FromImage: &yes, FSType: []string{"overlay"}, Argv: &Argv{Contains: []string{"--safe"}, Prefix: []string{"tool", "run"}, StdinIsPipe: &no}, SetRole: "worker"}}}},
-		{ID: "policy-a", Revision: "r1", Mode: Enforce, Default: Deny, Rules: []Rule{{Name: "deny", Action: Deny, Target: Target{Path: []string{"/blocked"}}}}}}
+	return []Policy{
+		{ID: "policy-z", Revision: "r2", Mode: Audit, RootRole: "runner", Rules: []Rule{{
+			Name: "all-fields", Origin: "test-source", Action: Allow, Mode: Enforce,
+			Actor:  Actor{Path: []string{"/usr/**"}, FromImage: &no, Ancestor: &Ancestor{Path: []string{"/sbin/init"}, Depth: 3}, Role: []string{"agent", "runner"}, UID: []int64{0, 4294967295}, Container: []string{"worker"}},
+			Target: Target{Path: []string{"/bin/t?ol"}, FromImage: &yes, FSType: []string{"overlay"}, Argv: &Argv{Contains: []string{"--safe"}, Prefix: []string{"tool", "run"}, StdinIsPipe: &no}, SetRole: "worker"},
+		}}},
+		{ID: "policy-a", Revision: "r1", Mode: Enforce, Default: Deny, Rules: []Rule{{Name: "deny", Action: Deny, Target: Target{Path: []string{"/blocked"}}}}},
+	}
 }
+
 func mustDecode[T any](t *testing.T, p *KernelProgram, key uint32) T {
 	t.Helper()
 	if int(key) >= len(p.Entries) {
@@ -63,6 +69,7 @@ func mustDecode[T any](t *testing.T, p *KernelProgram, key uint32) T {
 	}
 	return out
 }
+
 func TestCompileKernelFullVocabulary(t *testing.T) {
 	program, err := CompileKernel(kernelFixture(), 77, "worker")
 	if err != nil {
@@ -113,6 +120,7 @@ func TestCompileKernelFullVocabulary(t *testing.T) {
 		t.Fatal("nondeterministic compilation", err)
 	}
 }
+
 func TestKernelStableRolesAcrossGenerationsAndPolicyOrder(t *testing.T) {
 	policies := kernelFixture()
 	a, err := CompileKernel(policies, 1, "worker")
@@ -141,6 +149,7 @@ func TestKernelStableRolesAcrossGenerationsAndPolicyOrder(t *testing.T) {
 		t.Fatal("reserved zero ID accepted")
 	}
 }
+
 func TestKernelBoundariesAndNoPartialResult(t *testing.T) {
 	p := []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "allow", Action: Allow}}}}
 	for i := 0; i < 128; i++ {
@@ -188,6 +197,7 @@ func TestKernelBoundariesAndNoPartialResult(t *testing.T) {
 		t.Fatal("entry budget not enforced", err)
 	}
 }
+
 func TestKernelPatternDedupAndRangeLimit(t *testing.T) {
 	p := []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "r", Action: Deny, Actor: Actor{Path: []string{"/same"}}, Target: Target{Path: []string{"/same"}}}}}}
 	compiled, err := CompileKernel(p, 1, "worker")
@@ -270,6 +280,7 @@ func runKernelPattern(t *testing.T, program *KernelProgram, pattern KernelPatter
 	_, matched := closure(states, len(input))
 	return matched
 }
+
 func TestPackedRegexParity(t *testing.T) {
 	patterns := []string{"/**", "/usr/*", "/a?/x", "/[a-cx-z]", "/[^a-c]", "/[\\d]", "/工具/**", "/file\\*", "/line?"}
 	observations := []string{"/", "/usr/tool", "/usr/tool/sub", "/ab/x", "/a/x", "/b", "/z", "/d", "/5", "/工具/甲", "/file*", "/file1", "/line\n", "prefix/usr/tool"}

@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -16,11 +17,14 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-type erTestRow struct{ UID, Epoch, Role uint64 }
-type erTestState struct {
-	Version uint64
-	Rows    [16]erTestRow
-}
+type (
+	erTestRow   struct{ UID, Epoch, Role uint64 }
+	erTestState struct {
+		Version uint64
+		Rows    [16]erTestRow
+	}
+)
+
 type erTestWork struct {
 	Version, Authority uint64
 	Error              int32

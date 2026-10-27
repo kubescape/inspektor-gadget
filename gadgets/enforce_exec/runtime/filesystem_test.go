@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package runtime
 
 import (
@@ -12,8 +13,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	"github.com/stretchr/testify/require"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
 func fsConfig(t *testing.T) Config {
@@ -23,6 +25,7 @@ func fsConfig(t *testing.T) Config {
 	c.Full = p
 	return c
 }
+
 func TestFilesystemTrackerBeforeAnyBinding(t *testing.T) {
 	for _, probeErr := range []error{nil, errors.New("tracker absent")} {
 		b := newFullBindings(t, fsConfig(t))
@@ -55,6 +58,7 @@ func TestFilesystemTrackerBeforeAnyBinding(t *testing.T) {
 		require.NoError(t, b.Stop(nil))
 	}
 }
+
 func TestFilesystemProbeMissingAndBudgetFault(t *testing.T) {
 	b := newFullBindings(t, fsConfig(t))
 	p, m, f, _ := fullMaps()
@@ -80,7 +84,7 @@ func TestFilesystemTrackerKernel(t *testing.T) {
 	tmp := t.TempDir()
 	header, err := exec.Command("bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c").Output()
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600))
 	source := os.Getenv("IG_EXEC_FS_BPF_SOURCE")
 	if source == "" {
 		source = "../full/test/kernel/bpf/filesystem.bpf.c"

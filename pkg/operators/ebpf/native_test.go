@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package ebpfoperator
 
 import (
@@ -9,8 +10,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
-	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	"github.com/spf13/viper"
+
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
 func TestNativeManifestDoesNotRetainMutableSpecs(t *testing.T) {
@@ -28,6 +30,7 @@ func TestNativeManifestDoesNotRetainMutableSpecs(t *testing.T) {
 		t.Fatal("manifest not independent or override ignored")
 	}
 }
+
 func TestNativeAttachmentGuard(t *testing.T) {
 	var err error
 	info := &link.Info{Program: 7}
@@ -48,6 +51,7 @@ func TestNativeAttachmentGuard(t *testing.T) {
 		t.Fatal("closed link not detected")
 	}
 }
+
 func TestNativeReceiptUnpublishDoesNotClearOtherOwner(t *testing.T) {
 	gc := newResolverGadgetCtx(t, nil)
 	mine, other := new(operators.NativeAttachment), new(operators.NativeAttachment)

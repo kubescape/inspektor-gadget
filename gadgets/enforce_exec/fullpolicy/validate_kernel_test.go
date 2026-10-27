@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullpolicy
 
 import (
@@ -17,6 +18,7 @@ func cloneKernel(p *KernelProgram) *KernelProgram {
 	}
 	return &q
 }
+
 func mutateEntry[T any](t *testing.T, p *KernelProgram, key uint32, fn func(*T)) {
 	t.Helper()
 	v, err := Decode[T](p.Entries[key])
@@ -29,6 +31,7 @@ func mutateEntry[T any](t *testing.T, p *KernelProgram, key uint32, fn func(*T))
 		t.Fatal(err)
 	}
 }
+
 func TestValidateKernelProgram(t *testing.T) {
 	p, err := CompileKernel(kernelFixture(), 42, "worker")
 	if err != nil {

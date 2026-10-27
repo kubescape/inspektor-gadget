@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -52,7 +53,7 @@ SEC("syscall") int fixture_stage(void*unused){
 }
 char LICENSE[] SEC("license")="GPL";
 `
-	if err = os.WriteFile(source, []byte(content), 0600); err != nil {
+	if err = os.WriteFile(source, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"-target", "bpf", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-missing-declarations", "-Wno-unused-parameter", "-Wno-unused-function", "-I", filepath.Dir(vmlinux), "-I", filepath.Join(root, "fullpolicy/bpf"), "-I", filepath.Join(root, "full"), "-c", source, "-o", filepath.Join(dir, "owner_roles.o")}

@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullpolicy
 
 import (
@@ -42,6 +43,7 @@ func TestRoleEpochsRetainSuccessfulUIDsOnly(t *testing.T) {
 		t.Fatal("failed attempt established root")
 	}
 }
+
 func TestRoleEpochValidation(t *testing.T) {
 	policies := []Policy{{ID: "uid", Revision: "revision", Mode: Enforce}}
 	for _, bad := range []uint64{0, 11, UnknownRoleEpoch} {

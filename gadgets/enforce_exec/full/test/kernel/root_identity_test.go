@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -47,7 +48,7 @@ func TestRootIdentityKernel(t *testing.T) {
 	}
 	header, e := exec.Command("bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c").Output()
 	require.NoError(t, e)
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600))
 	object := filepath.Join(tmp, "root.bpf.o")
 	out, e := exec.Command("clang", "-target", "bpf", "-O2", "-g", "-D__TARGET_ARCH_x86", "-I"+tmp, "-c", source, "-o", object).CombinedOutput()
 	require.NoError(t, e, string(out))
@@ -75,7 +76,7 @@ func TestRootIdentityKernel(t *testing.T) {
 	var opaque [16]byte
 	require.ErrorIs(t, collection.Maps["anchor"].Lookup(uint32(0), &opaque), syscall.EPERM)
 	path := fmt.Sprintf("/sys/fs/cgroup/ig-root-identity-%d", os.Getpid())
-	require.NoError(t, os.Mkdir(path, 0755))
+	require.NoError(t, os.Mkdir(path, 0o755))
 	t.Cleanup(func() { os.Remove(path) })
 	cg, e := os.Open(path)
 	require.NoError(t, e)
@@ -91,7 +92,7 @@ func TestRootIdentityKernel(t *testing.T) {
 		return r
 	}
 	helper := filepath.Join(tmp, "root-helper")
-	require.NoError(t, os.WriteFile(helper+".c", []byte(rootIdentityHelper), 0600))
+	require.NoError(t, os.WriteFile(helper+".c", []byte(rootIdentityHelper), 0o600))
 	out, e = exec.Command("cc", "-pthread", "-O2", helper+".c", "-o", helper).CombinedOutput()
 	require.NoError(t, e, string(out))
 	process, input, lines := startInventoryHelper(t, helper, "normal", cg)
@@ -226,8 +227,8 @@ func TestRootIdentityKernel(t *testing.T) {
 	output, e := child.CombinedOutput()
 	require.NoError(t, e, string(output))
 	t.Log(string(output))
-
 }
+
 func rootProcStart(t *testing.T, proc *os.File) string {
 	t.Helper()
 	fd, e := unix.Openat(int(proc.Fd()), "stat", unix.O_RDONLY|unix.O_CLOEXEC, 0)

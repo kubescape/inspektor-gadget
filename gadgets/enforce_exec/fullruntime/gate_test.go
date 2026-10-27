@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -25,6 +26,7 @@ func testGate(t *testing.T) (*Gate, *uint64) {
 	}
 	return g, word
 }
+
 func requireState(t *testing.T, g *Gate, closed bool, count uint64) {
 	t.Helper()
 	c, n, err := g.State()
@@ -32,6 +34,7 @@ func requireState(t *testing.T, g *Gate, closed bool, count uint64) {
 		t.Fatalf("state=(%v,%d,%v), want(%v,%d)", c, n, err, closed, count)
 	}
 }
+
 func TestGateAdmissionAndPublication(t *testing.T) {
 	g, _ := testGate(t)
 	if err := g.Enter(); err != nil {
@@ -104,6 +107,7 @@ func TestGateAdmissionAndPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestGateTimeoutPreservesAdmission(t *testing.T) {
 	g, _ := testGate(t)
 	if err := g.Enter(); err != nil {
@@ -133,6 +137,7 @@ func TestGateTimeoutPreservesAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestGateLimitsAndForeignClosure(t *testing.T) {
 	g, word := testGate(t)
 	if err := g.Leave(); !errors.Is(err, ErrGateUnderflow) {
@@ -171,6 +176,7 @@ func TestGateLimitsAndForeignClosure(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestGateConstructor(t *testing.T) {
 	if _, err := NewGateWord(nil); err == nil {
 		t.Fatal("nil accepted")
@@ -189,6 +195,7 @@ func TestGateConstructor(t *testing.T) {
 		t.Fatal("nil map accepted")
 	}
 }
+
 func TestGateConcurrentAdmission(t *testing.T) {
 	g, _ := testGate(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -255,9 +262,11 @@ func TestGateConcurrentAdmission(t *testing.T) {
 		t.Fatalf("lost task commits: %d", taskWrites.Load())
 	}
 }
+
 func newHeapGateMap() *GateMap {
 	return &GateMap{memory: &gateMemory{}, words: make([]uint64, MaxLifetimeSlots)}
 }
+
 func TestGateSlotBudgetsAndRetirement(t *testing.T) {
 	m := newHeapGateMap()
 	gates := make([]*Gate, 0, MaxConcurrentBindings)
@@ -318,6 +327,7 @@ func TestGateSlotBudgetsAndRetirement(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
 func TestGateBPFCompiles(t *testing.T) {
 	clang, err := exec.LookPath("clang")
 	if err != nil {
@@ -431,7 +441,7 @@ int main(void){
  assert(word==(FG_CLOSED|(FG_MAX_ADMITTED+1ULL)));
  return 0;
 }
-`), 0600); err != nil {
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command(cc, "-O2", "-pthread", "-I"+root, source, "-o", binary).CombinedOutput(); err != nil {

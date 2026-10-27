@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -37,7 +38,7 @@ func TestStdinKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BTF: %v %s", err, diagnostic.String())
 	}
-	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_STDIN_BPF_SOURCE")
@@ -68,7 +69,7 @@ func TestStdinKernel(t *testing.T) {
 	}
 	defer attached.Close()
 	cgroup := fmt.Sprintf("/sys/fs/cgroup/ig-stdin-%d", os.Getpid())
-	if err = os.Mkdir(cgroup, 0755); err != nil {
+	if err = os.Mkdir(cgroup, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(cgroup)
@@ -86,7 +87,7 @@ func TestStdinKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(target, binary, 0755); err != nil {
+	if err = os.WriteFile(target, binary, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	targetEntry := struct {
@@ -99,7 +100,7 @@ func TestStdinKernel(t *testing.T) {
 	}
 	helperSource := filepath.Join(tmp, "helper.c")
 	helper := filepath.Join(tmp, "helper")
-	if err = os.WriteFile(helperSource, []byte(stdinHelper), 0600); err != nil {
+	if err = os.WriteFile(helperSource, []byte(stdinHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err = exec.Command("cc", "-O2", "-pthread", helperSource, "-o", helper).CombinedOutput(); err != nil {
@@ -117,7 +118,7 @@ func TestStdinKernel(t *testing.T) {
 	}
 	defer regular.Close()
 	fifoPath := filepath.Join(tmp, "fifo")
-	if err = syscall.Mkfifo(fifoPath, 0600); err != nil {
+	if err = syscall.Mkfifo(fifoPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fifo, err := os.OpenFile(fifoPath, os.O_RDWR|syscall.O_NONBLOCK, 0)

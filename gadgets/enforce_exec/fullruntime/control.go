@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -13,13 +14,17 @@ import (
 	"sync/atomic"
 
 	"github.com/cilium/ebpf"
-	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
-const OwnerABI = 2
-const OwnerTaskLimit = 4096
-const pidfdThread = 0x80 // Linux PIDFD_THREAD; older x/sys versions omit the name.
+const (
+	OwnerABI       = 2
+	OwnerTaskLimit = 4096
+	pidfdThread    = 0x80 // Linux PIDFD_THREAD; older x/sys versions omit the name.
+)
+
 const (
 	OwnerInventory uint32 = iota + 1
 	OwnerRootAuthorize
@@ -88,6 +93,7 @@ func ControlResourcesFromContext(gc operators.GadgetContext) (ControlResources, 
 	}
 	return r, nil
 }
+
 func (r ControlResources) validate() error {
 	for _, row := range []struct {
 		name                   string
@@ -121,12 +127,15 @@ func (r ControlResources) validate() error {
 
 var ErrControlClosed = errors.New("owner command thread closed")
 
-type controlFailure struct{ err error }
-type controlJob struct {
-	ctx    context.Context
-	run    func() error
-	result chan error
-}
+type (
+	controlFailure struct{ err error }
+	controlJob     struct {
+		ctx    context.Context
+		run    func() error
+		result chan error
+	}
+)
+
 type controlThread struct {
 	jobs       chan controlJob
 	stop, done chan struct{}
@@ -143,6 +152,7 @@ func safeControlCall(fn func() error) (err error, panicked bool) {
 	}()
 	return fn(), false
 }
+
 func startControlThread(setup func() error) (*controlThread, error) {
 	w := &controlThread{jobs: make(chan controlJob), stop: make(chan struct{}), done: make(chan struct{})}
 	ready := make(chan error, 1)
@@ -183,12 +193,14 @@ func startControlThread(setup func() error) (*controlThread, error) {
 	}
 	return w, nil
 }
+
 func (w *controlThread) unavailable() error {
 	if failed := w.failure.Load(); failed != nil {
 		return failed.err
 	}
 	return ErrControlClosed
 }
+
 func (w *controlThread) do(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -208,6 +220,7 @@ func (w *controlThread) do(ctx context.Context, fn func() error) error {
 	err := <-job.result
 	return errors.Join(err, ctx.Err())
 }
+
 func (w *controlThread) close() error {
 	w.once.Do(func() { close(w.stop) })
 	<-w.done
@@ -293,11 +306,13 @@ func NewOwnerControl(ctx context.Context, cfg ControlConfig, r ControlResources,
 	}
 	return c, nil
 }
+
 func (c *OwnerControl) Health() (ControlHealth, error) {
 	var h ControlHealth
 	err := c.resources.Health.Lookup(uint32(0), &h)
 	return h, err
 }
+
 func (c *OwnerControl) Phase() (ControlPhase, error) {
 	var p ControlPhase
 	err := c.resources.Phase.Lookup(uint32(0), &p)
@@ -332,6 +347,7 @@ func (c *OwnerControl) Call(ctx context.Context, command ControlCommand) (Contro
 	})
 	return h, err
 }
+
 func (c *OwnerControl) Rows(count uint32) ([]ControlRow, error) {
 	if count > OwnerTaskLimit {
 		return nil, fmt.Errorf("invalid owner inventory count")
@@ -399,6 +415,7 @@ func (c *OwnerControl) ArmMovement(ctx context.Context, controlRoot string) erro
 		return nil
 	})
 }
+
 func (c *OwnerControl) Close() error {
 	if c == nil || c.thread == nil {
 		return nil
@@ -406,7 +423,7 @@ func (c *OwnerControl) Close() error {
 	return c.thread.close()
 }
 
-// The caller owns this duplicate; retain it until root-token invalidation and
+// DuplicateProcPin returns a caller-owned duplicate; retain it until root-token invalidation and
 // confirmed hook teardown, even if startup fails after partial initialization.
 func DuplicateProcPin(file *os.File) (*os.File, error) {
 	if file == nil {

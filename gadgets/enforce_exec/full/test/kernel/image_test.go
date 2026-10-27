@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -39,7 +40,7 @@ func TestImageOriginKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BTF: %v %s", err, diagnostic.String())
 	}
-	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_IMAGE_BPF_SOURCE")
@@ -70,7 +71,7 @@ func TestImageOriginKernel(t *testing.T) {
 	}
 	defer attached.Close()
 	cgroup := fmt.Sprintf("/sys/fs/cgroup/ig-image-%d", os.Getpid())
-	if err = os.Mkdir(cgroup, 0755); err != nil {
+	if err = os.Mkdir(cgroup, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(cgroup)
@@ -88,7 +89,7 @@ func TestImageOriginKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	helperSource, helper := filepath.Join(tmp, "helper.c"), filepath.Join(tmp, "helper")
-	if err = os.WriteFile(helperSource, []byte(imageHelper), 0600); err != nil {
+	if err = os.WriteFile(helperSource, []byte(imageHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("cc", "-O2", helperSource, "-o", helper).CombinedOutput(); err != nil {
@@ -99,14 +100,14 @@ func TestImageOriginKernel(t *testing.T) {
 			root := filepath.Join(tmp, metacopy)
 			lower, upper, work, merged := filepath.Join(root, "lower"), filepath.Join(root, "upper"), filepath.Join(root, "work"), filepath.Join(root, "merged")
 			for _, dir := range []string{lower, upper, work, merged} {
-				if err := os.MkdirAll(dir, 0755); err != nil {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, name := range []string{"untouched", "copy", "metadata", "fd", "before", "after", "writer"} {
-				mode := os.FileMode(0755)
+				mode := os.FileMode(0o755)
 				if name == "metadata" {
-					mode = 0644
+					mode = 0o644
 				}
 				if err := os.WriteFile(filepath.Join(lower, name), binary, mode); err != nil {
 					t.Fatal(err)
@@ -220,7 +221,7 @@ func TestImageOriginKernel(t *testing.T) {
 					}
 					// chmod can copy up metadata (or the full identical lower
 					// contents with metacopy off) while open_exec owns denywrite.
-					mutationErr := os.Chmod(target, 0700)
+					mutationErr := os.Chmod(target, 0o700)
 					writer, writeErr := os.OpenFile(target, os.O_WRONLY, 0)
 					if writer != nil {
 						writer.Close()
@@ -286,16 +287,16 @@ func TestImageOriginKernel(t *testing.T) {
 				t.Logf("%s/%s bound=%v origin=%d exit=%d", name, mode, bound, result.Value, exit)
 			}
 			run("untouched", "plain", 1, true)
-			if err := os.WriteFile(filepath.Join(merged, "created"), binary, 0755); err != nil {
+			if err := os.WriteFile(filepath.Join(merged, "created"), binary, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			run("created", "plain", 0, true)
 			run("created", "plain", 0, false)
-			if err := os.WriteFile(filepath.Join(merged, "copy"), binary, 0755); err != nil {
+			if err := os.WriteFile(filepath.Join(merged, "copy"), binary, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			run("copy", "plain", 0, true)
-			if err := os.Chmod(filepath.Join(merged, "metadata"), 0755); err != nil {
+			if err := os.Chmod(filepath.Join(merged, "metadata"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if metacopy == "on" {
@@ -307,7 +308,7 @@ func TestImageOriginKernel(t *testing.T) {
 			} else {
 				run("metadata", "plain", 0, true)
 			}
-			if err := os.WriteFile(filepath.Join(merged, "metadata"), binary, 0755); err != nil {
+			if err := os.WriteFile(filepath.Join(merged, "metadata"), binary, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			run("metadata", "plain", 0, true)

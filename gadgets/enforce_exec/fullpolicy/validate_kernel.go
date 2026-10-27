@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullpolicy
 
 import (
@@ -134,6 +135,7 @@ func ValidateKernelProgram(p *KernelProgram) error {
 	}
 	return nil
 }
+
 func zero(b []byte) bool {
 	for _, v := range b {
 		if v != 0 {
@@ -159,6 +161,7 @@ func (v *programValidator) identity(id uint64) error {
 	}
 	return nil
 }
+
 func (v *programValidator) stringAt(key uint32) error {
 	if uint64(key) >= uint64(len(v.p.Entries)) {
 		return fmt.Errorf("string reference out of range")
@@ -176,6 +179,7 @@ func (v *programValidator) stringAt(key uint32) error {
 	}
 	return nil
 }
+
 func (v *programValidator) list(l KernelList, kind string) error {
 	if l.Count == 0 {
 		if l.Base != 0 {

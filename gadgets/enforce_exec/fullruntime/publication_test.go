@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -32,7 +33,7 @@ func (c *fakePublicationControl) Call(ctx context.Context, cmd ControlCommand) (
 		c.hook(cmd)
 	}
 	if c.fail == cmd.Operation && !c.after {
-		return c.health, slotFailure
+		return c.health, errSlotFailure
 	}
 	closed, count, err := c.slot.gate.State()
 	if err != nil {
@@ -95,16 +96,18 @@ func (c *fakePublicationControl) Call(ctx context.Context, cmd ControlCommand) (
 		return c.health, fmt.Errorf("unexpected op %d", cmd.Operation)
 	}
 	if c.fail == cmd.Operation {
-		return c.health, slotFailure
+		return c.health, errSlotFailure
 	}
 	return c.health, nil
 }
+
 func publicationFixture(t *testing.T) (*Publisher, *fakePublicationControl, *fakeSlotWriter, *fakeSlotWriter) {
 	t.Helper()
 	slot, outer, epochs, _ := slotFixture(t)
 	c := &fakePublicationControl{slot: slot, health: ControlHealth{MovementArmed: 1}}
 	return &Publisher{slot: slot, control: c, verify: func(context.Context) error { return nil }}, c, outer, epochs
 }
+
 func TestPublicationSuccessAndRetainedRoles(t *testing.T) {
 	p, c, _, _ := publicationFixture(t)
 	for _, gen := range []uint64{1, 2} {
@@ -117,6 +120,7 @@ func TestPublicationSuccessAndRetainedRoles(t *testing.T) {
 		}
 	}
 }
+
 func TestPublicationPrecommitRefusalRetainsLastGood(t *testing.T) {
 	for _, op := range []uint32{OwnerRootCheck, OwnerBootstrapA, OwnerBootstrapB, OwnerValidate, OwnerPublicationBegin} {
 		for _, after := range []bool{false, true} {
@@ -139,6 +143,7 @@ func TestPublicationPrecommitRefusalRetainsLastGood(t *testing.T) {
 		}
 	}
 }
+
 func TestPublicationPostcommitResume(t *testing.T) {
 	for _, op := range []uint32{OwnerPublicationCommitted, OwnerValidate, OwnerPhaseClear} {
 		for _, after := range []bool{false, true} {
@@ -168,9 +173,10 @@ func TestPublicationPostcommitResume(t *testing.T) {
 		}
 	}
 }
+
 func TestPublicationHistoryFailureIsCommittedAndResumable(t *testing.T) {
 	p, _, _, epochs := publicationFixture(t)
-	epochs.putErr = slotFailure
+	epochs.putErr = errSlotFailure
 	r, err := p.Publish(t.Context(), slotProgram(t, p.slot, 1, "uid"))
 	if err == nil || !r.Committed || r.Admitting || p.pending == nil {
 		t.Fatalf("%+v %v", r, err)
@@ -181,6 +187,7 @@ func TestPublicationHistoryFailureIsCommittedAndResumable(t *testing.T) {
 		t.Fatalf("%+v %v", r, err)
 	}
 }
+
 func TestPublicationAbortFailureRetainsClosedLease(t *testing.T) {
 	p, c, _, _ := publicationFixture(t)
 	c.hook = func(cmd ControlCommand) {
@@ -200,9 +207,10 @@ func TestPublicationAbortFailureRetainsClosedLease(t *testing.T) {
 	}
 	requireState(t, p.slot.gate, false, 0)
 }
+
 func TestPublicationRetirePendingCommit(t *testing.T) {
 	p, c, _, epochs := publicationFixture(t)
-	epochs.putErr = slotFailure
+	epochs.putErr = errSlotFailure
 	if _, err := p.Publish(t.Context(), slotProgram(t, p.slot, 1, "uid")); err == nil {
 		t.Fatal("expected failure")
 	}
@@ -222,6 +230,7 @@ func TestPublicationRetirePendingCommit(t *testing.T) {
 		t.Fatal("token not invalidated")
 	}
 }
+
 func TestPublicationFaultScopeAndIdentity(t *testing.T) {
 	for _, post := range []bool{false, true} {
 		t.Run(fmt.Sprint(post), func(t *testing.T) {
@@ -273,7 +282,7 @@ func TestPublicationActiveSwapRefusalAndCancellation(t *testing.T) {
 					}
 				}
 			} else {
-				outer.putErr = slotFailure
+				outer.putErr = errSlotFailure
 				outer.failKey = uint32(0)
 			}
 			r, err := p.Publish(ctx, slotProgram(t, p.slot, 2, "new"))

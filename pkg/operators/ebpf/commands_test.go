@@ -1,12 +1,15 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package ebpfoperator
 
 import (
-	"github.com/cilium/ebpf"
-	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
-	"github.com/spf13/viper"
 	"testing"
+
+	"github.com/cilium/ebpf"
+	"github.com/spf13/viper"
+
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
 func TestSyscallCommandsAreBorrowedNotAutomaticallyAttached(t *testing.T) {
@@ -31,6 +34,7 @@ func TestSyscallCommandsAreBorrowedNotAutomaticallyAttached(t *testing.T) {
 		t.Fatal("command remains visible during close")
 	}
 }
+
 func TestCommandUnpublishDoesNotClearAnotherOwnersValue(t *testing.T) {
 	gc := newResolverGadgetCtx(t, nil)
 	mine, other := new(ebpf.Program), new(ebpf.Program)

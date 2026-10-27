@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -25,7 +26,7 @@ func TestOwnerControlCompile(t *testing.T) {
 	temporary := t.TempDir()
 	bytes, e := os.ReadFile(header)
 	require.NoError(t, e)
-	require.NoError(t, os.WriteFile(filepath.Join(temporary, "vmlinux.h"), bytes, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(temporary, "vmlinux.h"), bytes, 0o600))
 	source, e := filepath.Abs("bpf/owner_control_compile.bpf.c")
 	require.NoError(t, e)
 	object := filepath.Join(temporary, "owner-control.bpf.o")

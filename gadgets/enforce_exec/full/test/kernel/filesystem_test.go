@@ -1,11 +1,11 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -32,7 +34,7 @@ func loadFilesystemFixture(t *testing.T) *ebpf.Collection {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "vmlinux.h"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source := os.Getenv("IG_EXEC_FS_BPF_SOURCE")
@@ -87,7 +89,7 @@ func TestFilesystemKernel(t *testing.T) {
 	if _, err := old.Write(binary); err != nil {
 		t.Fatal(err)
 	}
-	if err := old.Chmod(0755); err != nil {
+	if err := old.Chmod(0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"fs_track", "fs_check"} {
@@ -98,7 +100,7 @@ func TestFilesystemKernel(t *testing.T) {
 		defer attached.Close()
 	}
 	cgpath := fmt.Sprintf("/sys/fs/cgroup/ig-filesystem-%d", os.Getpid())
-	if err := os.Mkdir(cgpath, 0755); err != nil {
+	if err := os.Mkdir(cgpath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
@@ -116,7 +118,7 @@ func TestFilesystemKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	helper := filepath.Join(tmp, "helper")
-	if err := os.WriteFile(helper+".c", []byte(filesystemHelper), 0600); err != nil {
+	if err := os.WriteFile(helper+".c", []byte(filesystemHelper), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("cc", "-O2", helper+".c", "-o", helper).CombinedOutput(); err != nil {
@@ -132,7 +134,7 @@ func TestFilesystemKernel(t *testing.T) {
 		return f
 	}
 	regular := filepath.Join(tmp, "regular")
-	if err := os.WriteFile(regular, binary, 0755); err != nil {
+	if err := os.WriteFile(regular, binary, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	run := func(name string, file *os.File, required, wantMask, wantKnown uint32, wantExit int) {
@@ -181,13 +183,13 @@ func TestFilesystemKernel(t *testing.T) {
 	if _, err := memfd.Write(binary); err != nil {
 		t.Fatal(err)
 	}
-	if err := memfd.Chmod(0755); err != nil {
+	if err := memfd.Chmod(0o755); err != nil {
 		t.Fatal(err)
 	}
 	run("tracked-memfd", memfd, 2, 3, 15, int(syscall.EPERM))
 	// Dedicated exec-capable tmpfs: do not depend on /dev/shm noexec options.
 	shm := filepath.Join(tmp, "shm")
-	if err := os.Mkdir(shm, 0755); err != nil {
+	if err := os.Mkdir(shm, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := unix.Mount("tmpfs", shm, "tmpfs", 0, "size=8m"); err != nil {
@@ -199,7 +201,7 @@ func TestFilesystemKernel(t *testing.T) {
 		}
 	}()
 	spoof := filepath.Join(shm, "memfd:spoof")
-	if err := os.WriteFile(spoof, binary, 0755); err != nil {
+	if err := os.WriteFile(spoof, binary, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	spoofFile, err := os.Open(spoof)
@@ -211,7 +213,7 @@ func TestFilesystemKernel(t *testing.T) {
 	run("filename-not-memfd-proof", spoofFile, 2, 1, 13, int(syscall.EOPNOTSUPP))
 	run("unknown-or-known-positive", spoofFile, 3, 1, 13, int(syscall.EPERM))
 	deleted := filepath.Join(tmp, "deleted")
-	if err := os.WriteFile(deleted, binary, 0755); err != nil {
+	if err := os.WriteFile(deleted, binary, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	deletedFile := open(deleted)
@@ -221,11 +223,11 @@ func TestFilesystemKernel(t *testing.T) {
 	run("unlinked-dentry", deletedFile, 4, 4, 15, int(syscall.EPERM))
 	lower, upper, work, merged := filepath.Join(tmp, "lower"), filepath.Join(tmp, "upper"), filepath.Join(tmp, "work"), filepath.Join(tmp, "merged")
 	for _, dir := range []string{lower, upper, work, merged} {
-		if err := os.Mkdir(dir, 0755); err != nil {
+		if err := os.Mkdir(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(lower, "target"), binary, 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(lower, "target"), binary, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := unix.Mount("overlay", merged, "overlay", 0, fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)); err != nil {
@@ -279,7 +281,7 @@ func TestFilesystemKernel(t *testing.T) {
 		if err := unix.Munmap(mapping); err != nil {
 			t.Fatal(err)
 		}
-		if err := huge.Chmod(0755); err != nil {
+		if err := huge.Chmod(0o755); err != nil {
 			t.Fatal(err)
 		}
 		run("hugetlb-memfd-exec", huge, 2, 2, 15, int(syscall.EPERM))
@@ -310,7 +312,7 @@ func TestFilesystemKernel(t *testing.T) {
 	if _, err := untracked.Write(binary); err != nil {
 		t.Fatal(err)
 	}
-	if err := untracked.Chmod(0755); err != nil {
+	if err := untracked.Chmod(0o755); err != nil {
 		t.Fatal(err)
 	}
 	run("budget-unknown-not-false", untracked, 2, 1, 13, int(syscall.EOPNOTSUPP))

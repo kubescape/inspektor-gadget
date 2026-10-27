@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -7,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -18,6 +20,7 @@ func testBudget(t *testing.T, n uint64) *Budget {
 	}
 	return b
 }
+
 func TestBudgetScopeCapacityAndSharedHandles(t *testing.T) {
 	b := testBudget(t, 1)
 	r, err := b.reserve(1)
@@ -45,6 +48,7 @@ func TestBudgetScopeCapacityAndSharedHandles(t *testing.T) {
 		t.Fatal("budget leaked")
 	}
 }
+
 func TestBudgetConcurrentCopies(t *testing.T) {
 	b := testBudget(t, 8)
 	var wg sync.WaitGroup
@@ -63,6 +67,7 @@ func TestBudgetConcurrentCopies(t *testing.T) {
 		t.Fatal("concurrent release lost accounting")
 	}
 }
+
 func testResourceManifest() *operators.NativeResources {
 	r := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{"eo_work": {Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: 1096}}, Programs: map[string]operators.NativeProgramResource{}}
 	for n, h := range ownerHooks {
@@ -71,6 +76,7 @@ func testResourceManifest() *operators.NativeResources {
 	r.Programs["eo_command"] = operators.NativeProgramResource{Type: uint32(ebpf.Syscall), Instructions: 1}
 	return r
 }
+
 func TestResourcePreflightBounds(t *testing.T) {
 	if err := validateOwnerResources(testResourceManifest(), 8); err != nil {
 		t.Fatal(err)

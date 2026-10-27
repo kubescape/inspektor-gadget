@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package ebpfoperator
 
 import (
@@ -7,6 +8,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -20,6 +22,7 @@ func (i *ebpfInstance) publishNativeResources(gc operators.GadgetContext) {
 	}
 	gc.SetVar(operators.NativeResourcesKey, r)
 }
+
 func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name string, p *ebpf.ProgramSpec, l link.Link) error {
 	// Optional receipts must not regress ordinary tracers on link types/kernels
 	// without Info support. Native consumers fail closed on the absent receipt.
@@ -38,6 +41,7 @@ func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name 
 	gc.SetVar(operators.NativeAttachmentPrefix+name, receipt)
 	return nil
 }
+
 func (i *ebpfInstance) unpublishNativeAttachments(gc operators.GadgetContext) {
 	for name, receipt := range i.nativeAttachments {
 		if current, _ := gc.GetVar(operators.NativeAttachmentPrefix + name); current == receipt {

@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -16,9 +17,10 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	execpolicy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
-	"golang.org/x/sys/unix"
 )
 
 // This fixture attaches only on an explicitly opted-in disposable kernel. Every
@@ -53,7 +55,7 @@ func TestFullExecKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vmlinux: %v %s", err, stderr.String())
 	}
-	if err = os.WriteFile(filepath.Join(temp, "vmlinux.h"), vmlinux, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(temp, "vmlinux.h"), vmlinux, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	object := filepath.Join(temp, "full.bpf.o")
@@ -69,7 +71,7 @@ func TestFullExecKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	cg := filepath.Join("/sys/fs/cgroup", fmt.Sprintf("ig-full-exec-%d", os.Getpid()))
-	if err = os.Mkdir(cg, 0755); err != nil {
+	if err = os.Mkdir(cg, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(cg)
@@ -246,7 +248,7 @@ func TestFullExecKernel(t *testing.T) {
 					file.Close()
 					t.Fatal(e)
 				}
-				if e = file.Chmod(0755); e != nil {
+				if e = file.Chmod(0o755); e != nil {
 					file.Close()
 					t.Fatal(e)
 				}
@@ -284,11 +286,11 @@ func TestFullExecKernel(t *testing.T) {
 				if tc.name == "fs-overlay" {
 					lower, upper, work, merged := filepath.Join(fsroot, "lower"), filepath.Join(fsroot, "upper"), filepath.Join(fsroot, "work"), filepath.Join(fsroot, "merged")
 					for _, dir := range []string{lower, upper, work, merged} {
-						if e = os.Mkdir(dir, 0755); e != nil {
+						if e = os.Mkdir(dir, 0o755); e != nil {
 							t.Fatal(e)
 						}
 					}
-					if e = os.WriteFile(filepath.Join(lower, "target"), data, 0755); e != nil {
+					if e = os.WriteFile(filepath.Join(lower, "target"), data, 0o755); e != nil {
 						t.Fatal(e)
 					}
 					if e = unix.Mount("overlay", merged, "overlay", 0, fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)); e != nil {
@@ -300,7 +302,7 @@ func TestFullExecKernel(t *testing.T) {
 						}
 					}()
 					fsTarget = filepath.Join(merged, "target")
-				} else if e = os.WriteFile(fsTarget, data, 0755); e != nil {
+				} else if e = os.WriteFile(fsTarget, data, 0o755); e != nil {
 					t.Fatal(e)
 				}
 				executableFD, e = os.Open(fsTarget)

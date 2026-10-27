@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -33,8 +34,10 @@ type inventoryResult struct {
 	Count, Status  uint32
 	Busy           uint64
 }
-type movementControl struct{ OwnerTID, Arm, Hold, Release uint32 }
-type movementState struct{ Sequence, Armed, Fault, Reached uint64 }
+type (
+	movementControl struct{ OwnerTID, Arm, Hold, Release uint32 }
+	movementState   struct{ Sequence, Armed, Fault, Reached uint64 }
+)
 
 type inventoryRow struct {
 	Cookie    uint64
@@ -54,7 +57,7 @@ func TestInventoryKernel(t *testing.T) {
 	}
 	header, err := exec.Command("bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c").Output()
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600))
 	object := filepath.Join(tmp, "inventory.bpf.o")
 	out, err := exec.Command("clang", "-target", "bpf", "-O2", "-g", "-D__TARGET_ARCH_x86", "-I"+tmp, "-c", source, "-o", object).CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -104,30 +107,30 @@ func TestInventoryKernel(t *testing.T) {
 	}
 	t.Logf("selected ABI %s", selected)
 	cgpath := fmt.Sprintf("/sys/fs/cgroup/ig-inventory-%d", os.Getpid())
-	require.NoError(t, os.Mkdir(cgpath, 0755))
+	require.NoError(t, os.Mkdir(cgpath, 0o755))
 	t.Cleanup(func() { os.Remove(cgpath) })
 	cg, err := os.Open(cgpath)
 	require.NoError(t, err)
 	defer cg.Close()
 	var st syscall.Stat_t
 	helper := filepath.Join(tmp, "inventory-helper")
-	require.NoError(t, os.WriteFile(helper+".c", []byte(inventoryHelper), 0600))
+	require.NoError(t, os.WriteFile(helper+".c", []byte(inventoryHelper), 0o600))
 	out, err = exec.Command("cc", "-O2", "-pthread", helper+".c", "-o", helper).CombinedOutput()
 	require.NoError(t, err, string(out))
 	oldSource, oldDestination, barrier := filepath.Join(cgpath, "old-source"), filepath.Join(cgpath, "old-destination"), filepath.Join(cgpath, "barrier")
 	for _, path := range []string{oldSource, oldDestination} {
-		require.NoError(t, os.Mkdir(path, 0755))
+		require.NoError(t, os.Mkdir(path, 0o755))
 		t.Cleanup(func() { os.Remove(path) })
 	}
 	availableCPUs, e := os.ReadFile(filepath.Join(cgpath, "cgroup.controllers"))
 	require.NoError(t, e)
 	require.Contains(t, strings.Fields(string(availableCPUs)), "cpuset", "initial drain requires delegated cpuset; no root controller writes")
-	require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("+cpuset"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("+cpuset"), 0o600))
 	allowedCPUs, e := os.ReadFile(filepath.Join(cgpath, "cpuset.cpus.effective"))
 	require.NoError(t, e)
 	firstCPU := strings.Split(strings.Split(strings.TrimSpace(string(allowedCPUs)), ",")[0], "-")[0]
 	require.NotEqual(t, firstCPU, strings.TrimSpace(string(allowedCPUs)), "distinct CPU masks require at least two effective CPUs")
-	require.NoError(t, os.WriteFile(filepath.Join(oldDestination, "cpuset.cpus"), []byte(firstCPU), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(oldDestination, "cpuset.cpus"), []byte(firstCPU), 0o600))
 	oldFD, err := os.Open(oldSource)
 	require.NoError(t, err)
 	defer oldFD.Close()
@@ -149,7 +152,7 @@ func TestInventoryKernel(t *testing.T) {
 		defer runtime.UnlockOSThread()
 		e := collection.Maps["drain_control"].Put(uint32(0), drainControl{WriterTID: uint32(unix.Gettid()), TargetTGID: uint32(oldProcess.Process.Pid)})
 		if e == nil {
-			e = os.WriteFile(filepath.Join(oldDestination, "cgroup.procs"), []byte(strconv.Itoa(oldProcess.Process.Pid)), 0600)
+			e = os.WriteFile(filepath.Join(oldDestination, "cgroup.procs"), []byte(strconv.Itoa(oldProcess.Process.Pid)), 0o600)
 		}
 		writerDone <- e
 	}()
@@ -167,7 +170,7 @@ func TestInventoryKernel(t *testing.T) {
 		defer runtime.UnlockOSThread()
 		e := collection.Maps["movement_control"].Put(uint32(0), movementControl{OwnerTID: uint32(unix.Gettid()), Arm: 1})
 		if e == nil {
-			e = os.Mkdir(barrier, 0755)
+			e = os.Mkdir(barrier, 0o755)
 		}
 		barrierDone <- e
 	}()
@@ -225,20 +228,20 @@ func TestInventoryKernel(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, oldProcess.Wait())
 	require.NoError(t, syscall.Fstat(int(cg.Fd()), &st))
-	require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("-cpuset"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("-cpuset"), 0o600))
 	t.Log("forced pre-attachment migration mutex drain passed")
 	t.Run("migration-and-controller-change", func(t *testing.T) {
 		left, right := filepath.Join(cgpath, "left"), filepath.Join(cgpath, "right")
-		require.NoError(t, os.Mkdir(left, 0755))
+		require.NoError(t, os.Mkdir(left, 0o755))
 		t.Cleanup(func() { os.Remove(left) })
-		require.NoError(t, os.Mkdir(right, 0755))
+		require.NoError(t, os.Mkdir(right, 0o755))
 		t.Cleanup(func() { os.Remove(right) })
 		lf, e := os.Open(left)
 		require.NoError(t, e)
 		defer lf.Close()
 		process, input, _ := startInventoryHelper(t, helper, "normal", lf)
 		move := func(path string) {
-			require.NoError(t, os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(strconv.Itoa(process.Process.Pid)), 0600))
+			require.NoError(t, os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(strconv.Itoa(process.Process.Pid)), 0o600))
 		}
 		state := func() movementState {
 			var v movementState
@@ -265,7 +268,7 @@ func TestInventoryKernel(t *testing.T) {
 		var old syscall.Stat_t
 		require.NoError(t, syscall.Stat(right, &old))
 		before = state()
-		require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("+"+controller), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("+"+controller), 0o600))
 		after = state()
 		require.Greater(t, after.Sequence, before.Sequence)
 		var current syscall.Stat_t
@@ -304,25 +307,25 @@ func TestInventoryKernel(t *testing.T) {
 		_, e = io.WriteString(input, "q")
 		require.NoError(t, e)
 		require.NoError(t, process.Wait())
-		require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("-"+controller), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("-"+controller), 0o600))
 		require.NoError(t, syscall.Fstat(int(cg.Fd()), &st))
 	})
 	t.Run("failed-staged-migration", func(t *testing.T) {
 		available, e := os.ReadFile(filepath.Join(cgpath, "cgroup.controllers"))
 		require.NoError(t, e)
 		require.Contains(t, strings.Fields(string(available)), "cpuset", "cpuset must already be delegated; no host-root writes")
-		require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("+cpuset"), 0600))
-		t.Cleanup(func() { os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("-cpuset"), 0600) })
+		require.NoError(t, os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("+cpuset"), 0o600))
+		t.Cleanup(func() { os.WriteFile(filepath.Join(cgpath, "cgroup.subtree_control"), []byte("-cpuset"), 0o600) })
 		allowed, e := os.ReadFile(filepath.Join(cgpath, "cpuset.cpus.effective"))
 		require.NoError(t, e)
 		first := strings.Split(strings.Split(strings.TrimSpace(string(allowed)), ",")[0], "-")[0]
 		require.NotEqual(t, first, strings.TrimSpace(string(allowed)), "two or more effective CPUs required for distinct safe masks")
 		src, dst := filepath.Join(cgpath, "failed-source"), filepath.Join(cgpath, "failed-destination")
-		require.NoError(t, os.Mkdir(src, 0755))
+		require.NoError(t, os.Mkdir(src, 0o755))
 		t.Cleanup(func() { os.Remove(src) })
-		require.NoError(t, os.Mkdir(dst, 0755))
+		require.NoError(t, os.Mkdir(dst, 0o755))
 		t.Cleanup(func() { os.Remove(dst) })
-		require.NoError(t, os.WriteFile(filepath.Join(dst, "cpuset.cpus"), []byte(first), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(dst, "cpuset.cpus"), []byte(first), 0o600))
 		source, e := os.Open(src)
 		require.NoError(t, e)
 		defer source.Close()
@@ -340,7 +343,7 @@ func TestInventoryKernel(t *testing.T) {
 			Cookie               uint64
 		}{uint32(unix.Gettid()), uint32(process.Process.Pid), leaderCookie}
 		require.NoError(t, collection.Maps["deny_config"].Put(uint32(0), control))
-		e = os.WriteFile(filepath.Join(dst, "cgroup.procs"), []byte(strconv.Itoa(process.Process.Pid)), 0600)
+		e = os.WriteFile(filepath.Join(dst, "cgroup.procs"), []byte(strconv.Itoa(process.Process.Pid)), 0o600)
 		runtime.UnlockOSThread()
 		require.ErrorIs(t, e, syscall.EPERM)
 		control.Cookie = 0
@@ -356,7 +359,7 @@ func TestInventoryKernel(t *testing.T) {
 		stable, remaining := run(4096)
 		require.Zero(t, stable.Status)
 		require.Equal(t, ids, remaining, "failed can_attach cleanup preserves all physical identities in source")
-		require.NoError(t, os.WriteFile(filepath.Join(dst, "cgroup.procs"), []byte(strconv.Itoa(process.Process.Pid)), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(dst, "cgroup.procs"), []byte(strconv.Itoa(process.Process.Pid)), 0o600))
 		_, e = io.WriteString(input, "q")
 		require.NoError(t, e)
 		require.NoError(t, process.Wait())
@@ -451,6 +454,7 @@ func startInventoryHelper(t *testing.T, path, mode string, cgroup *os.File) (*ex
 	readInventoryLine(t, lines, "READY")
 	return command, input, lines
 }
+
 func readInventoryLine(t *testing.T, lines <-chan string, prefix string) string {
 	t.Helper()
 	timer := time.NewTimer(5 * time.Second)

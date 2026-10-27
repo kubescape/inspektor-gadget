@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -14,13 +15,14 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/spf13/viper"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	execruntime "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/runtime"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/params"
-	"github.com/spf13/viper"
 )
 
 const ownerKey = "enforce-exec/native-owner"
@@ -126,6 +128,7 @@ func NewOwner(config OwnerConfig, budget *Budget) (*Owner, error) {
 	}
 	return &Owner{config: config, reservation: reservation, attachments: map[string]*operators.NativeAttachment{}}, nil
 }
+
 func WithOwner(owner *Owner) gadgetcontext.Option {
 	return func(gc *gadgetcontext.GadgetContext) { gc.SetVar(ownerKey, owner) }
 }
@@ -190,6 +193,7 @@ func (o *Owner) mapHandle(name string) (*ebpf.Map, error) {
 	}
 	return m, nil
 }
+
 func (o *Owner) captureAttachments() error {
 	for name, expected := range ownerHooks {
 		v, _ := o.context.GetVar(operators.NativeAttachmentPrefix + name)
@@ -204,6 +208,7 @@ func (o *Owner) captureAttachments() error {
 	}
 	return nil
 }
+
 func (o *Owner) verify(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -387,6 +392,7 @@ func (o *Owner) Start(gc operators.GadgetContext) error {
 	}
 	return err
 }
+
 func (o *Owner) Ready(gc operators.GadgetContext) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -418,6 +424,7 @@ func (o *Owner) Activate(ctx context.Context) (PublicationResult, error) {
 	o.completeAttempt(result, o.config.Program)
 	return result, err
 }
+
 func (o *Owner) Update(ctx context.Context, program *fullpolicy.KernelProgram) (PublicationResult, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -472,6 +479,7 @@ func (o *Owner) Resume(ctx context.Context) (PublicationResult, error) {
 	o.completeAttempt(result, o.pending)
 	return result, err
 }
+
 func (o *Owner) completeAttempt(result PublicationResult, candidate *fullpolicy.KernelProgram) {
 	if result.Committed {
 		o.current = candidate
@@ -484,6 +492,7 @@ func (o *Owner) completeAttempt(result PublicationResult, candidate *fullpolicy.
 		o.pending = nil
 	}
 }
+
 func (o *Owner) Epochs() map[string]uint64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -492,6 +501,7 @@ func (o *Owner) Epochs() map[string]uint64 {
 	}
 	return o.slot.Epochs()
 }
+
 func (o *Owner) Check(ctx context.Context) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -596,6 +606,7 @@ func (o *Owner) reattest(ctx context.Context) (err error) {
 	}
 	return nil
 }
+
 func (o *Owner) beforeStop(ctx context.Context) error {
 	if o.closed {
 		return nil
@@ -757,6 +768,7 @@ func (o *Owner) BeforeStop(ctx context.Context) error {
 	defer o.mu.Unlock()
 	return o.beforeStop(ctx)
 }
+
 func (o *Owner) PreStop(gc operators.GadgetContext) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(gc.Context()), 5*time.Second)
 	defer cancel()
@@ -831,6 +843,7 @@ func (o *Owner) ReleaseAfterDetach() error {
 	o.released = true
 	return errors.Join(errs...)
 }
+
 func usesFilesystem(p *fullpolicy.KernelProgram) bool {
 	h, _ := fullpolicy.Decode[fullpolicy.KernelHeader](p.Entries[0])
 	for i := uint32(0); i < h.RuleCount; i++ {
@@ -841,6 +854,7 @@ func usesFilesystem(p *fullpolicy.KernelProgram) bool {
 	}
 	return false
 }
+
 func validateOwnerProgram(p *fullpolicy.KernelProgram, snapshot *execruntime.ImageOriginSnapshot) error {
 	if err := fullpolicy.ValidateKernelProgram(p); err != nil {
 		return err
@@ -863,6 +877,7 @@ func (o *Owner) Generation() uint64 {
 	}
 	return o.slot.Generation()
 }
+
 func (o *Owner) PendingGeneration() uint64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()

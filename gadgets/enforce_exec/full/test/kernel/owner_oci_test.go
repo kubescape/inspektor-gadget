@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package kernel_test
 
 import (
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/stretchr/testify/require"
+
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullruntime"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
@@ -29,7 +32,6 @@ import (
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/simple"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/runtime/local"
-	"github.com/stretchr/testify/require"
 )
 
 // Synthetic TEST owner: the fixture itself creates and pins this exact helper.
@@ -86,7 +88,7 @@ func TestFullOwnerOCIRuntime(t *testing.T) {
 	manager, e := instancemanager.New(rt)
 	require.NoError(t, e)
 	cgpath := fmt.Sprintf("/sys/fs/cgroup/ig-owner-oci-%d", os.Getpid())
-	require.NoError(t, os.Mkdir(cgpath, 0755))
+	require.NoError(t, os.Mkdir(cgpath, 0o755))
 	defer os.Remove(cgpath)
 	cg, e := os.Open(cgpath)
 	require.NoError(t, e)
@@ -95,10 +97,10 @@ func TestFullOwnerOCIRuntime(t *testing.T) {
 	require.NoError(t, syscall.Fstat(int(cg.Fd()), &cgstat))
 	tmp := t.TempDir()
 	helper, target := filepath.Join(tmp, "owner-helper"), filepath.Join(tmp, "worker-target")
-	require.NoError(t, os.WriteFile(target+".c", []byte("int main(void){return 0;}"), 0600))
+	require.NoError(t, os.WriteFile(target+".c", []byte("int main(void){return 0;}"), 0o600))
 	out, e := exec.Command("cc", "-O2", target+".c", "-o", target).CombinedOutput()
 	require.NoError(t, e, string(out))
-	require.NoError(t, os.WriteFile(helper+".c", []byte("#define OWNER_WORKER_TARGET "+strconv.Quote(target)+"\n"+ownerExecHelper), 0600))
+	require.NoError(t, os.WriteFile(helper+".c", []byte("#define OWNER_WORKER_TARGET "+strconv.Quote(target)+"\n"+ownerExecHelper), 0o600))
 	out, e = exec.Command("cc", "-O2", helper+".c", "-o", helper).CombinedOutput()
 	require.NoError(t, e, string(out))
 	process := exec.CommandContext(ctx, helper)
@@ -270,7 +272,7 @@ func TestFullOwnerOCIRuntime(t *testing.T) {
 	}
 	require.NotEmpty(t, original)
 	move := func(path string) {
-		require.NoError(t, os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(strconv.Itoa(sidecar.Process.Pid)), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(strconv.Itoa(sidecar.Process.Pid)), 0o600))
 	}
 	move(cgpath)
 	require.Error(t, owner.Check(ctx))

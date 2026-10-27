@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullpolicy
 
 import (
@@ -140,5 +141,4 @@ func TestEvaluatorKernel(t *testing.T) {
 			t.Fatal("freeze changed evaluator decision")
 		}
 	})
-
 }

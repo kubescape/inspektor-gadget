@@ -1,5 +1,6 @@
 // Copyright 2026 The Inspektor Gadget authors
 // SPDX-License-Identifier: Apache-2.0
+
 package fullruntime
 
 import (
@@ -11,8 +12,9 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
-	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
 // ProgramMapSpec is the fixed frozen-inner ABI. The outer slot must never be
@@ -22,20 +24,24 @@ func ProgramMapSpec() *ebpf.MapSpec {
 	return &ebpf.MapSpec{Name: "exec_program", Type: ebpf.Hash, KeySize: 4, ValueSize: fullpolicy.KernelBlobSize, MaxEntries: fullpolicy.MaxKernelEntries, Flags: unix.BPF_F_NO_PREALLOC | unix.BPF_F_RDONLY_PROG}
 }
 
-// FD-array maps reject RDONLY_PROG flags. The verifier intrinsically permits
+// ProgramSlotsSpec describes the program FD-array map, which rejects RDONLY_PROG flags.
+// The verifier intrinsically permits
 // BPF lookup only for map-of-maps; native userspace alone changes these slots.
 func ProgramSlotsSpec() *ebpf.MapSpec {
 	return &ebpf.MapSpec{Name: "exec_programs", Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 2, InnerMap: ProgramMapSpec()}
 }
+
 func AcceptedEpochsSpec() *ebpf.MapSpec {
 	return &ebpf.MapSpec{Name: "exec_epochs", Type: ebpf.Hash, KeySize: 8, ValueSize: 8, MaxEntries: fullpolicy.MaxRoleEpochHistory, Flags: unix.BPF_F_NO_PREALLOC | unix.BPF_F_RDONLY_PROG}
 }
 
-type slotResource interface{ Close() error }
-type slotWriter interface {
-	Put(interface{}, interface{}) error
-	Delete(interface{}) error
-}
+type (
+	slotResource interface{ Close() error }
+	slotWriter   interface {
+		Put(interface{}, interface{}) error
+		Delete(interface{}) error
+	}
+)
 type slotFactory func(*fullpolicy.KernelProgram) (slotResource, error)
 
 // freezeProgram returns an owned FD. Close consumes the native FD even when
@@ -100,11 +106,13 @@ type epochAddition struct{ uid, epoch uint64 }
 // same private state. Always Finish after Commit, or Abort before Commit. Retain
 // an unfinished handle on native phase-cleanup failure; do not accidentally
 // reopen admission while bootstrap is still active.
-type ProgramUpdate struct{ state *programUpdate }
-type ProgramCommit struct {
-	Committed  bool
-	Generation uint64
-}
+type (
+	ProgramUpdate struct{ state *programUpdate }
+	ProgramCommit struct {
+		Committed  bool
+		Generation uint64
+	}
+)
 
 func NewProgramSlot(gate *Gate, slots, accepted *ebpf.Map) (*ProgramSlot, error) {
 	if gate == nil || slots == nil || accepted == nil {
@@ -133,6 +141,7 @@ func NewProgramSlot(gate *Gate, slots, accepted *ebpf.Map) (*ProgramSlot, error)
 	}
 	return newProgramSlot(gate, slots, accepted, freezeProgram)
 }
+
 func newProgramSlot(gate *Gate, slots, accepted slotWriter, create slotFactory) (*ProgramSlot, error) {
 	closed, count, err := gate.State()
 	if err != nil {
@@ -143,6 +152,7 @@ func newProgramSlot(gate *Gate, slots, accepted slotWriter, create slotFactory) 
 	}
 	return &ProgramSlot{gate: gate, slots: slots, accepted: accepted, create: create, epochs: map[string]uint64{}}, nil
 }
+
 func snapshotProgram(p *fullpolicy.KernelProgram) *fullpolicy.KernelProgram {
 	if p == nil {
 		return nil
@@ -153,6 +163,7 @@ func snapshotProgram(p *fullpolicy.KernelProgram) *fullpolicy.KernelProgram {
 	c.Identities = maps.Clone(p.Identities)
 	return &c
 }
+
 func (p *ProgramSlot) Epochs() map[string]uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -267,6 +278,7 @@ func (p *ProgramSlot) Begin(ctx context.Context, program *fullpolicy.KernelProgr
 	p.update = u
 	return &ProgramUpdate{state: u}, nil
 }
+
 func (u *ProgramUpdate) NewUIDMask() uint32 {
 	if u == nil || u.state == nil {
 		return 0
@@ -292,6 +304,7 @@ func (u *ProgramUpdate) Map() (*ebpf.Map, error) {
 	}
 	return m, nil
 }
+
 func (u *ProgramUpdate) Commit() (ProgramCommit, error) {
 	if u == nil || u.state == nil {
 		return ProgramCommit{}, ErrStaleLease

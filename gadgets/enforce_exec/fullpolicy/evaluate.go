@@ -139,6 +139,7 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 	})
 	return d, nil
 }
+
 func (r compiledRule) matches(f Facts, role string) (bool, error) {
 	a, t := r.source.Actor, r.source.Target
 	if len(r.actor) > 0 {
@@ -289,6 +290,7 @@ func (r compiledRule) matches(f Facts, role string) (bool, error) {
 	}
 	return true, nil
 }
+
 func pathMatches(patterns []*regexp.Regexp, s string) bool {
 	for _, p := range patterns {
 		if p.MatchString(s) {
