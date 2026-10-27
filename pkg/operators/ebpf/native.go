@@ -13,6 +13,17 @@ import (
 )
 
 func (i *ebpfInstance) publishNativeResources(gc operators.GadgetContext) {
+	if _, exists := gc.GetVar(operators.NativeResourcesKey); exists {
+		// Native ownership supports one collection only. Keep this invalidation
+		// sticky across additional layers, including ones with duplicate names.
+		// Ordinary multi-layer images do not consume this optional manifest.
+		gc.SetVar(operators.NativeResourcesKey, (*operators.NativeResources)(nil))
+		return
+	}
+	gc.SetVar(operators.NativeResourcesKey, i.nativeResources())
+}
+
+func (i *ebpfInstance) nativeResources() *operators.NativeResources {
 	r := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{}, Programs: map[string]operators.NativeProgramResource{}}
 	for n, m := range i.collectionSpec.Maps {
 		r.Maps[n] = operators.NativeMapResource{Type: uint32(m.Type), KeySize: m.KeySize, ValueSize: m.ValueSize, MaxEntries: m.MaxEntries, Flags: m.Flags}
@@ -20,7 +31,19 @@ func (i *ebpfInstance) publishNativeResources(gc operators.GadgetContext) {
 	for n, p := range i.collectionSpec.Programs {
 		r.Programs[n] = operators.NativeProgramResource{Type: uint32(p.Type), Target: i.programAttachTarget(p), Instructions: uint64(len(p.Instructions)) * 2}
 	}
-	gc.SetVar(operators.NativeResourcesKey, r)
+	return r
+}
+
+func (i *ebpfInstance) validateNativeResources(gc operators.GadgetContext) error {
+	value, exists := gc.GetVar(operators.NativeResourceValidatorKey)
+	if !exists {
+		return nil
+	}
+	validate, ok := value.(func(*operators.NativeResources) error)
+	if !ok || validate == nil {
+		return fmt.Errorf("invalid native resource validator")
+	}
+	return validate(i.nativeResources())
 }
 
 func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name string, p *ebpf.ProgramSpec, l link.Link) error {

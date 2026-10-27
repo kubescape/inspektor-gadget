@@ -156,3 +156,15 @@ func validateOwnerResources(r *operators.NativeResources, cpus int) error {
 	}
 	return nil
 }
+
+// admitOwnerResources checks the initial manifest and requires the same budget
+// contract at the allocation boundary, after parameter and context rewrites.
+func admitOwnerResources(gc operators.GadgetContext, r *operators.NativeResources, cpus int) error {
+	if err := validateOwnerResources(r, cpus); err != nil {
+		return err
+	}
+	gc.SetVar(operators.NativeResourceValidatorKey, func(final *operators.NativeResources) error {
+		return validateOwnerResources(final, cpus)
+	})
+	return nil
+}

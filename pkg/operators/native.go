@@ -6,8 +6,12 @@ package operators
 const (
 	// NativeResourcesKey exposes a compact pre-load resource manifest, never BTF,
 	// instructions or write authority. It is local-only, not the remote API.
-	NativeResourcesKey     = "ebpf/native-resources"
-	NativeAttachmentPrefix = "attachment/"
+	NativeResourcesKey = "ebpf/native-resources"
+	// NativeResourceValidatorKey holds a local func(*NativeResources) error.
+	// Native owners install it before Start; the eBPF operator invokes it on the
+	// final transformed collection immediately before allocating kernel resources.
+	NativeResourceValidatorKey = "ebpf/native-resource-validator"
+	NativeAttachmentPrefix     = "attachment/"
 )
 
 type NativeMapResource struct {

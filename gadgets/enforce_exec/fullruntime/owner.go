@@ -174,7 +174,7 @@ func (*ownerOperator) InstantiateDataOperator(gc operators.GadgetContext, _ api.
 	if err != nil {
 		return nil, err
 	}
-	if err = validateOwnerResources(manifest, cpus); err != nil {
+	if err = admitOwnerResources(gc, manifest, cpus); err != nil {
 		return nil, err
 	}
 	if err = verifySupportedKernel(); err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
+	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
@@ -118,5 +119,31 @@ func TestResourcePreflightBounds(t *testing.T) {
 	}
 	if err := validateOwnerResources(testResourceManifest(), 4097); err == nil {
 		t.Fatal("CPU bound ignored")
+	}
+}
+
+func TestOwnerResourceBudgetRevalidatedAfterMapSizing(t *testing.T) {
+	gc := gadgetcontext.New(t.Context(), "trusted:test")
+	defer gc.Cancel()
+	initial := testResourceManifest()
+	initial.Maps["parameterized"] = operators.NativeMapResource{Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 288, MaxEntries: 1}
+	if err := admitOwnerResources(gc, initial, 8); err != nil {
+		t.Fatal(err)
+	}
+	value, _ := gc.GetVar(operators.NativeResourceValidatorKey)
+	validate, ok := value.(func(*operators.NativeResources) error)
+	if !ok {
+		t.Fatal("allocation-boundary validation not installed")
+	}
+	if err := validate(initial); err != nil {
+		t.Fatal(err)
+	}
+	final := testResourceManifest()
+	final.Maps["parameterized"] = operators.NativeMapResource{Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 288, MaxEntries: 1 << 20}
+	if err := validate(final); err == nil {
+		t.Fatal("post-parameter map expansion exceeded owner payload ceiling")
+	}
+	if err := validate(nil); err == nil {
+		t.Fatal("missing final manifest accepted")
 	}
 }

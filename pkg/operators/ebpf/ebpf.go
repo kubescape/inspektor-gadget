@@ -925,6 +925,11 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
 		return fmt.Errorf("verifying BPF policy before loading: %w", err)
 	}
+	// Parameters, context variables and enrichers can change map dimensions
+	// after native preflight. Validate the exact final spec before allocating.
+	if err := i.validateNativeResources(gadgetCtx); err != nil {
+		return fmt.Errorf("validating native resources before loading: %w", err)
+	}
 	collection, err := ebpf.NewCollectionWithOptions(i.collectionSpec, opts)
 	if err != nil {
 		var verifierErr *ebpf.VerifierError

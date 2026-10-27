@@ -158,7 +158,11 @@ is not implied.
 
 `NewOwner` reserves a **shared** aggregate Budget and exclusive cgroup scope
 before the OCI collection can load. All owners in one embedding must share that
-budget. Resource manifests are checked before allocation: map payload capacities,
+budget. Native owner images must contain exactly one eBPF collection; additional
+layers (including duplicate map/program names) invalidate native admission.
+Resource manifests are checked both at admission and again immediately before
+allocation, after parameter, context-variable and enricher rewrites:
+map payload capacities,
 physical local-storage credits, encoded instruction ceilings and two frozen
 program slots are accounted. This is bounded capacity accounting, **not** a
 measurement or guarantee of kernel/Go RSS, allocator overhead or JIT expansion.
