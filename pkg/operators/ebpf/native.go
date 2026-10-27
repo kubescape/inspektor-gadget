@@ -26,10 +26,24 @@ func (i *ebpfInstance) publishNativeResources(gc operators.GadgetContext) {
 func (i *ebpfInstance) nativeResources() *operators.NativeResources {
 	r := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{}, Programs: map[string]operators.NativeProgramResource{}}
 	for n, m := range i.collectionSpec.Maps {
-		r.Maps[n] = operators.NativeMapResource{Type: uint32(m.Type), KeySize: m.KeySize, ValueSize: m.ValueSize, MaxEntries: m.MaxEntries, Flags: m.Flags}
+		r.Maps[n] = nativeMapResource(m, 0)
 	}
 	for n, p := range i.collectionSpec.Programs {
 		r.Programs[n] = operators.NativeProgramResource{Type: uint32(p.Type), Target: i.programAttachTarget(p), Instructions: uint64(len(p.Instructions)) * 2}
+	}
+	return r
+}
+
+func nativeMapResource(m *ebpf.MapSpec, depth int) operators.NativeMapResource {
+	// Bound malformed/cyclic templates without silently omitting resources.
+	// The unknown map type is rejected by native resource admission.
+	if m == nil || depth >= 8 {
+		return operators.NativeMapResource{}
+	}
+	r := operators.NativeMapResource{Type: uint32(m.Type), KeySize: m.KeySize, ValueSize: m.ValueSize, MaxEntries: m.MaxEntries, Flags: m.Flags}
+	if m.InnerMap != nil {
+		inner := nativeMapResource(m.InnerMap, depth+1)
+		r.InnerMap = &inner
 	}
 	return r
 }

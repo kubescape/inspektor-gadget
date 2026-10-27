@@ -147,3 +147,24 @@ func TestOwnerResourceBudgetRevalidatedAfterMapSizing(t *testing.T) {
 		t.Fatal("missing final manifest accepted")
 	}
 }
+
+func TestOwnerAccountsInnerMapTemplates(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		inner *operators.NativeMapResource
+		valid bool
+	}{
+		{"bounded", &operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: 16}, true},
+		{"oversized", &operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: 1 << 20}, false},
+		{"missing", nil, false},
+		{"nested", &operators.NativeMapResource{Type: uint32(ebpf.ArrayOfMaps), KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: &operators.NativeMapResource{}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := testResourceManifest()
+			r.Maps["outer"] = operators.NativeMapResource{Type: uint32(ebpf.ArrayOfMaps), KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: tc.inner}
+			if err := validateOwnerResources(r, 8); (err == nil) != tc.valid {
+				t.Fatalf("validateOwnerResources = %v, valid=%v", err, tc.valid)
+			}
+		})
+	}
+}

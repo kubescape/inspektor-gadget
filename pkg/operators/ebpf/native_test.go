@@ -188,3 +188,47 @@ func TestNativeFinalResourceValidationPrecedesAllocation(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeManifestIncludesIndependentInnerMapTemplates(t *testing.T) {
+	inner := &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1 << 25, Flags: 1}
+	outer := &ebpf.MapSpec{Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: inner}
+	i := &ebpfInstance{collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"outer": outer}}}
+	r := i.nativeResources()
+	copied := r.Maps["outer"].InnerMap
+	if copied == nil || copied.Type != uint32(ebpf.Array) || copied.KeySize != 4 || copied.ValueSize != 8 || copied.MaxEntries != 1<<25 || copied.Flags != 1 {
+		t.Fatalf("inner map allocation lost from manifest: %+v", copied)
+	}
+	inner.MaxEntries = 1
+	outer.InnerMap = nil
+	if copied.MaxEntries != 1<<25 {
+		t.Fatal("manifest retains mutable inner map spec")
+	}
+}
+
+func TestNativeManifestBoundsInnerMapTemplates(t *testing.T) {
+	for _, cyclic := range []bool{false, true} {
+		t.Run(fmt.Sprint("cyclic=", cyclic), func(t *testing.T) {
+			outer := &ebpf.MapSpec{Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1}
+			if cyclic {
+				outer.InnerMap = outer
+			} else {
+				for range 32 {
+					outer = &ebpf.MapSpec{Type: ebpf.ArrayOfMaps, InnerMap: outer}
+				}
+			}
+			i := &ebpfInstance{collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"outer": outer}}}
+			r := i.nativeResources().Maps["outer"]
+			depth := 0
+			for r.InnerMap != nil {
+				r = *r.InnerMap
+				depth++
+				if depth > 8 {
+					t.Fatal("unbounded native template traversal")
+				}
+			}
+			if depth != 8 || r.Type != uint32(ebpf.UnspecifiedMap) {
+				t.Fatalf("invalid template truncated without rejection marker: depth=%d type=%d", depth, r.Type)
+			}
+		})
+	}
+}

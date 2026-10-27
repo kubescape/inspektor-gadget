@@ -93,8 +93,27 @@ func validateOwnerResources(r *operators.NativeResources, cpus int) error {
 	if r == nil || len(r.Maps) == 0 || len(r.Maps) > 64 || len(r.Programs) == 0 || len(r.Programs) > 64 || cpus < 1 || cpus > 4096 {
 		return fmt.Errorf("unsupported native resource manifest")
 	}
-	payload := uint64(2 * fullpolicy.MaxKernelEntries * fullpolicy.KernelBlobSize) // both native frozen program slots
+	// Account separately allocated inner templates, even when they also appear
+	// as top-level maps. Nested map-of-maps templates are not supported.
+	type namedMap struct {
+		name     string
+		resource operators.NativeMapResource
+	}
+	resources := make([]namedMap, 0, 2*len(r.Maps))
 	for name, m := range r.Maps {
+		resources = append(resources, namedMap{name, m})
+		if m.InnerMap != nil {
+			if ebpf.MapType(m.Type) != ebpf.ArrayOfMaps || m.InnerMap.InnerMap != nil {
+				return fmt.Errorf("unsupported inner template for %s", name)
+			}
+			resources = append(resources, namedMap{name + "/inner", *m.InnerMap})
+		} else if ebpf.MapType(m.Type) == ebpf.ArrayOfMaps {
+			return fmt.Errorf("missing inner template for %s", name)
+		}
+	}
+	payload := uint64(2 * fullpolicy.MaxKernelEntries * fullpolicy.KernelBlobSize) // both native frozen program slots
+	for _, resource := range resources {
+		name, m := resource.name, resource.resource
 		entries := uint64(m.MaxEntries)
 		switch ebpf.MapType(m.Type) {
 		case ebpf.Hash, ebpf.Array, ebpf.LRUHash, ebpf.ArrayOfMaps:

@@ -16,6 +16,8 @@ const (
 
 type NativeMapResource struct {
 	Type, KeySize, ValueSize, MaxEntries, Flags uint32
+	// InnerMap describes the separately allocated map-of-maps template.
+	InnerMap *NativeMapResource
 }
 type NativeProgramResource struct {
 	Type   uint32

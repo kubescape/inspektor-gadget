@@ -49,7 +49,11 @@ func TestFullOwnerImageCompile(t *testing.T) {
 			if owner {
 				resources := &operators.NativeResources{Maps: map[string]operators.NativeMapResource{}, Programs: map[string]operators.NativeProgramResource{}}
 				for name, m := range spec.Maps {
-					resources.Maps[name] = operators.NativeMapResource{Type: uint32(m.Type), KeySize: m.KeySize, ValueSize: m.ValueSize, MaxEntries: m.MaxEntries, Flags: m.Flags}
+					resource := operators.NativeMapResource{Type: uint32(m.Type), KeySize: m.KeySize, ValueSize: m.ValueSize, MaxEntries: m.MaxEntries, Flags: m.Flags}
+					if inner := m.InnerMap; inner != nil {
+						resource.InnerMap = &operators.NativeMapResource{Type: uint32(inner.Type), KeySize: inner.KeySize, ValueSize: inner.ValueSize, MaxEntries: inner.MaxEntries, Flags: inner.Flags}
+					}
+					resources.Maps[name] = resource
 				}
 				for name, p := range spec.Programs {
 					resources.Programs[name] = operators.NativeProgramResource{Type: uint32(p.Type), Target: p.AttachTo, Instructions: uint64(len(p.Instructions)) * 2}
