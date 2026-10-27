@@ -1,0 +1,493 @@
+// Copyright 2026 The Inspektor Gadget authors
+// SPDX-License-Identifier: Apache-2.0
+package fullpolicy
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+type evaluatorPath struct {
+	Length uint32
+	Bytes  [256]byte
+}
+type evaluatorRole struct{ PolicyUID, Role uint64 }
+type evaluatorFacts struct {
+	ActorPath, TargetPath            evaluatorPath
+	ActorImage, TargetImage          int32
+	UID, UIDKnown                    uint32
+	Ancestors                        [16]evaluatorPath
+	AncestorCount, AncestorsComplete uint32
+	Roles                            [8]evaluatorRole
+	RoleCount, FSMask, FSKnown       uint32
+	Argv                             [4096]byte
+	Argc                             uint32
+	Offsets                          [64]uint32
+	ArgBytes, ArgComplete            uint32
+	Stdin                            int32
+	Padding                          uint32
+}
+
+func evaluatorPathOf(s string) evaluatorPath {
+	p := evaluatorPath{Length: uint32(len(s))}
+	copy(p.Bytes[:], s)
+	return p
+}
+func evaluatorTri(p *bool) int32 {
+	if p == nil {
+		return -1
+	}
+	if *p {
+		return 1
+	}
+	return 0
+}
+func evaluatorFactBytes(t *testing.T, p *KernelProgram, policies []Policy, f Facts) evaluatorFacts {
+	t.Helper()
+	out := evaluatorFacts{ActorPath: evaluatorPathOf(f.ActorPath), TargetPath: evaluatorPathOf(f.TargetPath), ActorImage: evaluatorTri(f.ActorFromImage), TargetImage: evaluatorTri(f.TargetFromImage), Stdin: evaluatorTri(f.StdinIsPipe), AncestorCount: uint32(len(f.Ancestors))}
+	if f.EffectiveUID != nil {
+		out.UID = *f.EffectiveUID
+		out.UIDKnown = 1
+	}
+	if f.AncestorsComplete {
+		out.AncestorsComplete = 1
+	}
+	for i, s := range f.Ancestors {
+		if i < 16 {
+			out.Ancestors[i] = evaluatorPathOf(s)
+		}
+	}
+	hashes := map[string]uint64{}
+	for hash, name := range p.Identities {
+		hashes[name] = hash
+	}
+	for i, policy := range policies {
+		if role := f.Roles[policy.ID]; role != "" {
+			kp := mustDecode[KernelPolicy](t, p, uint32(i+1))
+			out.Roles[out.RoleCount] = evaluatorRole{kp.UID, hashes[role]}
+			out.RoleCount++
+		}
+	}
+	for _, kind := range append([]string{f.FSType}, f.FileKinds...) {
+		switch kind {
+		case "tmpfs":
+			out.FSMask |= 1
+		case "memfd":
+			out.FSMask |= 2
+		case "deleted":
+			out.FSMask |= 4
+		case "overlay":
+			out.FSMask |= 8
+		}
+	}
+	out.FSKnown = out.FSMask
+	for _, kind := range f.FileKindsKnown {
+		switch kind {
+		case "tmpfs":
+			out.FSKnown |= 1
+		case "memfd":
+			out.FSKnown |= 2
+		case "deleted":
+			out.FSKnown |= 4
+		case "overlay":
+			out.FSKnown |= 8
+		}
+	}
+	out.Argc = uint32(len(f.Argv))
+	if f.ArgvComplete {
+		out.ArgComplete = 1
+	}
+	for i, arg := range f.Argv {
+		if i < 64 {
+			out.Offsets[i] = out.ArgBytes
+		}
+		if out.ArgBytes < 4096 {
+			copy(out.Argv[out.ArgBytes:], arg)
+		}
+		out.ArgBytes += uint32(len(arg) + 1)
+	}
+	return out
+}
+func buildEvaluatorRunner(t *testing.T, flags ...string) string {
+	t.Helper()
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("C evaluator tests require clang")
+	}
+	path := filepath.Join(t.TempDir(), "evaluator")
+	args := append([]string{"-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"}, flags...)
+	args = append(args, "testdata/evaluator_runner.c", "-o", path)
+	if out, err := exec.Command(clang, args...).CombinedOutput(); err != nil {
+		t.Fatalf("compile: %v\n%s", err, out)
+	}
+	return path
+}
+func runCEvaluator(t *testing.T, runner string, p *KernelProgram, facts evaluatorFacts) []uint64 {
+	t.Helper()
+	dir := t.TempDir()
+	var program bytes.Buffer
+	for _, entry := range p.Entries {
+		program.Write(entry[:])
+	}
+	if err := os.WriteFile(filepath.Join(dir, "program"), program.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var data bytes.Buffer
+	if err := binary.Write(&data, binary.LittleEndian, facts); err != nil {
+		t.Fatal(err)
+	}
+	if data.Len() != 9216 {
+		t.Fatalf("facts ABI size %d", data.Len())
+	}
+	if err := os.WriteFile(filepath.Join(dir, "facts"), data.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(runner, filepath.Join(dir, "program"), filepath.Join(dir, "facts")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("runner %v: %s", err, output)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 16 {
+		t.Fatalf("bad response: %s", output)
+	}
+	values := make([]uint64, 16)
+	for i, field := range fields {
+		if i == 0 && field == "-1" {
+			values[i] = ^uint64(0)
+			continue
+		}
+		v, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values[i] = v
+	}
+	return values
+}
+func TestCEvaluatorReferenceParity(t *testing.T) {
+	runner := buildEvaluatorRunner(t)
+	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {
+		return runCEvaluator(t, runner, p, facts)
+	})
+}
+
+// Exercise the exact fixed-map global-rule sequencing in ordinary C too; BPF
+// verifier acceptance remains a separate opt-in real-kernel test.
+func TestCEvaluatorFixedMapReferenceParity(t *testing.T) {
+	runner := buildEvaluatorRunner(t, "-DFE_FIXED_MAP_TEST")
+	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {
+		return runCEvaluator(t, runner, p, facts)
+	})
+}
+
+func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evaluatorFacts) []uint64) {
+	yes, no := true, false
+	uid := uint32(1000)
+	base := Facts{ActorPath: "/usr/bin/shell", TargetPath: "/bin/tool", ActorFromImage: &yes, TargetFromImage: &no, EffectiveUID: &uid, Ancestors: []string{"/bin/init"}, AncestorsComplete: true, Roles: map[string]string{"p": "root"}, Container: "worker", FSType: "tmpfs", FileKinds: []string{"memfd", "deleted"}, Argv: []string{"tool", "--name=one", "complete argument"}, ArgvComplete: true, StdinIsPipe: &yes}
+	rule := Rule{Name: "match", Action: Allow}
+	tests := []struct {
+		name     string
+		policies []Policy
+		facts    Facts
+	}{}
+	add := func(name string, r Rule, f Facts) {
+		tests = append(tests, struct {
+			name     string
+			policies []Policy
+			facts    Facts
+		}{name, []Policy{{ID: "p", Revision: "r", Mode: Enforce, RootRole: "root", Default: Deny, Rules: []Rule{r}}}, f})
+	}
+	add("unconditional", rule, base)
+	for _, tc := range []struct {
+		name            string
+		query           []string
+		positive, known []string
+	}{
+		{"unknown-before-positive", []string{"memfd", "tmpfs"}, []string{"tmpfs"}, nil},
+		{"positive-before-unknown", []string{"tmpfs", "memfd"}, []string{"tmpfs"}, nil},
+		{"unknown-with-known-negative", []string{"memfd", "overlay"}, nil, []string{"overlay"}},
+		{"all-known-negative", []string{"memfd", "overlay"}, nil, []string{"memfd", "overlay"}},
+		{"positive-no-base-fstype", []string{"deleted"}, []string{"deleted"}, nil},
+	} {
+		f := base
+		f.FSType = ""
+		f.FileKinds = tc.positive
+		f.FileKindsKnown = tc.known
+		add("fs-"+tc.name, Rule{Name: "fs", Action: Allow, Target: Target{FSType: tc.query}}, f)
+	}
+
+	variants := []Rule{
+		{Actor: Actor{Path: []string{"/wrong", "/usr/**"}}},
+		{Target: Target{Path: []string{"/bin/*"}}},
+		{Actor: Actor{Role: []string{"root", "child"}}},
+		{Actor: Actor{Container: []string{"other", "worker"}}},
+		{Actor: Actor{UID: []int64{1, 1000}}},
+		{Actor: Actor{FromImage: &yes}},
+		{Target: Target{FromImage: &no}},
+		{Target: Target{FSType: []string{"overlay", "memfd"}}},
+		{Actor: Actor{Ancestor: &Ancestor{Path: []string{"/bin/init"}, Depth: 2}}},
+		{Target: Target{Argv: &Argv{Contains: []string{"no", "complete argument"}, Prefix: []string{"--name="}, StdinIsPipe: &yes}}},
+		{Target: Target{SetRole: "child"}},
+	}
+	for i, r := range variants {
+		r.Name = "match"
+		r.Action = Allow
+		add(fmt.Sprintf("predicate-%d", i), r, base)
+	}
+	all := Rule{Name: "all", Action: Allow, Actor: Actor{Path: []string{"/usr/**"}, Role: []string{"root"}, Container: []string{"worker"}, UID: []int64{1000}, FromImage: &yes, Ancestor: &Ancestor{Path: []string{"/bin/init"}, Depth: 16}}, Target: Target{Path: []string{"/bin/*"}, FromImage: &no, FSType: []string{"deleted"}, Argv: &Argv{Contains: []string{"complete argument"}, Prefix: []string{"--name="}, StdinIsPipe: &yes}, SetRole: "child"}}
+	add("all", all, base)
+	for _, name := range []string{"actor-image", "target-image", "uid", "role", "ancestor", "argv", "stdin", "filesystem", "actor-path", "target-path"} {
+		f := base
+		switch name {
+		case "actor-image":
+			f.ActorFromImage = nil
+		case "target-image":
+			f.TargetFromImage = nil
+		case "uid":
+			f.EffectiveUID = nil
+		case "role":
+			f.Roles = nil
+		case "ancestor":
+			f.Ancestors = nil
+			f.AncestorsComplete = false
+		case "argv":
+			f.ArgvComplete = false
+		case "stdin":
+			f.StdinIsPipe = nil
+		case "filesystem":
+			f.FSType = ""
+			f.FileKinds = nil
+			f.FileKindsKnown = nil
+		case "actor-path":
+			f.ActorPath = ""
+		case "target-path":
+			f.TargetPath = ""
+		}
+		add("unknown-"+name, all, f)
+	}
+	f := base
+	f.TargetPath = "/different"
+	add("mismatch", all, f)
+	f = base
+	f.Argv = []string{"prefix complete argument suffix"}
+	add("contains-whole-argument", variants[9], f)
+	// Keep generated variants compilable when reused directly.
+	tests[len(tests)-1].policies[0].Rules[0].Name = "match"
+	tests[len(tests)-1].policies[0].Rules[0].Action = Allow
+	multi := func(name string, p []Policy) {
+		tests = append(tests, struct {
+			name     string
+			policies []Policy
+			facts    Facts
+		}{name, p, base})
+	}
+	multi("default-not-per-policy", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Default: Deny}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{rule}}})
+	multi("mixed-deny-mode", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{rule}}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "deny", Action: Deny}}}})
+	multi("merged-default", []Policy{{ID: "p", Revision: "r", Mode: Audit, Default: Deny}, {ID: "q", Revision: "r", Mode: Enforce, Default: Allow}})
+	multi("conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}})
+	multi("deny-clears-role", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Deny}}}})
+	paths := make([]string, 128)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("/allowed/%d", i)
+	}
+	paths[127] = "/bin/tool"
+	add("128-paths", Rule{Name: "many", Action: Allow, Target: Target{Path: paths}}, base)
+	for i := 0; i < 10; i++ {
+		r := variants[i]
+		r.Name = "mismatch"
+		r.Action = Allow
+		f := base
+		switch i {
+		case 0:
+			f.ActorPath = "/not/actor"
+		case 1:
+			f.TargetPath = "/not/target"
+		case 2:
+			r.Actor.Role = []string{"child"}
+		case 3:
+			r.Actor.Container = []string{"not-worker"}
+		case 4:
+			other := uint32(42)
+			f.EffectiveUID = &other
+		case 5:
+			f.ActorFromImage = &no
+		case 6:
+			f.TargetFromImage = &yes
+		case 7:
+			f.FSType = "ext4"
+			f.FileKinds = nil
+		case 8:
+			f.Ancestors = []string{"/other"}
+		case 9:
+			f.Argv = []string{"complete argument", "embedded--name="}
+		}
+		add(fmt.Sprintf("predicate-mismatch-%d", i), r, f)
+	}
+	f = base
+	f.ActorFromImage = nil
+	f.ActorPath = "/does-not-match"
+	add("unknown-short-circuited", all, f)
+	f = base
+	f.Ancestors = []string{"/wrong", "/bin/init"}
+	f.AncestorsComplete = false
+	add("ancestor-found-in-incomplete-walk", all, f)
+	f = base
+	f.Argv = []string{strings.Repeat("x", 4095)}
+	add("4096-argv-bytes", Rule{Name: "longarg", Action: Allow, Target: Target{Argv: &Argv{Prefix: []string{"xxx"}}}}, f)
+	f.Argv = []string{strings.Repeat("x", 4096)}
+	add("oversized-argv", Rule{Name: "longarg", Action: Allow, Target: Target{Argv: &Argv{Prefix: []string{"xxx"}}}}, f)
+	f = base
+	f.Argv = make([]string, 64)
+	f.Argv[63] = "last"
+	add("64-arguments", Rule{Name: "lastarg", Action: Allow, Target: Target{Argv: &Argv{Contains: []string{"last"}}}}, f)
+	f = base
+	f.TargetPath = "/bad\xff"
+	add("invalid-path-even-unconsulted", rule, f)
+	rules := make([]Rule, 256)
+	for i := range rules {
+		rules[i] = Rule{Name: fmt.Sprintf("rule-%03d", i), Action: Allow}
+	}
+	rules[255].Action = Deny
+	multi("256-rules", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: rules}})
+	multi("policy-local-roles", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}}}, {ID: "q", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}})
+	f = base
+	f.Ancestors = make([]string, 16)
+	for i := range f.Ancestors {
+		f.Ancestors[i] = "/wrong"
+	}
+	f.Ancestors[15] = "/bin/init"
+	add("sixteenth-ancestor", all, f)
+	manyPolicies := make([]Policy, 8)
+	f = base
+	f.Roles = map[string]string{}
+	for i := range manyPolicies {
+		id := fmt.Sprintf("policy-%d", i)
+		f.Roles[id] = "root"
+		manyPolicies[i] = Policy{ID: id, Revision: "r", Mode: Enforce, RootRole: "root", Rules: []Rule{{Name: "role", Action: Allow, Actor: Actor{Role: []string{"root"}}, Target: Target{SetRole: "child"}}}}
+	}
+	multi("eight-policy-roles", manyPolicies)
+	tests[len(tests)-1].facts = f
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := CompileKernel(tc.policies, 1, "worker")
+			if err != nil {
+				t.Fatal(err)
+			}
+			oracle, err := Compile(tc.policies)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, werr := oracle.Evaluate(tc.facts)
+			got := run(t, p, evaluatorFactBytes(t, p, tc.policies, tc.facts))
+			if werr != nil {
+				if got[0] != ^uint64(0) || got[3] == 0 {
+					t.Fatalf("want error %v, got %v", werr, got)
+				}
+				return
+			}
+			if got[0] != 0 {
+				t.Fatalf("unexpected C error %v want %+v", got, want)
+			}
+			deny := uint64(0)
+			if want.Action == Deny {
+				deny = 1
+			}
+			mode := uint64(1)
+			if want.Mode == Enforce {
+				mode = 2
+			}
+			if got[1] != deny || got[2] != mode {
+				t.Fatalf("C %v want %+v", got, want)
+			}
+			var bits [4]uint64
+			for i, meta := range p.Rules {
+				for _, m := range want.Matches {
+					if m.PolicyID == meta.PolicyID && m.Rule == meta.Name {
+						bits[i/64] |= 1 << uint(i%64)
+					}
+				}
+			}
+			for i, b := range bits {
+				if got[4+i] != b {
+					t.Fatalf("bitmap %v want %v", got[4:8], bits)
+				}
+			}
+			for i, policy := range tc.policies {
+				role := want.SetRoles[policy.ID]
+				hash := got[8+i]
+				if (role == "" && hash != 0) || (role != "" && p.Identities[hash] != role) {
+					t.Fatalf("role hash %d (%q), want %q", hash, p.Identities[hash], role)
+				}
+			}
+		})
+	}
+}
+
+// Compilation checks instruction/stack generation, not verifier acceptance or
+// attachment. The same harness can be loaded only on an isolated BPF test host.
+func TestCEvaluatorBPFCompile(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("requires clang BPF backend")
+	}
+	object := filepath.Join(t.TempDir(), "evaluator.bpf.o")
+	if output, err := exec.Command(clang, "-target", "bpf", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", "testdata/evaluator_runner.c", "-o", object).CombinedOutput(); err != nil {
+		t.Fatalf("compile evaluator BPF: %v\n%s", err, output)
+	}
+}
+
+func TestCEvaluatorMalformedBounds(t *testing.T) {
+	runner := buildEvaluatorRunner(t)
+	policies := []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "args", Action: Allow, Target: Target{Argv: &Argv{Contains: []string{"safe"}}}}}}}
+	p, err := CompileKernel(policies, 1, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := evaluatorFactBytes(t, p, policies, Facts{Argv: []string{"safe"}, ArgvComplete: true})
+	tests := []struct {
+		name   string
+		mutate func(*KernelProgram, *evaluatorFacts)
+	}{
+		{"ancestor-count", func(_ *KernelProgram, f *evaluatorFacts) { f.AncestorCount = 17 }},
+		{"role-count", func(_ *KernelProgram, f *evaluatorFacts) { f.RoleCount = 9 }},
+		{"argument-count", func(_ *KernelProgram, f *evaluatorFacts) { f.Argc = 65 }},
+		{"argument-offset", func(_ *KernelProgram, f *evaluatorFacts) { f.Offsets[0] = 4096 }},
+		{"argument-byte-count", func(_ *KernelProgram, f *evaluatorFacts) { f.ArgBytes = 4097 }},
+		{"unterminated-argument", func(_ *KernelProgram, f *evaluatorFacts) { f.ArgBytes = 4 }},
+		{"embedded-nul", func(_ *KernelProgram, f *evaluatorFacts) { f.Argv[1] = 0 }},
+		{"path-byte-count", func(_ *KernelProgram, f *evaluatorFacts) { f.ActorPath.Length = 256 }},
+		{"rule-count", func(p *KernelProgram, _ *evaluatorFacts) { binary.LittleEndian.PutUint32(p.Entries[0][16:20], 257) }},
+		{"policy-count", func(p *KernelProgram, _ *evaluatorFacts) { binary.LittleEndian.PutUint32(p.Entries[0][8:12], 9) }},
+		{"list-count", func(p *KernelProgram, _ *evaluatorFacts) {
+			binary.LittleEndian.PutUint32(p.Entries[KernelRuleBase][100:104], 257)
+		}},
+		{"list-base", func(p *KernelProgram, _ *evaluatorFacts) {
+			binary.LittleEndian.PutUint32(p.Entries[KernelRuleBase][96:100], 16384)
+		}},
+		{"missing-blob", func(p *KernelProgram, _ *evaluatorFacts) { p.Entries = p.Entries[:KernelRuleBase+1] }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			copyP := *p
+			copyP.Entries = append([]Blob(nil), p.Entries...)
+			copyF := facts
+			tc.mutate(&copyP, &copyF)
+			got := runCEvaluator(t, runner, &copyP, copyF)
+			if got[0] != ^uint64(0) || got[3] == 0 {
+				t.Fatalf("malformed input accepted: %v", got)
+			}
+			for _, role := range got[8:] {
+				if role != 0 {
+					t.Fatalf("error retained role proposal: %v", got)
+				}
+			}
+		})
+	}
+}

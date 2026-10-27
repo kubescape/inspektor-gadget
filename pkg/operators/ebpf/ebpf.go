@@ -208,8 +208,9 @@ type ebpfInstance struct {
 	// map from ebpf variable name to ebpfVar struct
 	vars map[string]*ebpfVar
 
-	links   []link.Link
-	perfFds []int
+	links             []link.Link
+	nativeAttachments map[string]*operators.NativeAttachment
+	perfFds           []int
 
 	containers map[string]*containercollection.Container
 
@@ -546,6 +547,7 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 	for name, m := range i.collectionSpec.Maps {
 		gadgetCtx.SetVar(operators.MapSpecPrefix+name, m)
 	}
+	i.publishNativeResources(gadgetCtx)
 
 	return nil
 }
@@ -984,6 +986,8 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 	}
 
+	i.publishCommandPrograms(gadgetCtx)
+
 	// Attach programs
 	for progName, p := range i.collectionSpec.Programs {
 		l, err := i.attachProgram(gadgetCtx, p, i.collection.Programs[progName])
@@ -996,6 +1000,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 
 		i.links = append(i.links, l)
+		if err = i.publishNativeAttachment(gadgetCtx, progName, p, l); err != nil {
+			return err
+		}
 
 		// We need to store iterators' links because we need them to run the programs
 		if p.Type == ebpf.Tracing && strings.HasPrefix(p.SectionName, iterPrefix) {
@@ -1055,6 +1062,7 @@ func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 	}
 	i.tracers = nil
 
+	i.unpublishNativeAttachments(gadgetCtx)
 	for _, l := range i.links {
 		gadgets.CloseLink(l)
 	}
@@ -1081,6 +1089,7 @@ func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
 	i.Stop(gadgetCtx)
 	if i.collection != nil {
+		i.unpublishCommandPrograms(gadgetCtx)
 		i.collection.Close()
 		i.collection = nil
 	}

@@ -11,7 +11,7 @@ import (
 
 const (
 	KernelMaxBindings = 1024
-	KernelMaxRules    = 8
+	KernelMaxRules    = 128
 	KernelPathSize    = 256
 )
 
@@ -53,14 +53,20 @@ func CompileKernel(d Document, generation uint64) ([KernelMaxRules + 1]KernelEnt
 		entries[0].DefaultDeny = 1
 	}
 	for _, rule := range d.Policy.Exec.Rules {
-		if rule.Mode != "" && rule.Mode != d.Policy.Mode {
-			return fail(fmt.Errorf("rule %q mode must match policy mode for the kernel backend", rule.Name))
+		if d.Policy.Mode == "off" && rule.Mode != "" {
+			return fail(fmt.Errorf("rule %q cannot override an off policy", rule.Name))
 		}
 		for _, pattern := range rule.Target.Path {
 			if entries[0].Count == KernelMaxRules {
 				return fail(fmt.Errorf("kernel expanded path capacity exceeded (%d)", KernelMaxRules))
 			}
 			var entry KernelEntry
+			switch rule.Mode {
+			case "audit":
+				entry.Mode = 1
+			case "enforce":
+				entry.Mode = 2
+			}
 			if strings.HasSuffix(pattern, "/**") {
 				pattern = strings.TrimSuffix(pattern, "**")
 				entry.Prefix = 1
@@ -94,7 +100,7 @@ func ValidateKernel(entries [KernelMaxRules + 1]KernelEntry) error {
 			}
 			continue
 		}
-		if e.Generation != 0 || e.Mode != 0 || e.DefaultDeny != 0 || e.Count != 0 || e.Deny > 1 || e.Prefix > 1 || e.Length == 0 || e.Length >= KernelPathSize {
+		if e.Generation != 0 || e.Mode > 2 || (h.Mode == 0 && e.Mode != 0) || e.DefaultDeny != 0 || e.Count != 0 || e.Deny > 1 || e.Prefix > 1 || e.Length == 0 || e.Length >= KernelPathSize {
 			return fmt.Errorf("invalid rule %d", i)
 		}
 		for _, b := range e.Path[e.Length:] {

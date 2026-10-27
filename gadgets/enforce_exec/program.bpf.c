@@ -7,10 +7,10 @@
 #include <bpf/bpf_core_read.h>
 #include <gadget/macros.h>
 
-#define MAX_RULES 8
+#define MAX_RULES 128
 #define PATH_SIZE 256
 
-extern int bpf_path_d_path(struct path *path, char *buf, size_t buf__sz) __ksym;
+extern int bpf_path_d_path(const struct path *path, char *buf, size_t buf__sz) __ksym;
 
 // Slot 0 contains the generation header; remaining slots contain path rules.
 struct exec_policy_entry {
@@ -124,6 +124,55 @@ static long compare_char(__u32 index, void *data)
     return 0;
 }
 
+// A bounded callback avoids verifier state expansion proportional to the policy
+// size. Mode zero in a rule inherits the policy mode (legacy map ABI).
+struct evaluate_ctx {
+    struct exec_path_scratch *scratch;
+    __u32 count;
+    __u32 policy_mode;
+    __u32 deny_mode;
+    __u32 error_mode;
+    __s32 path_length;
+    bool allow_match;
+    bool invalid;
+};
+
+static long evaluate_rule(__u32 index, void *data)
+{
+    struct evaluate_ctx *ctx = data;
+    if (index >= ctx->count || index >= MAX_RULES)
+        return 1;
+    __u32 key = index + 1;
+    struct exec_policy_entry *rule = bpf_map_lookup_elem(&policy, &key);
+    if (!rule || rule->length == 0 || rule->length >= PATH_SIZE || rule->mode > 2) {
+        ctx->invalid = true;
+        return 0;
+    }
+    __u32 mode = rule->mode ? rule->mode : ctx->policy_mode;
+    if (mode > ctx->error_mode)
+        ctx->error_mode = mode;
+    if (ctx->path_length <= 0)
+        return 0;
+    struct compare_ctx comparison = {
+        .scratch = ctx->scratch, .rule = rule, .length = rule->length, .match = true,
+    };
+    if (bpf_loop(PATH_SIZE, compare_char, &comparison, 0) < 0) {
+        ctx->invalid = true;
+        return 0;
+    }
+    if (!rule->prefix && ctx->path_length != rule->length + 1)
+        comparison.match = false;
+    if (comparison.match) {
+        if (rule->deny) {
+            if (mode > ctx->deny_mode)
+                ctx->deny_mode = mode;
+        } else {
+            ctx->allow_match = true;
+        }
+    }
+    return 0;
+}
+
 SEC("lsm/bprm_check_security")
 long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
 {
@@ -152,48 +201,30 @@ long BPF_PROG(enforce_exec, struct linux_binprm *bprm, long ret)
     __u32 rule_count = header->count;
     bool deny = header->default_deny;
     struct exec_path_scratch *scratch = bpf_map_lookup_elem(&scratch_space, &zero);
-    if (!scratch) {
-        volatile long result = 0;
-        if (mode == 2)
-            result = -1;
-        return result;
-    }
+    if (!scratch)
+        return -1; // Cannot safely resolve possible enforced rule overrides.
+
     __builtin_memset(scratch->path, 0, PATH_SIZE);
     // Preserve verifier trust: do not copy the file pointer through probe reads.
     int length = bpf_path_d_path(&bprm->file->f_path, scratch->path, PATH_SIZE);
-    if (length <= 0) {
-        deny = true; // Explicit runtime resolution-error policy for this probe.
+    struct evaluate_ctx evaluation = {
+        .scratch = scratch, .count = rule_count, .policy_mode = mode,
+        .error_mode = mode, .path_length = length,
+    };
+    long evaluated = bpf_loop(MAX_RULES, evaluate_rule, &evaluation, 0);
+    if (length <= 0 || evaluated < 0 || evaluation.invalid || rule_count > MAX_RULES) {
+        deny = true;
+        // An unresolved path may match an enforced override even when the
+        // policy default is audit. Never silently downgrade it to audit.
+        mode = evaluation.error_mode;
+        if (evaluated < 0 || evaluation.invalid || rule_count > MAX_RULES)
+            mode = 2;
         count(4);
-    } else {
-        bool allow_match = false, deny_match = false;
-        for (__u32 i = 1; i <= MAX_RULES; i++) {
-            if (i > rule_count)
-                break;
-            __u32 key = i;
-            struct exec_policy_entry *rule = bpf_map_lookup_elem(&policy, &key);
-            if (!rule)
-                continue;
-            __u32 rule_len = rule->length;
-            if (rule_len == 0 || rule_len >= PATH_SIZE)
-                continue;
-            struct compare_ctx comparison = {
-                .scratch = scratch, .rule = rule, .length = rule_len, .match = true,
-            };
-            if (bpf_loop(PATH_SIZE, compare_char, &comparison, 0) < 0)
-                comparison.match = false;
-            if (!rule->prefix && length != rule_len + 1)
-                comparison.match = false;
-            if (comparison.match) {
-                if (rule->deny)
-                    deny_match = true;
-                else
-                    allow_match = true;
-            }
-        }
-        if (deny_match)
-            deny = true;
-        else if (allow_match)
-            deny = false;
+    } else if (evaluation.deny_mode) {
+        deny = true;
+        mode = evaluation.deny_mode;
+    } else if (evaluation.allow_match) {
+        deny = false;
     }
     count(deny ? 0 : 3);
     bool reporting = report_allowed();

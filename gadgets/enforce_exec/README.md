@@ -17,7 +17,7 @@ CLI policy / node-agent CRD adapter
 
 Each instance has two ordinary maps:
 
-- `policy`: nine array entries (one revision/header and eight expanded path rules).
+- `policy`: 129 array entries (one revision/header and 128 expanded path rules).
   Native code fills it once and freezes it. `BPF_F_RDONLY_PROG` also prevents BPF
   writes. Rules never change while this instance runs.
 - `bindings`: up to 1,024 cgroup-v2 identities. Adding/removing a container is a
@@ -86,15 +86,21 @@ parameter or a file watched by a daemon.
 
 Rules support exact clean absolute paths or trailing `/**` directory patterns,
 allow/deny default, and audit/enforce/off mode. Denies override matching allows.
-Rule modes must be empty or match the policy mode. Unsupported predicates,
-duplicate selectors, oversized input or excess rules fail before loading.
+Rule modes may inherit the policy mode or override it with audit/enforce. A matching
+enforced deny wins over audited denies and allows, independent of rule order.
+Defaults apply only when no rule matches; off policies cannot contain overrides.
+Unsupported predicates, duplicate selectors, oversized input or excess rules fail before loading.
 
 Paths refer to resolved executable destinations. Check `readlink -f /usr/bin/sh`
 inside the target container before adapting the shell example. Renaming an
 executable can change its path permission. Scripts and interpreters are checked
 separately; allowing an interpreter does not constrain the code it interprets.
-Resolution failures deny in enforce mode and permit in audit mode. Off permits
-without ordinary verdict reporting.
+Resolution failures deny if the policy or any rule is enforce; audit-only
+policies permit. Off permits without ordinary verdict reporting.
+
+Rebuild the gadget image and native owner together: the expanded policy map has
+129 entries. The owner rejects older nine-entry images rather than truncating
+the new policy. Individual entries retain the 288-byte layout.
 
 ## Runtime bootstrap compatibility
 

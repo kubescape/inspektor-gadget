@@ -31,7 +31,8 @@ the VM along with objects, metadata, wrapper and headers. No WASM artifact is us
 
 ## Coverage
 
-- `TestExecKernel`: real path/cgroup decisions, audit/enforce/off, scripts,
+- `TestExecKernel`: real path/cgroup decisions, audit/enforce/off, mixed rule modes,
+  128 expanded paths (including last-rule allow/deny), scripts,
   reporting saturation, immutable-map write rejection, live membership changes,
   and sampled continuous denial across repeated overlapping replacements.
 - `TestExecTraceLSMCoexistence`: both attachment orders with tracing enabled,
@@ -144,3 +145,6 @@ For the tested containerd 1.7.24 CRI exec path,
 The test also reads `/proc/self/status` through a real CRI exec to corroborate
 capabilities and `no_new_privs`. This is not a Kubernetes cluster or node-agent
 CRD integration test, and does not establish the contract for arbitrary runtimes.
+
+The new 128-path and mixed-mode cases require a fresh isolated-kernel run; the
+historical validation above does not establish these extensions.

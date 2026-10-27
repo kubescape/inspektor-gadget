@@ -106,7 +106,6 @@ func TestCompileKernelRejectsUnsupported(t *testing.T) {
 		"prefix bytes": func(d *Document) {
 			d.Policy.Exec.Rules[0].Target.Path = []string{"/" + strings.Repeat("x", 254) + "/**"}
 		},
-		"mixed modes": func(d *Document) { d.Policy.Exec.Rules[0].Mode = "audit" },
 		"off with active rule": func(d *Document) {
 			d.Policy.Mode = "off"
 			d.Policy.Exec.Rules[0].Mode = "enforce"
@@ -141,14 +140,16 @@ func TestValidateKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]func(*[KernelMaxRules + 1]KernelEntry){
-		"revision": func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Generation = 0 },
-		"mode":     func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Mode = 3 },
-		"capacity": func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Count = 9 },
-		"unused":   func(e *[KernelMaxRules + 1]KernelEntry) { e[8].Deny = 1 },
-		"length":   func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Length = 256 },
-		"padding":  func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[255] = 1 },
-		"relative": func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[0] = 'x' },
-		"nul":      func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[2] = 0 },
+		"revision":     func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Generation = 0 },
+		"mode":         func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Mode = 3 },
+		"capacity":     func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Count = KernelMaxRules + 1 },
+		"rule mode":    func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Mode = 3 },
+		"off override": func(e *[KernelMaxRules + 1]KernelEntry) { e[0].Mode = 0; e[1].Mode = 2 },
+		"unused":       func(e *[KernelMaxRules + 1]KernelEntry) { e[8].Deny = 1 },
+		"length":       func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Length = 256 },
+		"padding":      func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[255] = 1 },
+		"relative":     func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[0] = 'x' },
+		"nul":          func(e *[KernelMaxRules + 1]KernelEntry) { e[1].Path[2] = 0 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -158,5 +159,27 @@ func TestValidateKernel(t *testing.T) {
 				t.Fatal("invalid compiled policy accepted")
 			}
 		})
+	}
+}
+
+func TestCompileKernelMixedRuleModes(t *testing.T) {
+	for _, policyMode := range []string{"audit", "enforce"} {
+		d := document(t)
+		d.Policy.Mode = policyMode
+		d.Policy.Exec.Rules = []Rule{
+			{Name: "audited-deny", Target: Target{Path: []string{"/bin/tool"}}, Action: "deny", Mode: "audit"},
+			{Name: "enforced-deny", Target: Target{Path: []string{"/bin/tool"}}, Action: "deny", Mode: "enforce"},
+			{Name: "inherited-allow", Target: Target{Path: []string{"/bin/tool"}}, Action: "allow"},
+		}
+		entries, err := CompileKernel(d, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entries[1].Mode != 1 || entries[2].Mode != 2 || entries[3].Mode != 0 {
+			t.Fatalf("rule modes not preserved: %+v", entries[:4])
+		}
+		if err := ValidateKernel(entries); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

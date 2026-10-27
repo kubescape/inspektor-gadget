@@ -7,6 +7,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/viper"
 	"golang.org/x/sys/unix"
 
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	execpolicy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
@@ -28,15 +30,49 @@ const (
 	bindingsKey = "enforce-exec/bindings"
 )
 
+const MaxImageOrigins = 65536
+
+// ImageOriginKey identifies a regular lower file by stable backing identity.
+// Major/minor use the kernel's 12:20 device encoding, not userspace dev_t bits.
+type ImageOriginKey struct {
+	Inode        uint64
+	Major, Minor uint32
+}
+
+// ImageOriginSnapshot is an attestation from the trusted runtime owner, NEVER
+// policy-authored input. Complete certifies ALL regular lower files plus a
+// validated root/mount matrix and immutable lower roots. IG cannot establish
+// those guarantees: the owner must reject mutable, nested, redirected or
+// otherwise unsupported roots before supplying this snapshot.
+type ImageOriginSnapshot struct {
+	Complete bool
+	Keys     []ImageOriginKey
+}
+
 // Config contains compiled immutable rules and initial container discovery selectors.
 // Empty Targets protects no discovered containers. Bind can explicitly add targets.
 type Config struct {
+	// Full selects the advanced immutable program ABI, never a legacy fallback.
+	Full            *fullpolicy.KernelProgram
+	ImageOrigins    *ImageOriginSnapshot
 	Entries         [execpolicy.KernelMaxRules + 1]execpolicy.KernelEntry
 	Targets         []execpolicy.Container
 	InitialBindings []ContainerIdentity
 }
 
 func WithConfig(config Config) gadgetcontext.Option {
+	if config.ImageOrigins != nil {
+		snapshot := *config.ImageOrigins
+		snapshot.Keys = append([]ImageOriginKey(nil), snapshot.Keys...)
+		config.ImageOrigins = &snapshot
+	}
+	if config.Full != nil {
+		snapshot := *config.Full
+		snapshot.Entries = append([]fullpolicy.Blob(nil), config.Full.Entries...)
+		snapshot.Rules = append([]fullpolicy.RuleMetadata(nil), config.Full.Rules...)
+		snapshot.Identities = maps.Clone(config.Full.Identities)
+		config.Full = &snapshot
+	}
 	config.Targets = append([]execpolicy.Container(nil), config.Targets...)
 	config.InitialBindings = append([]ContainerIdentity(nil), config.InitialBindings...)
 	return func(gc *gadgetcontext.GadgetContext) { gc.SetVar(configKey, config) }
@@ -66,6 +102,22 @@ type Status struct {
 	Ready              bool
 	Error              error
 }
+
+// immutableMap allows failure-ordering tests without creating privileged BPF
+// maps. Production Start still accepts only map handles from the eBPF operator.
+type immutableMap interface {
+	bindingMap
+	Type() ebpf.MapType
+	KeySize() uint32
+	ValueSize() uint32
+	MaxEntries() uint32
+	Flags() uint32
+	Freeze() error
+}
+type faultMap interface {
+	immutableMap
+	Lookup(interface{}, interface{}) error
+}
 type bindingMap interface {
 	Put(interface{}, interface{}) error
 	Delete(interface{}) error
@@ -80,6 +132,12 @@ type Bindings struct {
 	members                bindingMap
 	restricted             map[uint64]*namespaceRefs
 	hostNamespaceSupported bool
+	fullImage              bool
+	fullFeatures           string
+	faults                 faultMap
+	fsTrackerVerified      bool
+	fsProbe, fsHealth      func() error
+	kernelError            error
 	ready, stopped         bool
 	startupComplete        bool
 	startupError           error
@@ -100,11 +158,15 @@ func GetBindings(gc operators.GadgetContext) (*Bindings, error) {
 func (b *Bindings) Status() Status {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.checkFaults()
 	err := b.lastError
 	if !b.startupComplete && b.startupError != nil {
 		err = b.startupError
 	}
-	return Status{Revision: b.config.Entries[0].Generation, Bound: len(b.active), RestrictedBindings: len(b.restricted), Ready: b.ready && b.startupComplete && !b.stopped, Error: err}
+	if b.kernelError != nil {
+		err = b.kernelError
+	}
+	return Status{Revision: b.config.Entries[0].Generation, Bound: len(b.active), RestrictedBindings: len(b.restricted), Ready: b.ready && b.startupComplete && !b.stopped && b.kernelError == nil, Error: err}
 }
 
 // Bind synchronously authorizes one exact container after this operator starts.
@@ -138,8 +200,33 @@ func (b *Bindings) Ready(operators.GadgetContext) error {
 	if !b.ready || b.stopped {
 		return fmt.Errorf("binding controller is not running")
 	}
+	if !b.startupComplete && filesystemRequired(b.config) {
+		if b.fsProbe == nil {
+			return b.recordError(fmt.Errorf("filesystem tracker readiness probe is unavailable"))
+		}
+		if err := b.fsProbe(); err != nil {
+			return b.recordError(err)
+		}
+	}
+	if err := b.checkFaults(); err != nil {
+		return err
+	}
 	if b.startupError != nil {
 		return b.startupError
+	}
+	if !b.startupComplete && filesystemRequired(b.config) {
+		b.fsTrackerVerified = true
+		for _, c := range b.desired {
+			if err := b.bind(c); err != nil {
+				var rollback []error
+				for _, active := range b.active {
+					rollback = append(rollback, b.unbind(active))
+				}
+				b.fsTrackerVerified = false
+				return b.recordError(errors.Join(append([]error{err}, rollback...)...))
+			}
+		}
+		b.desired = nil
 	}
 	b.startupComplete = true
 	return nil
@@ -159,6 +246,29 @@ func (b *Bindings) bindWithScope(c ContainerIdentity, refs *namespaceRefs) error
 	}()
 	if err := c.validate(); err != nil {
 		return err
+	}
+	if filesystemRequired(b.config) && !b.fsTrackerVerified {
+		if refs != nil {
+			return fmt.Errorf("filesystem candidate supports strict bindings only")
+		}
+		if b.desired == nil {
+			b.desired = map[execpolicy.Container]ContainerIdentity{}
+		}
+		for _, previous := range b.desired {
+			if (previous.CgroupID == c.CgroupID || previous.selector() == c.selector()) && previous != c {
+				return fmt.Errorf("pending container binding identity conflicts")
+			}
+		}
+		if _, exists := b.desired[c.selector()]; !exists && len(b.desired) >= execpolicy.KernelMaxBindings {
+			return fmt.Errorf("container binding capacity exceeded")
+		}
+		b.desired[c.selector()] = c
+		return nil
+	}
+	if filesystemRequired(b.config) && b.fsTrackerVerified {
+		if err := b.checkFaults(); err != nil {
+			return err
+		}
 	}
 	if previous, ok := b.active[c.CgroupID]; ok {
 		if previous != c {
@@ -209,6 +319,9 @@ func (b *Bindings) Unbind(c ContainerIdentity) error {
 }
 
 func (b *Bindings) unbind(c ContainerIdentity) error {
+	if b.desired[c.selector()] == c {
+		delete(b.desired, c.selector())
+	}
 	if previous, ok := b.active[c.CgroupID]; !ok || previous != c {
 		return nil
 	}
@@ -246,7 +359,7 @@ func (b *Bindings) container(kind string, c ContainerIdentity) error {
 		b.recordError(err)
 		return err
 	}
-	if !b.ready {
+	if !b.ready || (filesystemRequired(b.config) && !b.fsTrackerVerified) {
 		if kind == "CREATED" {
 			b.desired[c.selector()] = c
 		} else if b.desired[c.selector()] == c {
@@ -274,17 +387,24 @@ func (*operator) Init(*params.Params) error  { return nil }
 func (*operator) GlobalParams() api.Params   { return nil }
 func (*operator) InstanceParams() api.Params { return nil }
 func (*operator) InstantiateDataOperator(gc operators.GadgetContext, _ api.ParamValues) (operators.DataOperatorInstance, error) {
-	value, _ := gc.GetVar("config")
+	value, _ := gc.GetVar(configKey)
+	config, supplied := value.(Config)
+	value, _ = gc.GetVar("config")
 	metadata, ok := value.(*viper.Viper)
+	fullImage := ok && metadata.GetBool("annotations.enforce-exec-full")
 	if !ok || !metadata.GetBool("annotations.enforce-exec") {
+		if fullImage || (supplied && config.Full != nil) {
+			return nil, fmt.Errorf("full enforcement requires both enforce-exec and enforce-exec-full image annotations")
+		}
 		return nil, nil
 	}
-	value, ok = gc.GetVar(configKey)
-	config, valid := value.(Config)
-	if !ok || !valid {
+	if !supplied {
 		return nil, fmt.Errorf("enforce_exec requires native policy configuration; use ig enforce-exec or runtime.WithConfig")
 	}
-	if err := execpolicy.ValidateKernel(config.Entries); err != nil {
+	if err := validatePolicyConfig(config, fullImage); err != nil {
+		return nil, err
+	}
+	if err := validateFullFeatures(config, metadata.GetString("annotations.enforce-exec-full-features")); err != nil {
 		return nil, err
 	}
 	if len(config.Targets) > execpolicy.KernelMaxBindings {
@@ -297,7 +417,7 @@ func (*operator) InstantiateDataOperator(gc operators.GadgetContext, _ api.Param
 		}
 		seen[target] = true
 	}
-	b := &Bindings{config: config, desired: map[execpolicy.Container]ContainerIdentity{}, active: map[uint64]ContainerIdentity{}, hostNamespaceSupported: metadata.GetBool("annotations.enforce-exec-host-namespace")}
+	b := &Bindings{config: config, desired: map[execpolicy.Container]ContainerIdentity{}, active: map[uint64]ContainerIdentity{}, hostNamespaceSupported: !fullImage && metadata.GetBool("annotations.enforce-exec-host-namespace"), fullImage: fullImage, fullFeatures: metadata.GetString("annotations.enforce-exec-full-features")}
 	if len(config.InitialBindings) > execpolicy.KernelMaxBindings {
 		return nil, fmt.Errorf("too many initial bindings")
 	}
@@ -354,7 +474,7 @@ func (b *Bindings) Start(gc operators.GadgetContext) error {
 	getMap := func(name string) (*ebpf.Map, error) {
 		value, _ := gc.GetVar(operators.MapPrefix + name)
 		m, ok := value.(*ebpf.Map)
-		if !ok {
+		if !ok || m == nil {
 			return nil, fmt.Errorf("missing BPF map %s", name)
 		}
 		return m, nil
@@ -367,11 +487,248 @@ func (b *Bindings) Start(gc operators.GadgetContext) error {
 	if err != nil {
 		return err
 	}
-	if policy.Type() != ebpf.Array || policy.KeySize() != 4 || policy.ValueSize() != 288 || policy.MaxEntries() != 9 || policy.Flags()&unix.BPF_F_RDONLY_PROG == 0 {
+	var full immutableMap
+	var faults faultMap
+	var images imageMaps
+	if b.config.Full != nil {
+		images.origins, err = getMap("image_origins")
+		if err != nil {
+			return err
+		}
+		images.ready, err = getMap("image_ready")
+		if err != nil {
+			return err
+		}
+		faults, err = getMap("full_faults")
+		if err != nil {
+			return err
+		}
+		full, err = getMap("full_program")
+		if err != nil {
+			return err
+		}
+	}
+	if filesystemRequired(b.config) {
+		origins, e := getMap("fs_inode_origins")
+		if e != nil {
+			return e
+		}
+		diagnostics, e := getMap("fs_diagnostics")
+		if e != nil {
+			return e
+		}
+		if e = b.configureFilesystem(origins, diagnostics); e != nil {
+			return e
+		}
+	}
+	return b.startMaps(policy, members, full, faults, images)
+}
+
+// validatePolicyConfig runs both at admission and immediately before map writes.
+// The role-less subset is deliberately an interim capability
+// boundary, not a declaration that full exec semantics are implemented.
+func validatePolicyConfig(config Config, fullImage bool) error {
+	if fullImage != (config.Full != nil) {
+		return fmt.Errorf("full image and full policy configuration must be supplied together")
+	}
+	if err := execpolicy.ValidateKernel(config.Entries); err != nil {
+		return err
+	}
+	if config.Full == nil {
+		if config.ImageOrigins != nil {
+			return fmt.Errorf("image origins require a full program")
+		}
+		return nil
+	}
+	if err := validateImageOrigins(config.ImageOrigins); err != nil {
+		return err
+	}
+	if err := fullpolicy.ValidateKernelProgram(config.Full); err != nil {
+		return fmt.Errorf("invalid full program: %w", err)
+	}
+	header, err := fullpolicy.Decode[fullpolicy.KernelHeader](config.Full.Entries[0])
+	if err != nil {
+		return err
+	}
+	legacy := config.Entries[0]
+	if header.Generation != legacy.Generation || legacy.Mode != 2 || legacy.Count != 0 || legacy.DefaultDeny != 0 {
+		return fmt.Errorf("full program requires matching generation and an empty enforce/default-allow legacy header")
+	}
+	for i := uint32(0); i < header.RuleCount; i++ {
+		rule, err := fullpolicy.Decode[fullpolicy.KernelRule](config.Full.Entries[header.RuleBase+i])
+		if err != nil {
+			return err
+		}
+		if rule.ActorRole.Count > 0 || rule.SetRole != 0 {
+			return fmt.Errorf("full rule %d requires unsupported role state", i)
+		}
+		if rule.ActorImage != -1 || rule.TargetImage != -1 {
+			if config.ImageOrigins == nil || !config.ImageOrigins.Complete {
+				return fmt.Errorf("full rule %d requires complete trusted image-origin snapshot", i)
+			}
+		}
+	}
+	return nil
+}
+
+// Image capabilities are explicit. Omission never causes a predicate to be
+// silently ignored. Role observations remain unsupported even if advertised.
+// Filesystem unknowns become sticky operational faults, never false matches.
+// Stdin support is restricted to x86 sole-owned descriptor tables; observation
+// uncertainty becomes a sticky kernel fault/NotReady, never a false predicate.
+func validateFullFeatures(config Config, annotation string) error {
+	if config.Full == nil {
+		return nil
+	}
+	features := map[string]bool{}
+	for _, feature := range strings.Split(annotation, ",") {
+		features[strings.TrimSpace(feature)] = true
+	}
+	require := func(name string) error {
+		if !features[name] {
+			return fmt.Errorf("full image lacks required capability %q", name)
+		}
+		return nil
+	}
+	if err := require("path"); err != nil {
+		return err
+	}
+	header, err := fullpolicy.Decode[fullpolicy.KernelHeader](config.Full.Entries[0])
+	if err != nil {
+		return err
+	}
+	for i := uint32(0); i < header.RuleCount; i++ {
+		rule, err := fullpolicy.Decode[fullpolicy.KernelRule](config.Full.Entries[header.RuleBase+i])
+		if err != nil {
+			return err
+		}
+		required := []struct {
+			name string
+			used bool
+		}{
+			{"image", rule.ActorImage != -1 || rule.TargetImage != -1},
+			{"stdin", rule.Stdin != -1},
+			{"fs", rule.FSType.Count > 0},
+			{"uid", rule.UID.Count > 0}, {"argv", rule.ArgContains.Count > 0 || rule.ArgPrefix.Count > 0},
+			{"actor-path", rule.ActorPath.Count > 0}, {"ancestor", rule.AncestorPath.Count > 0},
+		}
+		for _, feature := range required {
+			if feature.used {
+				if err := require(feature.name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkFaults preserves a sticky operational failure without withdrawing
+// last-good enforcement. Never access borrowed map handles after Stop.
+func (b *Bindings) checkFaults() error {
+	if b.stopped || b.faults == nil || b.kernelError != nil {
+		return b.kernelError
+	}
+	var value uint64
+	if err := b.faults.Lookup(uint32(0), &value); err != nil {
+		b.kernelError = fmt.Errorf("reading full enforcement faults: %w", err)
+	} else if value != 0 {
+		b.kernelError = fmt.Errorf("full enforcement cannot observe required authoritative facts (fault mask %d)", value)
+	}
+	if b.kernelError == nil && b.fsHealth != nil {
+		b.kernelError = b.fsHealth()
+	}
+	return b.kernelError
+}
+
+func validateImageOrigins(snapshot *ImageOriginSnapshot) error {
+	if snapshot == nil {
+		return nil
+	}
+	if !snapshot.Complete {
+		return fmt.Errorf("image-origin snapshot is incomplete")
+	}
+	if len(snapshot.Keys) > MaxImageOrigins {
+		return fmt.Errorf("image-origin snapshot exceeds %d keys", MaxImageOrigins)
+	}
+	seen := make(map[ImageOriginKey]struct{}, len(snapshot.Keys))
+	for _, key := range snapshot.Keys {
+		if key.Inode == 0 || key.Major >= 1<<12 || key.Minor >= 1<<20 {
+			return fmt.Errorf("invalid image-origin key")
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate image-origin key")
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+type imageMaps struct{ origins, ready immutableMap }
+
+func (m imageMaps) validate() error {
+	if m.origins == nil || m.origins.Type() != ebpf.Hash || m.origins.KeySize() != 16 || m.origins.ValueSize() != 1 || m.origins.MaxEntries() != MaxImageOrigins || m.origins.Flags() != unix.BPF_F_NO_PREALLOC|unix.BPF_F_RDONLY_PROG {
+		return fmt.Errorf("invalid immutable image-origin map layout")
+	}
+	if m.ready == nil || m.ready.Type() != ebpf.Array || m.ready.KeySize() != 4 || m.ready.ValueSize() != 4 || m.ready.MaxEntries() != 1 || m.ready.Flags() != unix.BPF_F_RDONLY_PROG {
+		return fmt.Errorf("invalid immutable image-ready map layout")
+	}
+	return nil
+}
+func (m imageMaps) populate(snapshot *ImageOriginSnapshot) error {
+	var ready uint32
+	if snapshot != nil {
+		for _, key := range snapshot.Keys {
+			if err := m.origins.Put(key, uint8(1)); err != nil {
+				return fmt.Errorf("writing image origins: %w", err)
+			}
+		}
+		if snapshot.Complete {
+			ready = 1
+		}
+	}
+	if err := m.origins.Freeze(); err != nil {
+		return fmt.Errorf("freezing image origins: %w", err)
+	}
+	if err := m.ready.Put(uint32(0), ready); err != nil {
+		return fmt.Errorf("writing image readiness: %w", err)
+	}
+	if err := m.ready.Freeze(); err != nil {
+		return fmt.Errorf("freezing image readiness: %w", err)
+	}
+	return nil
+}
+
+// startMaps is called with b.mu held. No binding becomes visible until every
+// immutable map has been validated, populated and frozen successfully.
+func (b *Bindings) startMaps(policy, members, full immutableMap, faults faultMap, images imageMaps) error {
+	if b.ready {
+		return fmt.Errorf("binding controller already started")
+	}
+	if err := validatePolicyConfig(b.config, b.fullImage); err != nil {
+		return err
+	}
+	if err := validateFullFeatures(b.config, b.fullFeatures); err != nil {
+		return err
+	}
+	if policy == nil || policy.Type() != ebpf.Array || policy.KeySize() != 4 || policy.ValueSize() != 288 || policy.MaxEntries() != execpolicy.KernelMaxRules+1 || policy.Flags()&unix.BPF_F_RDONLY_PROG == 0 {
 		return fmt.Errorf("invalid immutable policy map layout")
 	}
-	if members.Type() != ebpf.Hash || members.KeySize() != 8 || members.ValueSize() != 8 || members.MaxEntries() != execpolicy.KernelMaxBindings {
+	if members == nil || members.Type() != ebpf.Hash || members.KeySize() != 8 || members.ValueSize() != 8 || members.MaxEntries() != execpolicy.KernelMaxBindings {
 		return fmt.Errorf("invalid binding map layout")
+	}
+	if b.config.Full != nil {
+		if err := images.validate(); err != nil {
+			return err
+		}
+		if faults == nil || faults.Type() != ebpf.Array || faults.KeySize() != 4 || faults.ValueSize() != 8 || faults.MaxEntries() != 1 || faults.Flags() != unix.BPF_F_RDONLY {
+			return fmt.Errorf("invalid full fault map layout")
+		}
+		if full == nil || full.Type() != ebpf.Hash || full.KeySize() != 4 || full.ValueSize() != fullpolicy.KernelBlobSize || full.MaxEntries() != fullpolicy.MaxKernelEntries || full.Flags()&unix.BPF_F_RDONLY_PROG == 0 {
+			return fmt.Errorf("invalid immutable full program map layout")
+		}
+	} else if full != nil {
+		return fmt.Errorf("unexpected full program map for legacy configuration")
 	}
 	for i, entry := range b.config.Entries {
 		if err := policy.Put(uint32(i), entry); err != nil {
@@ -381,7 +738,30 @@ func (b *Bindings) Start(gc operators.GadgetContext) error {
 	if err := policy.Freeze(); err != nil {
 		return fmt.Errorf("freezing policy: %w", err)
 	}
+	if b.config.Full != nil {
+		for i, entry := range b.config.Full.Entries {
+			if err := full.Put(uint32(i), entry); err != nil {
+				return fmt.Errorf("writing full program: %w", err)
+			}
+		}
+		if err := full.Freeze(); err != nil {
+			return fmt.Errorf("freezing full program: %w", err)
+		}
+		if err := images.populate(b.config.ImageOrigins); err != nil {
+			return err
+		}
+	}
+	b.faults = faults
+	if err := b.checkFaults(); err != nil {
+		return err
+	}
 	b.members = members
+	if filesystemRequired(b.config) {
+		// Global marker hook is attached by the eBPF operator. Its concrete
+		// probe must pass at final Ready before ANY binding write.
+		b.ready = true
+		return nil
+	}
 	for _, c := range b.desired {
 		if err := b.bind(c); err != nil {
 			b.recordError(err)
@@ -427,3 +807,25 @@ func (b *Bindings) PostStop(operators.GadgetContext) error {
 }
 
 func (b *Bindings) Close(gc operators.GadgetContext) error { return b.Stop(gc) }
+
+// InitializeImageOrigins is for a trusted native persistent owner, before scope
+// activation. It shares the immutable reader's validation and freeze contract.
+func InitializeImageOrigins(origins, ready *ebpf.Map, snapshot *ImageOriginSnapshot) error {
+	if origins == nil || ready == nil {
+		return fmt.Errorf("image-origin maps required")
+	}
+	if err := validateImageOrigins(snapshot); err != nil {
+		return err
+	}
+	maps := imageMaps{origins: origins, ready: ready}
+	if err := maps.validate(); err != nil {
+		return err
+	}
+	return maps.populate(snapshot)
+}
+
+// ValidateImageOriginSnapshot validates trusted native input without touching
+// maps. Complete is an owner attestation, never a policy-provided assertion.
+func ValidateImageOriginSnapshot(snapshot *ImageOriginSnapshot) error {
+	return validateImageOrigins(snapshot)
+}

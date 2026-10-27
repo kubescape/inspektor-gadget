@@ -4,6 +4,8 @@
 package kernel_test
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -18,7 +20,10 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+
+	execpolicy "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/policy"
 )
 
 type entry struct {
@@ -59,7 +64,15 @@ func TestExecKernel(t *testing.T) {
 	if !strings.Contains(string(lsm), "bpf") {
 		t.Fatal("BPF LSM is not enabled")
 	}
-	header := run(t, "bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c")
+	// Diagnostics are not C source: bpftool may write informational warnings
+	// to stderr even on success. Keep them out of the generated header.
+	cmd := exec.Command("bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c")
+	var diagnostics bytes.Buffer
+	cmd.Stderr = &diagnostics
+	header, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("generate vmlinux.h: %v\n%s", err, diagnostics.String())
+	}
 	if err := os.WriteFile(filepath.Join(tmp, "vmlinux.h"), header, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +145,7 @@ func TestExecKernel(t *testing.T) {
 	good, bad := filepath.Join(allowed, "tool"), filepath.Join(sibling, "tool")
 	copyExe(t, good)
 	copyExe(t, bad)
-	publish := func(t *testing.T, gen uint64, mode, def uint32, paths []string, denies []bool) {
+	publish := func(t *testing.T, gen uint64, mode, def uint32, paths []string, denies []bool, modes ...[]uint32) {
 		t.Helper()
 		next, err := ebpf.NewCollection(spec)
 		if err != nil {
@@ -144,6 +157,9 @@ func TestExecKernel(t *testing.T) {
 				next.Close()
 			}
 		}()
+		if len(paths) > execpolicy.KernelMaxRules || len(denies) != len(paths) || (len(modes) > 0 && len(modes[0]) != len(paths)) {
+			t.Fatal("invalid test rules")
+		}
 		inner := next.Maps["policy"]
 		h := entry{Generation: gen, Mode: mode, DefaultDeny: def, Count: uint32(len(paths))}
 		if err := inner.Put(uint32(0), h); err != nil {
@@ -151,6 +167,9 @@ func TestExecKernel(t *testing.T) {
 		}
 		for i, p := range paths {
 			r := entry{}
+			if len(modes) > 0 {
+				r.Mode = modes[0][i]
+			}
 			if strings.HasSuffix(p, "/**") {
 				r.Prefix = 1
 				p = strings.TrimSuffix(p, "**")
@@ -170,7 +189,7 @@ func TestExecKernel(t *testing.T) {
 		if err := inner.Freeze(); err != nil {
 			t.Fatal(err)
 		}
-		if err := next.Maps["bindings"].Put(cgid, uint64(1)); err != nil {
+		if err := next.Maps["bindings"].Put(cgid, uint64(0)); err != nil {
 			t.Fatal(err)
 		}
 		nextLink, err := link.AttachLSM(link.LSMOptions{Program: next.Programs["enforce_exec"]})
@@ -229,6 +248,66 @@ func TestExecKernel(t *testing.T) {
 		expect(t, good, true, false)
 		publish(t, 4, 0, 1, nil, nil)
 		expect(t, bad, true, false)
+	})
+	t.Run("larger-than-eight-paths", func(t *testing.T) {
+		paths := make([]string, execpolicy.KernelMaxRules)
+		denies := make([]bool, len(paths))
+		for i := range paths {
+			paths[i] = fmt.Sprintf("/unused/%d", i)
+		}
+		paths[len(paths)-1] = good
+		publish(t, 20, 2, 1, paths, denies)
+		expect(t, good, true, false)
+		expect(t, bad, true, true)
+		// The last rule also participates in deny precedence.
+		paths[0] = allowed + "/**"
+		denies[len(denies)-1] = true
+		publish(t, 21, 2, 0, paths, denies)
+		expect(t, good, true, true)
+	})
+	t.Run("mixed-rule-modes", func(t *testing.T) {
+		cases := []struct {
+			name                    string
+			policyMode, defaultDeny uint32
+			denies                  []bool
+			modes                   []uint32
+			blocked, wouldDeny      bool
+			verdictMode             uint32
+		}{
+			{"audit-override", 2, 1, []bool{true}, []uint32{1}, false, true, 1},
+			{"enforce-override", 1, 0, []bool{true}, []uint32{2}, true, true, 2},
+			{"audit-before-enforce", 1, 0, []bool{true, true, false}, []uint32{1, 2, 0}, true, true, 2},
+			{"enforce-before-audit", 1, 0, []bool{false, true, true}, []uint32{0, 2, 1}, true, true, 2},
+			{"audit-deny-beats-allow", 2, 1, []bool{false, true}, []uint32{2, 1}, false, true, 1},
+			{"allow-suppresses-default", 2, 1, []bool{false}, []uint32{1}, false, false, 2},
+		}
+		for i, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				paths := make([]string, len(tc.denies))
+				for i := range paths {
+					paths[i] = good
+				}
+				publish(t, uint64(30+i), tc.policyMode, tc.defaultDeny, paths, tc.denies, tc.modes)
+				reader, err := ringbuf.NewReader(collection.Maps["events"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reader.Close()
+				reader.SetDeadline(time.Now().Add(5 * time.Second))
+				expect(t, good, true, tc.blocked)
+				record, err := reader.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(record.RawSample) < 32 {
+					t.Fatal("short verdict")
+				}
+				deny, mode := binary.LittleEndian.Uint32(record.RawSample[16:20]), binary.LittleEndian.Uint32(record.RawSample[20:24])
+				if (deny != 0) != tc.wouldDeny || mode != tc.verdictMode {
+					t.Fatalf("verdict deny=%d mode=%d", deny, mode)
+				}
+			})
+		}
 	})
 	t.Run("scripts", func(t *testing.T) {
 		script := filepath.Join(allowed, "script")
@@ -330,7 +409,7 @@ func TestExecKernel(t *testing.T) {
 				t.Fatal(err)
 			}
 			expect(t, bad, true, false)
-			if err := bindings.Put(cgid, uint64(1)); err != nil {
+			if err := bindings.Put(cgid, uint64(0)); err != nil {
 				t.Fatal(err)
 			}
 			expect(t, bad, true, true)
