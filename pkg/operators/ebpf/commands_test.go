@@ -68,3 +68,26 @@ func TestDisabledCommandCannotBeInvokedThroughContext(t *testing.T) {
 		})
 	}
 }
+
+func TestProgramAttachTarget(t *testing.T) {
+	for _, typ := range []ebpf.ProgramType{ebpf.LSM, ebpf.Tracing, ebpf.Kprobe, ebpf.TracePoint, ebpf.RawTracepoint, ebpf.Syscall} {
+		t.Run(typ.String(), func(t *testing.T) {
+			spec := &ebpf.ProgramSpec{Name: "hook", Type: typ, AttachTo: "actual"}
+			i := &ebpfInstance{}
+			if got := i.programAttachTarget(spec); got != "actual" {
+				t.Fatalf("without config: got %q", got)
+			}
+			i.config = viper.New()
+			for _, override := range []string{"", "override", disabledProgram} {
+				i.config.Set("programs.hook.attach_to", override)
+				want := override
+				if override == "" || (override != disabledProgram && (typ == ebpf.LSM || typ == ebpf.Tracing)) {
+					want = "actual"
+				}
+				if got := i.programAttachTarget(spec); got != want {
+					t.Errorf("override %q: got %q, want %q", override, got, want)
+				}
+			}
+		})
+	}
+}

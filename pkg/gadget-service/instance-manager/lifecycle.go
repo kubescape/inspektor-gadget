@@ -11,13 +11,39 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 )
 
+// lockLifecycle permits canceled waiters to leave without changing any instance.
+// Once acquired, the caller retains ownership through its required cleanup.
+func (m *Manager) lockLifecycle(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.lifecycleOnce.Do(func() { m.lifecycleMu = make(chan struct{}, 1) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case m.lifecycleMu <- struct{}{}:
+		// Cancellation and lock availability can become ready together.
+		if err := ctx.Err(); err != nil {
+			m.unlockLifecycle()
+			return err
+		}
+		return nil
+	}
+}
+
+func (m *Manager) unlockLifecycle() {
+	<-m.lifecycleMu
+}
+
 // StartGadget waits until every operator has started successfully. Options may
 // supply additional operators; the manager owns the WithOnStarted callback.
 // The context bounds startup, not the lifetime of the resulting instance.
 // Failed or canceled startup cancels the candidate and waits for its cleanup.
 func (m *Manager) StartGadget(ctx context.Context, desired *api.GadgetInstance, options ...gadgetcontext.Option) error {
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
+	if err := m.lockLifecycle(ctx); err != nil {
+		return err
+	}
+	defer m.unlockLifecycle()
 	return m.startGadget(ctx, desired, options...)
 }
 
@@ -47,8 +73,10 @@ func (m *Manager) startGadget(ctx context.Context, desired *api.GadgetInstance, 
 // for old cleanup does not roll back the new instance. StopGadget can finish
 // waiting for the old ID.
 func (m *Manager) ReplaceGadget(ctx context.Context, oldID string, desired *api.GadgetInstance, options ...gadgetcontext.Option) error {
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
+	if err := m.lockLifecycle(ctx); err != nil {
+		return err
+	}
+	defer m.unlockLifecycle()
 	if desired == nil || desired.Id == oldID {
 		return fmt.Errorf("replacement requires a distinct gadget ID")
 	}
@@ -70,8 +98,10 @@ func (m *Manager) ReplaceGadget(ctx context.Context, oldID string, desired *api.
 // StopGadget cancels an instance and waits for runtime and operator cleanup.
 // A canceled wait leaves the instance registered so callers can wait again.
 func (m *Manager) StopGadget(ctx context.Context, id string) error {
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
+	if err := m.lockLifecycle(ctx); err != nil {
+		return err
+	}
+	defer m.unlockLifecycle()
 	return m.stopGadget(ctx, id)
 }
 

@@ -113,13 +113,13 @@ func ValidateKernel(entries [KernelMaxRules + 1]KernelEntry) error {
 			if !strings.HasSuffix(p, "/") {
 				return fmt.Errorf("prefix must end in slash")
 			}
-			p += "**"
+			// Prefix entries encode the directory including its trailing slash.
+			// Exact entries must retain every byte for wildcard validation.
+			if p != "/" {
+				p = strings.TrimSuffix(p, "/")
+			}
 		}
-		base := strings.TrimSuffix(p, "/**")
-		if p == "/**" {
-			base = "/"
-		}
-		if !path.IsAbs(base) || path.Clean(base) != base || strings.ContainsAny(base, "*?[]\\\x00") {
+		if !path.IsAbs(p) || path.Clean(p) != p || strings.ContainsAny(p, "*?[]\\\x00") {
 			return fmt.Errorf("invalid compiled path")
 		}
 	}

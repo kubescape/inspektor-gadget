@@ -66,3 +66,39 @@ func TestNativeReceiptUnpublishDoesNotClearOtherOwner(t *testing.T) {
 		t.Fatal("other receipt cleared")
 	}
 }
+
+type nativeTargetTestLink struct {
+	link.Link
+}
+
+func (nativeTargetTestLink) Info() (*link.Info, error) {
+	return &link.Info{Program: 7}, nil
+}
+
+func TestNativeTargetsCannotBeOverriddenForLoadedBTFPrograms(t *testing.T) {
+	for _, typ := range []ebpf.ProgramType{ebpf.LSM, ebpf.Tracing} {
+		t.Run(typ.String(), func(t *testing.T) {
+			gc := newResolverGadgetCtx(t, nil)
+			cfg := viper.New()
+			cfg.Set("programs.hook.attach_to", "required_hook")
+			spec := &ebpf.ProgramSpec{Name: "hook", Type: typ, AttachTo: "actual_hook"}
+			i := &ebpfInstance{config: cfg, collectionSpec: &ebpf.CollectionSpec{Programs: map[string]*ebpf.ProgramSpec{"hook": spec}}}
+			i.publishNativeResources(gc)
+			value, _ := gc.GetVar(operators.NativeResourcesKey)
+			if got := value.(*operators.NativeResources).Programs["hook"].Target; got != spec.AttachTo {
+				t.Fatalf("manifest reports overridden target %q", got)
+			}
+			if err := i.publishNativeAttachment(gc, "hook", spec, nativeTargetTestLink{}); err != nil {
+				t.Fatal(err)
+			}
+			value, _ = gc.GetVar(operators.NativeAttachmentPrefix + "hook")
+			receipt := value.(*operators.NativeAttachment)
+			if receipt.Target != spec.AttachTo {
+				t.Fatalf("receipt reports overridden target %q", receipt.Target)
+			}
+			if err := receipt.Check(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

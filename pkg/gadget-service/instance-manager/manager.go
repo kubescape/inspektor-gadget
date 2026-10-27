@@ -49,8 +49,11 @@ type Service interface {
 // Manager manages running gadgets headless. It can run gadgets in the background as
 // well as buffer and multiplex their output.
 type Manager struct {
+	// lifecycleMu serializes lifecycle operations; initialization is safe for a zero-value Manager.
+	lifecycleOnce sync.Once
+	lifecycleMu   chan struct{}
+
 	// mu is to be used whenever a gadget is installed or a new client wants to attach to a gadget
-	lifecycleMu     sync.Mutex
 	mu              sync.Mutex
 	gadgetInstances map[string]*GadgetInstance
 
@@ -84,8 +87,8 @@ func New(runtime runtime.Runtime, options ...Option) (*Manager, error) {
 
 // RemoveGadget cancels and removes a gadget
 func (m *Manager) RemoveGadget(id string) error {
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
+	_ = m.lockLifecycle(context.Background())
+	defer m.unlockLifecycle()
 	return m.removeGadget(id)
 }
 
@@ -102,8 +105,8 @@ func (m *Manager) removeGadget(id string) error {
 }
 
 func (m *Manager) RunGadget(instance *api.GadgetInstance) {
-	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
+	_ = m.lockLifecycle(context.Background())
+	defer m.unlockLifecycle()
 	if _, err := m.runGadget(instance); err != nil {
 		log.Errorf("creating gadget: %v", err)
 	}

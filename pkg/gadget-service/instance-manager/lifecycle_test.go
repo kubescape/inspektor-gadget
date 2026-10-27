@@ -193,3 +193,74 @@ func TestStopReportsCleanupFailure(t *testing.T) {
 	require.ErrorIs(t, m.StopGadget(context.Background(), "one"), failure)
 	require.Nil(t, m.LookupInstance("one"))
 }
+
+func TestLifecycleWaitHonorsContextWithoutMutation(t *testing.T) {
+	operations := map[string]func(*Manager, context.Context) error{
+		"start": func(m *Manager, ctx context.Context) error { return m.StartGadget(ctx, desired("new")) },
+		"replace": func(m *Manager, ctx context.Context) error {
+			return m.ReplaceGadget(ctx, "old", desired("new"))
+		},
+		"stop": func(m *Manager, ctx context.Context) error { return m.StopGadget(ctx, "old") },
+	}
+	for name, operation := range operations {
+		t.Run(name, func(t *testing.T) {
+			m := testManager(t)
+			require.NoError(t, m.StartGadget(context.Background(), desired("old")))
+			t.Cleanup(func() { require.NoError(t, m.StopGadget(context.Background(), "old")) })
+			require.NoError(t, m.lockLifecycle(context.Background()))
+			func() {
+				defer m.unlockLifecycle()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- operation(m, ctx) }()
+				require.ErrorIs(t, receive(t, done), context.DeadlineExceeded)
+			}()
+			// An already canceled caller must not acquire an available lock either.
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			require.ErrorIs(t, operation(m, ctx), context.Canceled)
+			require.Nil(t, m.LookupInstance("new"))
+			old := m.LookupInstance("old")
+			require.NotNil(t, old)
+			select {
+			case <-old.stopped:
+				t.Fatal("canceled lifecycle waiter stopped the old instance")
+			default:
+			}
+		})
+	}
+}
+
+func TestCanceledStartupJoinsWhileOtherWaitersCanCancel(t *testing.T) {
+	m := testManager(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	op := simple.New("blocked", simple.OnStart(func(operators.GadgetContext) error {
+		close(entered)
+		<-release
+		return errors.New("startup failed")
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := make(chan error, 1)
+	go func() {
+		start <- m.StartGadget(ctx, desired("blocked"), gadgetcontext.WithAdditionalDataOperators(op))
+	}()
+	<-entered
+	defer func() {
+		close(release)
+		require.ErrorIs(t, receive(t, start), context.Canceled)
+		require.Nil(t, m.LookupInstance("blocked"))
+	}()
+	cancel()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer waitCancel()
+	stop := make(chan error, 1)
+	go func() { stop <- m.StopGadget(waitCtx, "blocked") }()
+	require.ErrorIs(t, receive(t, stop), context.DeadlineExceeded)
+	select {
+	case <-start:
+		t.Fatal("canceled startup returned before its runtime cleanup")
+	default:
+	}
+}

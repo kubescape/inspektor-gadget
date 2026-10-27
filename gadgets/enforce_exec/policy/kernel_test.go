@@ -183,3 +183,34 @@ func TestCompileKernelMixedRuleModes(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateKernelNativePaths(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		prefix uint32
+		valid  bool
+	}{
+		{"/bin/**", 0, false},
+		{"/**", 0, false},
+		{"/bin/*", 0, false},
+		{"/bin/?", 0, false},
+		{"/bin/[ab]", 0, false},
+		{"/bin/", 0, false},
+		{"/bin/tool", 0, true},
+		{"/", 0, true},
+		{"/bin/", 1, true},
+		{"/", 1, true},
+		{"/bin/**/", 1, false},
+		{"/bin//", 1, false},
+	} {
+		t.Run(tc.path+string(rune('0'+tc.prefix)), func(t *testing.T) {
+			var entries [KernelMaxRules + 1]KernelEntry
+			entries[0] = KernelEntry{Generation: 1, Mode: 2, Count: 1}
+			entries[1] = KernelEntry{Deny: 1, Prefix: tc.prefix, Length: uint32(len(tc.path))}
+			copy(entries[1].Path[:], tc.path)
+			if err := ValidateKernel(entries); (err == nil) != tc.valid {
+				t.Fatalf("ValidateKernel(path=%q, prefix=%d) = %v, valid=%v", tc.path, tc.prefix, err, tc.valid)
+			}
+		})
+	}
+}

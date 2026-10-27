@@ -12,7 +12,12 @@ import (
 func (i *ebpfInstance) programAttachTarget(spec *ebpf.ProgramSpec) string {
 	if i.config != nil {
 		if target := i.config.GetString("programs." + spec.Name + ".attach_to"); target != "" {
-			return target
+			// LSM and tracing targets are bound from the spec at load time;
+			// attach only receives the loaded program, not a target override.
+			// Disabling still applies to all program types before attachment.
+			if target == disabledProgram || (spec.Type != ebpf.LSM && spec.Type != ebpf.Tracing) {
+				return target
+			}
 		}
 	}
 	return spec.AttachTo
