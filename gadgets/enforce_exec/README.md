@@ -268,8 +268,10 @@ are not readiness acknowledgements. Native startup/binding results are authority
 
 ## Limits and lifecycle
 
-Eight expanded paths, 255 path bytes, 1,024 live bindings and 64 KiB authoring input
-bound this prototype. Policy values total 2,592 bytes plus map overhead. Each
+128 expanded paths, 255 path bytes, 1,024 live bindings and 64 KiB authoring input
+bound this prototype. The 129 policy values total 37,152 bytes per instance, even with fewer configured
+rules, plus map overhead. Replacement overlap holds 74,304 bytes of policy values
+alone, plus both instances' other resources. Each
 instance has a 4 KiB reporting ring and a per-CPU limit of 100 report attempts per
 second; saturation loses reports while enforcement continues. Overlap temporarily
 loads both instances and their resources. These are explicit map/rule limits,
