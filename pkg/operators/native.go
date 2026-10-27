@@ -7,6 +7,10 @@ const (
 	// NativeResourcesKey exposes a compact pre-load resource manifest, never BTF,
 	// instructions or write authority. It is local-only, not the remote API.
 	NativeResourcesKey = "ebpf/native-resources"
+	// NativeOwnerRequiredKey marks local native-owner use before OCI layer
+	// instantiation, including when the image omits its required ABI annotation.
+	// Such images must contain exactly one eBPF layer and no executable guests.
+	NativeOwnerRequiredKey = "ebpf/native-owner-required"
 	// NativeResourceValidatorKey holds a local func(*NativeResources) error.
 	// Native owners install it before Start; the eBPF operator invokes it on the
 	// final transformed collection immediately before allocating kernel resources.

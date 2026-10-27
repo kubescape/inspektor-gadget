@@ -105,6 +105,9 @@ func TestOwnerAdmissionBeforeAnyAcquire(t *testing.T) {
 	defer owner.ReleaseAfterDetach()
 	gc := gadgetcontext.New(t.Context(), "trusted:test", WithOwner(owner))
 	defer gc.Cancel()
+	if required, _ := gc.GetVar(operators.NativeOwnerRequiredKey); required != true {
+		t.Fatal("native-owner image admission requirement missing before OCI initialization")
+	}
 	cfg := viper.New()
 	cfg.Set("annotations.enforce-exec-owner-abi", "2")
 	gc.SetVar("config", cfg)

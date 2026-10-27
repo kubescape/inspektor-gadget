@@ -442,6 +442,14 @@ func (o *OciHandlerInstance) init(gadgetCtx operators.GadgetContext) error {
 	if err := checkBehaviorDeclaration(metadata, o.globalParams.Get(allowEnforcement).AsBool()); err != nil {
 		return err
 	}
+	declaredConfig := viper.New()
+	declaredConfig.SetConfigType("yaml")
+	if err := declaredConfig.ReadConfig(strings.NewReader(string(metadata))); err != nil {
+		return fmt.Errorf("reading native owner declaration: %w", err)
+	}
+	if err := checkNativeOwnerLayers(gadgetCtx, manifest, declaredConfig); err != nil {
+		return err
+	}
 
 	// Store metadata
 	err = gadgetCtx.SetMetadata(metadata)
@@ -485,6 +493,9 @@ func (o *OciHandlerInstance) init(gadgetCtx operators.GadgetContext) error {
 	}
 
 	gadgetCtx.SetVar("config", viper)
+	if err := checkNativeOwnerLayers(gadgetCtx, manifest, viper); err != nil {
+		return err
+	}
 
 	for _, layer := range manifest.Layers {
 		log.Debugf("layer > %+v", layer)
@@ -680,6 +691,21 @@ func checkBehaviorDeclaration(metadata []byte, allow bool) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// Native owners budget one eBPF collection. Other image operators can allocate
+// resources or execute guest initialization during instantiation, before native
+// preflight; reject those layers before invoking any image operator.
+func checkNativeOwnerLayers(gc operators.GadgetContext, manifest *v1.Manifest, config *viper.Viper) error {
+	value, _ := gc.GetVar(operators.NativeOwnerRequiredKey)
+	required, _ := value.(bool)
+	if !required && config.GetString("annotations.enforce-exec-owner-abi") == "" {
+		return nil
+	}
+	if len(manifest.Layers) != 1 || manifest.Layers[0].MediaType != "application/vnd.gadget.ebpf.program.v1+binary" {
+		return fmt.Errorf("native owner requires exactly one eBPF image layer")
 	}
 	return nil
 }

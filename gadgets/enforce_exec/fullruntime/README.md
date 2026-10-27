@@ -158,8 +158,11 @@ is not implied.
 
 `NewOwner` reserves a **shared** aggregate Budget and exclusive cgroup scope
 before the OCI collection can load. All owners in one embedding must share that
-budget. Native owner images must contain exactly one eBPF collection; additional
-layers (including duplicate map/program names) invalidate native admission.
+budget. Native owner images must contain exactly one eBPF layer and no WASM or other
+layers. OCI admission enforces this before initializing any image operators,
+including when a supplied native owner encounters missing/rewritten ABI metadata.
+Additional collections (including duplicate names) also invalidate native resource
+admission.
 Resource manifests are checked both at admission and again immediately before
 allocation, after parameter, context-variable and enricher rewrites:
 map payload capacities,
