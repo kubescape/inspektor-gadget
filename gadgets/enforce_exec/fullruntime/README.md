@@ -60,6 +60,44 @@ the current validator rejects broad grants. Role changes are policy-local and
 commit only after successful exec; role labels received through telemetry do
 not grant authority.
 
+A constrained grant in the native `fullpolicy` Go IR can look like this (not CLI
+YAML or a complete deployment policy):
+
+```go
+fromImage := true
+policy := fullpolicy.Policy{
+    ID: "sandbox-policy", Revision: "1", Mode: fullpolicy.Enforce,
+    RootRole: "agent", Default: fullpolicy.Deny,
+    Rules: []fullpolicy.Rule{{
+        Name: "enter-sandbox-helper", Action: fullpolicy.Allow,
+        Actor: fullpolicy.Actor{
+            Role: []string{"trusted-launcher"},
+            Path: []string{"/usr/libexec/sandbox-launcher"},
+            FromImage: &fromImage,
+        },
+        Target: fullpolicy.Target{
+            Path: []string{"/usr/bin/bwrap"}, FromImage: &fromImage,
+            SetRole: "sandbox-helper",
+        },
+    }},
+}
+```
+
+All three actor constraints must match. This assumes the launcher already has
+authenticated `trusted-launcher` role history in this policy and cannot be
+controlled or invoked as a confused deputy by untrusted code. The example does
+not grant that initial role: its default root role stays `agent`, and missing
+history is not authority. The image-origin predicate describes admitted backing
+files; it does not prove that the process or its inputs are trustworthy. Review
+how the launcher role is established and what it permits before using the grant.
+A wildcard-only actor such as `Path: []string{"/**"}` still admits arbitrary
+actor paths; its mere presence is not meaningful authorization.
+
+The compiler currently accepts broad grants without an actor-warning API.
+`TestRoleEntryAuthoring` and the ordinary Go/C parity cases document this behavior,
+including deny/conflict suppression. They are not proof of kernel fact acquisition
+or of the runtime's successful-exec role commit.
+
 Roles are **not hostile-code isolation boundaries**. Processes can delegate work
 through shared files, IPC, signals or services; containers in a pod commonly
 share networking and may share storage. The combined authority reachable through

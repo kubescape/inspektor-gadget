@@ -382,6 +382,13 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 	}
 	multi("eight-policy-roles", manyPolicies)
 	tests[len(tests)-1].facts = f
+	for _, tc := range roleEntryCases() {
+		tests = append(tests, struct {
+			name     string
+			policies []Policy
+			facts    Facts
+		}{"role-entry-" + tc.name, tc.policies, tc.facts})
+	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := CompileKernel(tc.policies, 1, "worker")
@@ -397,6 +404,11 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 			if werr != nil {
 				if got[0] != ^uint64(0) || got[3] == 0 {
 					t.Fatalf("want error %v, got %v", werr, got)
+				}
+				for i, role := range got[8:] {
+					if role != 0 {
+						t.Fatalf("C error retained role proposal at policy %d: %v", i, got)
+					}
 				}
 				return
 			}
