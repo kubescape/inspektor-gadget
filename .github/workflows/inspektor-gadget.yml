@@ -148,6 +148,7 @@ jobs:
             exit 1
           fi
       - name: Detect changes for ebpf objects
+        id: ebpf_objects
         env:
           GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
         run: |
@@ -157,6 +158,33 @@ jobs:
             >&2 echo "$changes"
             exit 1
           fi
+      - name: Capture generated eBPF object drift
+        if: ${{ failure() && steps.ebpf_objects.outcome == 'failure' }}
+        env:
+          GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
+        run: |
+          evidence="$RUNNER_TEMP/ebpf-object-drift"
+          mkdir -p "$evidence"
+          # Only tracked generated package inputs; never archive the workspace.
+          paths=(':(glob)pkg/**/*_bpfel.go' ':(glob)pkg/**/*.o')
+          git diff --no-ext-diff --no-textconv --binary HEAD -- "${paths[@]}" > "$evidence/generated.patch"
+          git diff --no-ext-diff --no-textconv --stat HEAD -- "${paths[@]}" > "$evidence/diffstat.txt"
+          {
+            printf 'checkout_sha='; git rev-parse HEAD
+            printf 'run_id=%s\nrun_attempt=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'gadget_builder=%s\n' "$GADGET_BUILDER"
+            if ! docker image inspect --format 'image_id={{.Id}} repo_digests={{join .RepoDigests " "}}' "$GADGET_BUILDER"; then
+              echo 'gadget_builder_local_identity=unavailable'
+            fi
+          } > "$evidence/identity.txt"
+      - name: Upload generated eBPF object drift
+        if: ${{ failure() && steps.ebpf_objects.outcome == 'failure' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ebpf-object-drift-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ebpf-object-drift/
+          retention-days: 3
+          if-no-files-found: error
       - name: Check that testdata is updated
         env:
           GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
@@ -1208,6 +1236,37 @@ jobs:
       run: |
         tar zxvf /home/runner/work/inspektor-gadget/ig-linux-amd64.tar.gz
         sudo mv ig /usr/local/bin/ig
+    - name: Record unit-test runner kernel and exec tracepoint format
+      run: |
+        uname -srvm
+        if command -v docker >/dev/null 2>&1; then
+          if ! docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'; then
+            echo 'docker version unavailable'
+          fi
+        else
+          echo 'docker executable unavailable'
+        fi
+        if command -v runc >/dev/null 2>&1; then
+          if ! runc --version; then
+            echo 'runc version unavailable'
+          fi
+        else
+          echo 'runc executable unavailable'
+        fi
+        # Read the same existing tracepoint metadata accessible to the sudo tests.
+        # Do not mount tracefs/debugfs or change permissions to obtain it.
+        for format in \
+          /sys/kernel/tracing/events/syscalls/sys_enter_execve/format \
+          /sys/kernel/debug/tracing/events/syscalls/sys_enter_execve/format; do
+          echo "Tracepoint format: $format"
+          if sudo test -r "$format"; then
+            if ! sudo cat "$format"; then
+              echo 'tracepoint format read failed'
+            fi
+          else
+            echo 'missing or unreadable'
+          fi
+        done
     - name: Unit tests
       run: |
         sudo make test
