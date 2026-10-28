@@ -1,5 +1,12 @@
 # enforce_exec
 
+This page describes the **simple path-only engine**. The separate experimental
+[full engine and persistent owner](fullruntime/README.md) add richer predicates
+and role history, with different admission, reload and failure behavior. The
+simple engine's kernel baseline and `BindRestricted` support do **not** establish
+full-engine support: the persistent owner currently admits only two exact custom
+amd64 kernel artifacts, not stock kernels or arm64.
+
 Container execution enforcement using BPF LSM. The gadget image contains a fixed
 BPF program; a native Go controller supplies compiled rules and manages container
 membership. No WASM, policy parameter updates, request IDs or acknowledgement
@@ -52,6 +59,12 @@ sudo /tmp/ig-enforce-exec enforce-exec enforce_exec:spike \
 approved signed images in production. Host behavior consent and BPF admission
 restrictions still apply. Verdicts are printed as JSON; stderr reports native
 startup readiness and the number of currently bound containers.
+
+`--allow-enforcement` grants **host-operator consent**, defaulting to false. The
+embedding equivalent is the global `operator.oci.allow-enforcement` setting.
+An image declares its behavior; that declaration cannot grant consent or override
+the host setting. Consent is separate from image signature verification and does
+not prove that a policy or runtime binding is safe.
 
 This command uses the existing IG container cache and discovery settings, such as
 `--runtimes docker`. No Kubescape component is required. Generic `ig run` cannot

@@ -5,6 +5,84 @@ publication coordinator and isolated tests for frozen policy-map revisions. The
 embedding supplies authenticated runtime leases and public event provenance;
 readiness requires the explicitly supported kernel/runtime environment.
 
+## Current support and security limits
+
+This is the **full persistent-owner profile**, not the
+[simple path-only engine](../README.md). It currently admits only the two exact
+custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
+distribution kernels and arm64 are not supported by this profile. BPF LSM and
+ftrace availability alone do not satisfy its admission checks.
+
+**Audit is not yet safe as a nonblocking trial mode in this implementation.**
+Evaluator/observation errors, owner faults and closed admission during reload or
+re-attestation can deny exec even for an audit-only policy. Strictly nonblocking
+audit, including these failure paths, is required follow-up work, not a property
+established by the existing isolated proofs. Enforced policies must not fall open
+to hide such failures. Do not interpret an audit verdict or a successful reload
+test as proof that all audit failure paths permit execution.
+
+### Scope, runtime helpers and operator consent
+
+An owner covers one **exact cgroup**, not its descendants. Creating or moving
+into a child cgroup does not extend policy coverage. A trusted embedding must
+exclude unsupported cgroup delegation and authenticate its runtime lease; the
+node-agent strict admission contract includes cgroup-mount, capability,
+namespace and seccomp restrictions. Movement observation detects changes and
+invalidates readiness; it is not a general mechanism that prevents migration.
+
+This profile has no `BindRestricted` host-namespace exception and no inferred
+runtime-helper exemption. A `kubectl exec`/`docker exec` helper entering from an
+unobserved creator can fail lineage checks and leave the owner NotReady. A
+closed gate can also reject exec or fork during lifecycle operations. Allowing a
+`/runc` path does not establish creator lineage or authenticate that binary.
+Treat helper disruption as an explicit cost of opting into strict enforcement,
+not as a reason to infer an exemption or reset trusted state.
+
+Enforcement consent belongs to the host operator: global
+`operator.oci.allow-enforcement` defaults to false. Image behavior metadata
+declares what an image requests; it cannot enable that host setting. Image
+verification, runtime admission and policy validation remain separate checks.
+
+### Role-entry authoring and isolation
+
+The current compiler requires a `setRole` rule to be an allow, but does **not**
+require an actor constraint. An omitted actor (or an empty actor object) places
+no restriction on who may enter the role: any matching successful exec can
+propose that transition. For example, a rule targeting `bwrap` and assigning
+`sandbox-helper` without an actor restriction can let the agent launch `bwrap`
+itself to obtain that role. The executable's name is not an authorization proof.
+
+Review each role-entry rule as a grant of future authority. Constrain the actual
+authorized actor using meaningful role/path/image predicates where appropriate,
+and check that untrusted code cannot first enter or control that actor. An empty
+actor object is not a mitigation. This is authoring guidance, not a claim that
+the current validator rejects broad grants. Role changes are policy-local and
+commit only after successful exec; role labels received through telemetry do
+not grant authority.
+
+Roles are **not hostile-code isolation boundaries**. Processes can delegate work
+through shared files, IPC, signals or services; containers in a pod commonly
+share networking and may share storage. The combined authority reachable through
+those channels is a threat-model upper bound, not a literal union performed by
+the rule evaluator. Separate pods are a starting point for stronger separation,
+but also require appropriate network, storage and service-access controls.
+
+### Restart and recovery
+
+Policy reload retains the same live owner's hooks and history; restarting the
+gadget or its owning process does not. Maps and links are not pinned for crash
+persistence. Once those resources close, enforcement and retained role history
+are lost; a fresh owner cannot reconstruct them from event labels or current
+cgroup membership.
+
+Fresh bootstrap authorizes the exact trusted init threadgroup and descendants
+whose creator lineage the owner actually observed. Arbitrary already-running
+multiprocess containers are not generally re-adoptable; unknown pre-existing
+tasks refuse readiness rather than receive inferred root roles. See the
+[conservative lineage contract](OWNER-ABI.md#conservative-lineage-boundary).
+Withdrawing a faulted owner removes protection; it is not recovery of protected
+state. Pinning alone would not supply the missing recovery protocol.
+
 ## Word and ownership
 
 One aligned 64-bit word in a writable `BPF_F_MMAPABLE` ARRAY holds a closed high
