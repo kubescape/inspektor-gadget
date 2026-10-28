@@ -2,7 +2,7 @@ name: Inspektor Gadget CI
 env:
   REGISTRY: ghcr.io
   CONTAINER_REPO: ${{ github.repository }}
-  GO_VERSION: 1.25.5
+  GO_VERSION: 1.27.3
   # Pin an available scanner release instead of the action's unavailable v0.65.0 release.
   TRIVY_VERSION: v0.76.1
   # controller-gen with go >1.21 panics, but we can't update controller-gen itself
@@ -109,7 +109,7 @@ jobs:
       uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
       with:
         # This version number must be kept in sync with Makefile lint one.
-        version: v2.6.0
+        version: v2.15.0
         working-directory: /home/runner/work/inspektor-gadget/inspektor-gadget
 
   semgrep:

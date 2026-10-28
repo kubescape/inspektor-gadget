@@ -228,7 +228,9 @@ func (v *programValidator) list(l KernelList, kind string) error {
 	}
 	return nil
 }
+
 func fileType(s string) bool { return s == "tmpfs" || s == "memfd" || s == "deleted" || s == "overlay" }
+
 func (v *programValidator) patternAt(key uint32) error {
 	v.patterns++
 	if v.patterns > MaxPatterns {

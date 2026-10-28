@@ -1,6 +1,6 @@
 # Dockerfile for Inspektor Gadget.
 
-ARG BUILDER_IMAGE=golang:1.25.5-trixie@sha256:4f9d98ebaa759f776496d850e0439c48948d587b191fc3949b5f5e4667abef90
+ARG BUILDER_IMAGE=golang:1.27.3-trixie@sha256:80a86f24490f252511a683a1e1ee4c915b4a96e1f5519530f9ba1fdc9862b7c5
 ARG BASE_IMAGE=gcr.io/distroless/static-debian12@sha256:ce46866b3a5170db3b49364900fb3168dc0833dfb46c26da5c77f22abb01d8c3
 
 # Prepare and build gadget artifacts in a container
