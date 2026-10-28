@@ -328,7 +328,12 @@ jobs:
       run: |
         if [ "${{ matrix.platform }}" = 'arm64' ]; then
           sudo apt-get update
-          sudo apt-get install qemu-user-static
+          # qemu-user-static is virtual on Ubuntu 26.04; select the standard provider.
+          sudo apt-get install -y qemu-user-binfmt
+          test -x /usr/bin/qemu-aarch64
+          grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64
+          # F keeps the interpreter available inside the build container.
+          grep -Eq '^flags:.*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
         fi
 
         make ig-linux-${{ matrix.platform }}
