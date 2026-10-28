@@ -3,6 +3,8 @@ env:
   REGISTRY: ghcr.io
   CONTAINER_REPO: ${{ github.repository }}
   GO_VERSION: 1.25.5
+  # Pin an available scanner release instead of the action's unavailable v0.65.0 release.
+  TRIVY_VERSION: v0.76.1
   # controller-gen with go >1.21 panics, but we can't update controller-gen itself
   GO_VERSION_DOC_CHECK: 1.21.3
   AZURE_AKS_CLUSTER_PREFIX: ig-ci-aks-
@@ -813,6 +815,7 @@ jobs:
       - name: Scan gadget ${{ matrix.os }} ${{ matrix.platform }} container image
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
+          version: ${{ env.TRIVY_VERSION }}
           input: gadget-container-image-${{ matrix.os }}-${{ matrix.platform }}.tar
           format: 'table'
           exit-code: 1
@@ -1034,6 +1037,7 @@ jobs:
     - name: Scan ${{ matrix.image.name }} image for CVEs
       uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
       with:
+        version: ${{ env.TRIVY_VERSION }}
         input: /tmp/${{ matrix.image.name }}
         format: 'table'
         exit-code: 1
@@ -1148,6 +1152,33 @@ jobs:
         for dir in $(dirname $(find gadgets -name main.go)); do
           go build "./$dir";
         done
+
+  test-enforce-exec-go:
+    name: Exec enforcement Go regressions
+    # These unprivileged tests need neither helper images nor a published ig binary.
+    # Keep the privileged unit and kernel jobs below as separate required evidence.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GOWORK: 'off'
+    steps:
+    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4.2.2
+    - name: Setup go
+      uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+    - name: Race tests and vet
+      run: |
+        packages=(
+          ./gadgets/enforce_exec/policy
+          ./gadgets/enforce_exec/fullpolicy
+          ./gadgets/enforce_exec/runtime
+          ./gadgets/enforce_exec/fullruntime
+        )
+        go test -race -count=1 "${packages[@]}"
+        go vet "${packages[@]}"
 
   test-unit:
     needs:
