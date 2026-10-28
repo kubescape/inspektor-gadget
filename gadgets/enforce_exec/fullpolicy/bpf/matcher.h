@@ -30,36 +30,48 @@
 typedef unsigned char fm_u8;
 typedef unsigned int fm_u32;
 typedef unsigned long long fm_u64;
-struct fm_blob { fm_u64 words[36]; };
+struct fm_blob {
+	fm_u64 words[36];
+};
 struct fm_pattern {
-    fm_u32 code_base, start, count;
-    fm_u8 padding[276];
+	fm_u32 code_base, start, count;
+	fm_u8 padding[276];
 };
 struct fm_instruction {
-    fm_u32 op, out, arg, count;
-    fm_u32 ranges[2 * FM_MAX_RANGES];
-    fm_u8 padding[208];
+	fm_u32 op, out, arg, count;
+	fm_u32 ranges[2 * FM_MAX_RANGES];
+	fm_u8 padding[208];
 };
 struct fm_scratch {
-    fm_u64 seeds[8], next[8], seen[8];
-    fm_u32 queue[FM_MAX_STATES];
-    fm_u32 head, tail;
+	fm_u64 seeds[8], next[8], seen[8];
+	fm_u32 queue[FM_MAX_STATES];
+	fm_u32 head, tail;
 };
 _Static_assert(sizeof(struct fm_blob) == 288, "blob layout");
 _Static_assert(sizeof(struct fm_pattern) == 288, "pattern layout");
 _Static_assert(sizeof(struct fm_instruction) == 288, "instruction layout");
 
 enum {
-    FM_ALT = 0, FM_EMPTY_WIDTH = 3, FM_MATCH = 4, FM_FAIL = 5,
-    FM_NOP = 6, FM_RUNE = 7, FM_BEGIN_TEXT = 4, FM_END_TEXT = 8,
+	FM_ALT = 0,
+	FM_EMPTY_WIDTH = 3,
+	FM_MATCH = 4,
+	FM_FAIL = 5,
+	FM_NOP = 6,
+	FM_RUNE = 7,
+	FM_BEGIN_TEXT = 4,
+	FM_END_TEXT = 8,
 };
 
 /* Decode exactly one canonical UTF-8 rune. NUL is not a valid path byte even
  * though it is valid UTF-8. Incomplete, overlong, surrogate and out-of-range
  * encodings are errors, never replacement characters or truncated matches.
  */
-struct fm_utf8_buffer { fm_u8 bytes[256]; };
-struct fm_decoded { fm_u32 rune, width; };
+struct fm_utf8_buffer {
+	fm_u8 bytes[256];
+};
+struct fm_decoded {
+	fm_u32 rune, width;
+};
 /* BPF callers supply a full256-byte buffer (fe_path.bytes / matcher_input.bytes).
  * The typed memory argument lets the verifier prove decoding once, independent
  * of nested interpreter callbacks. Actual reads stay strictly within length. */
@@ -71,71 +83,80 @@ FM_INLINE
 int fm_decode_buffer(const struct fm_utf8_buffer *buffer, fm_u32 length,
                      fm_u32 position, struct fm_decoded *decoded)
 {
-    if (!buffer || !decoded || length > FM_MAX_BYTES || position >= length || position >= FM_MAX_BYTES)
-        return -1;
-    const fm_u8 *input = buffer->bytes;
-    fm_u32 first = input[position];
-    fm_u32 value, size;
-    if (first > 0 && first < 0x80) {
-        value = first; size = 1;
-    } else if (first >= 0xc2 && first <= 0xdf) {
-        value = first & 0x1f; size = 2;
-    } else if (first >= 0xe0 && first <= 0xef) {
-        value = first & 0x0f; size = 3;
-    } else if (first >= 0xf0 && first <= 0xf4) {
-        value = first & 0x07; size = 4;
-    } else {
-        return -1;
-    }
-    if (size > length - position)
-        return -1;
-    for (fm_u32 i = 1; i < 4; i++) {
-        if (i >= size)
-            break;
-        fm_u64 offset = (fm_u64)position + i;
-        /* Keep the checked scalar and pointer offset identical. Otherwise LLVM
+	if (!buffer || !decoded || length > FM_MAX_BYTES ||
+	    position >= length || position >= FM_MAX_BYTES)
+		return -1;
+	const fm_u8 *input = buffer->bytes;
+	fm_u32 first = input[position];
+	fm_u32 value, size;
+	if (first > 0 && first < 0x80) {
+		value = first;
+		size = 1;
+	} else if (first >= 0xc2 && first <= 0xdf) {
+		value = first & 0x1f;
+		size = 2;
+	} else if (first >= 0xe0 && first <= 0xef) {
+		value = first & 0x0f;
+		size = 3;
+	} else if (first >= 0xf0 && first <= 0xf4) {
+		value = first & 0x07;
+		size = 4;
+	} else {
+		return -1;
+	}
+	if (size > length - position)
+		return -1;
+	for (fm_u32 i = 1; i < 4; i++) {
+		if (i >= size)
+			break;
+		fm_u64 offset = (fm_u64)position + i;
+		/* Keep the checked scalar and pointer offset identical. Otherwise LLVM
          * may precompute input+position and add i after checking position+i,
          * losing the combined bound in the BPF verifier. */
-        __asm__ __volatile__("" : "+r"(offset));
-        if (offset >= length || offset >= FM_MAX_BYTES)
-            return -1;
-        fm_u32 byte = input[offset];
-        if ((byte & 0xc0) != 0x80)
-            return -1;
-        value = (value << 6) | (byte & 0x3f);
-    }
-    if ((size == 2 && value < 0x80) || (size == 3 && value < 0x800) ||
-        (size == 4 && value < 0x10000) || value > 0x10ffff ||
-        (value >= 0xd800 && value <= 0xdfff))
-        return -1;
-    decoded->rune = value;
-    decoded->width = size;
-    return 0;
+		__asm__ __volatile__("" : "+r"(offset));
+		if (offset >= length || offset >= FM_MAX_BYTES)
+			return -1;
+		fm_u32 byte = input[offset];
+		if ((byte & 0xc0) != 0x80)
+			return -1;
+		value = (value << 6) | (byte & 0x3f);
+	}
+	if ((size == 2 && value < 0x80) || (size == 3 && value < 0x800) ||
+	    (size == 4 && value < 0x10000) || value > 0x10ffff ||
+	    (value >= 0xd800 && value <= 0xdfff))
+		return -1;
+	decoded->rune = value;
+	decoded->width = size;
+	return 0;
 }
 FM_INLINE int fm_decode(const fm_u8 *input, fm_u32 length, fm_u32 position,
-                        fm_u32 *rune, fm_u32 *width)
+			fm_u32 *rune, fm_u32 *width)
 {
-    struct fm_decoded decoded = {};
-    int result = fm_decode_buffer((const struct fm_utf8_buffer *)input, length, position, &decoded);
-    if (result < 0) return result;
-    *rune = decoded.rune;
-    *width = decoded.width;
-    return 0;
+	struct fm_decoded decoded = {};
+	int result = fm_decode_buffer((const struct fm_utf8_buffer *)input,
+				      length, position, &decoded);
+	if (result < 0)
+		return result;
+	*rune = decoded.rune;
+	*width = decoded.width;
+	return 0;
 }
 
-FM_INLINE int fm_enqueue_inline(struct fm_scratch *scratch, fm_u32 pc, fm_u32 count)
+FM_INLINE int fm_enqueue_inline(struct fm_scratch *scratch, fm_u32 pc,
+				fm_u32 count)
 {
-    if (!scratch || !count || count > FM_MAX_STATES || pc >= count || pc >= FM_MAX_STATES)
-        return -1;
-    fm_u32 word = pc >> 6;
-    fm_u64 mask = 1ULL << (pc & 63);
-    if (scratch->seen[word] & mask)
-        return 0;
-    if (scratch->tail >= FM_MAX_STATES)
-        return -1;
-    scratch->seen[word] |= mask;
-    scratch->queue[scratch->tail++] = pc;
-    return 0;
+	if (!scratch || !count || count > FM_MAX_STATES || pc >= count ||
+	    pc >= FM_MAX_STATES)
+		return -1;
+	fm_u32 word = pc >> 6;
+	fm_u64 mask = 1ULL << (pc & 63);
+	if (scratch->seen[word] & mask)
+		return 0;
+	if (scratch->tail >= FM_MAX_STATES)
+		return -1;
+	scratch->seen[word] |= mask;
+	scratch->queue[scratch->tail++] = pc;
+	return 0;
 }
 /* Seed callbacks use an independently verified typed-memory queue helper. The
  * opcode helper inlines this implementation to stay within BPF call depth. */
@@ -146,63 +167,65 @@ FM_INLINE
 #endif
 int fm_enqueue(struct fm_scratch *scratch, fm_u32 pc, fm_u32 count)
 {
-    return fm_enqueue_inline(scratch, pc, count);
+	return fm_enqueue_inline(scratch, pc, count);
 }
 
 /* bpf_loop keeps callback verification independent of the runtime iteration
  * count. Plain C executes the same callbacks through a bounded local shim. */
 #ifdef __bpf__
 static long (*fm_bpf_loop)(fm_u32, void *, void *, fm_u64) = (void *)181;
-#define FM_LOOP(count, callback, context) fm_bpf_loop(count, callback, context, 0)
+#define FM_LOOP(count, callback, context) \
+	fm_bpf_loop(count, callback, context, 0)
 #else
-FM_INLINE long fm_c_loop(fm_u32 count, long (*callback)(fm_u32, void *), void *context)
+FM_INLINE long fm_c_loop(fm_u32 count, long (*callback)(fm_u32, void *),
+			 void *context)
 {
-    if (count > FM_MAX_STATES)
-        return -1;
-    for (fm_u32 i = 0; i < FM_MAX_STATES; i++) {
-        if (i >= count)
-            return count;
-        long result = callback(i, context);
-        if (result == 1)
-            return i + 1;
-        if (result != 0)
-            return -1;
-    }
-    return count;
+	if (count > FM_MAX_STATES)
+		return -1;
+	for (fm_u32 i = 0; i < FM_MAX_STATES; i++) {
+		if (i >= count)
+			return count;
+		long result = callback(i, context);
+		if (result == 1)
+			return i + 1;
+		if (result != 0)
+			return -1;
+	}
+	return count;
 }
 #define FM_LOOP(count, callback, context) fm_c_loop(count, callback, context)
 #endif
 
 struct fm_step_context {
-    void *context;
-    struct fm_scratch *scratch;
-    fm_u32 code_base, count, rune;
-    int at_begin, at_end, matched, error;
+	void *context;
+	struct fm_scratch *scratch;
+	fm_u32 code_base, count, rune;
+	int at_begin, at_end, matched, error;
 };
 FM_INLINE long fm_failure(struct fm_step_context *ctx)
 {
-    ctx->error = 1;
-    return 1;
+	ctx->error = 1;
+	return 1;
 }
 static long fm_seed_callback(fm_u32 pc, void *data)
 {
-    struct fm_step_context *ctx = data;
-    if (pc >= ctx->count || pc >= FM_MAX_STATES)
-        return 1;
-    if (ctx->scratch->seeds[pc >> 6] & (1ULL << (pc & 63))) {
+	struct fm_step_context *ctx = data;
+	if (pc >= ctx->count || pc >= FM_MAX_STATES)
+		return 1;
+	if (ctx->scratch->seeds[pc >> 6] & (1ULL << (pc & 63))) {
 #ifdef FM_GLOBAL_MATCHER
-        if (fm_enqueue_inline(ctx->scratch, pc, ctx->count) < 0)
+		if (fm_enqueue_inline(ctx->scratch, pc, ctx->count) < 0)
 #else
-        if (fm_enqueue(ctx->scratch, pc, ctx->count) < 0)
+		if (fm_enqueue(ctx->scratch, pc, ctx->count) < 0)
 #endif
-            return fm_failure(ctx);
-    }
-    return 0;
+			return fm_failure(ctx);
+	}
+	return 0;
 }
 
 struct fm_instruction_state {
-    fm_u32 count, rune;
-    int at_begin, at_end;
+	fm_u32 count, rune;
+	int at_begin, at_end;
 };
 /* Globally verify the pure opcode transition once, instead of multiplying its
  * branch states across rules, predicates, ancestors and path characters. All
@@ -218,148 +241,165 @@ int fm_apply_instruction(struct fm_scratch *scratch,
                          const struct fm_instruction *inst,
                          const struct fm_instruction_state *state)
 {
-    if (!scratch || !inst || !state || !state->count || state->count > FM_MAX_STATES)
-        return -1;
-    fm_u32 count = state->count;
-    if (inst->op != FM_RUNE && inst->count != 0)
-        return -1;
-    switch (inst->op) {
-    case FM_ALT:
-        if (fm_enqueue_inline(scratch, inst->out, count) < 0 ||
-            fm_enqueue_inline(scratch, inst->arg, count) < 0)
-            return -1;
-        break;
-    case FM_EMPTY_WIDTH:
-        if (inst->arg & ~(FM_BEGIN_TEXT | FM_END_TEXT))
-            return -1;
-        if (inst->out >= count)
-            return -1;
-        if ((!(inst->arg & FM_BEGIN_TEXT) || state->at_begin) &&
-            (!(inst->arg & FM_END_TEXT) || state->at_end)) {
-            if (fm_enqueue_inline(scratch, inst->out, count) < 0)
-                return -1;
-        }
-        break;
-    case FM_NOP:
-        if (fm_enqueue_inline(scratch, inst->out, count) < 0)
-            return -1;
-        break;
-    case FM_MATCH:
-        return state->at_end ? 1 : 0;
-    case FM_FAIL:
-        break;
-    case FM_RUNE: {
-        if (!inst->count || inst->count > FM_MAX_RANGES || inst->arg ||
-            inst->out >= count || inst->out >= FM_MAX_STATES)
-            return -1;
-        int consumes = 0;
-        /* This small loop is verified once inside the global function. Every
+	if (!scratch || !inst || !state || !state->count ||
+	    state->count > FM_MAX_STATES)
+		return -1;
+	fm_u32 count = state->count;
+	if (inst->op != FM_RUNE && inst->count != 0)
+		return -1;
+	switch (inst->op) {
+	case FM_ALT:
+		if (fm_enqueue_inline(scratch, inst->out, count) < 0 ||
+		    fm_enqueue_inline(scratch, inst->arg, count) < 0)
+			return -1;
+		break;
+	case FM_EMPTY_WIDTH:
+		if (inst->arg & ~(FM_BEGIN_TEXT | FM_END_TEXT))
+			return -1;
+		if (inst->out >= count)
+			return -1;
+		if ((!(inst->arg & FM_BEGIN_TEXT) || state->at_begin) &&
+		    (!(inst->arg & FM_END_TEXT) || state->at_end)) {
+			if (fm_enqueue_inline(scratch, inst->out, count) < 0)
+				return -1;
+		}
+		break;
+	case FM_NOP:
+		if (fm_enqueue_inline(scratch, inst->out, count) < 0)
+			return -1;
+		break;
+	case FM_MATCH:
+		return state->at_end ? 1 : 0;
+	case FM_FAIL:
+		break;
+	case FM_RUNE: {
+		if (!inst->count || inst->count > FM_MAX_RANGES || inst->arg ||
+		    inst->out >= count || inst->out >= FM_MAX_STATES)
+			return -1;
+		int consumes = 0;
+		/* This small loop is verified once inside the global function. Every
          * range is validated, even after a positive match. Larger interpreter
          * loops continue to use bpf_loop callbacks. */
-        for (fm_u32 i = 0; i < FM_MAX_RANGES; i++) {
-            if (i >= inst->count) break;
-            fm_u32 lo = inst->ranges[2*i], hi = inst->ranges[2*i+1];
-            if (lo > hi || hi > 0x10ffff) return -1;
-            if (!state->at_end && state->rune >= lo && state->rune <= hi)
-                consumes = 1;
-        }
-        if (consumes) {
-            fm_u32 out = inst->out;
-            __asm__ __volatile__("" : "+r"(out));
-            if (out >= count || out >= FM_MAX_STATES) return -1;
-            scratch->next[out >> 6] |= 1ULL << (out & 63);
-        }
-        break;
-    }
-    default:
-        return -1;
-    }
-    return 0;
+		for (fm_u32 i = 0; i < FM_MAX_RANGES; i++) {
+			if (i >= inst->count)
+				break;
+			fm_u32 lo = inst->ranges[2 * i],
+			       hi = inst->ranges[2 * i + 1];
+			if (lo > hi || hi > 0x10ffff)
+				return -1;
+			if (!state->at_end && state->rune >= lo &&
+			    state->rune <= hi)
+				consumes = 1;
+		}
+		if (consumes) {
+			fm_u32 out = inst->out;
+			__asm__ __volatile__("" : "+r"(out));
+			if (out >= count || out >= FM_MAX_STATES)
+				return -1;
+			scratch->next[out >> 6] |= 1ULL << (out & 63);
+		}
+		break;
+	}
+	default:
+		return -1;
+	}
+	return 0;
 }
 
 /* Exactly one workqueue step. Each PC is enqueued once, so epsilon cycles
  * terminate within512 callbacks without verifier path expansion per iteration. */
 static long fm_instruction_callback(fm_u32 index, void *data)
 {
-    (void)index;
-    struct fm_step_context *ctx = data;
-    struct fm_scratch *scratch = ctx->scratch;
-    fm_u32 count = ctx->count;
-    if (scratch->head >= scratch->tail)
-        return 1;
-    if (scratch->head >= FM_MAX_STATES)
-        return fm_failure(ctx);
-    fm_u32 pc = scratch->queue[scratch->head++];
-    if (pc >= count || pc >= FM_MAX_STATES)
-        return fm_failure(ctx);
-    fm_u32 key = ctx->code_base + pc;
-    if (key >= FM_MAX_ENTRIES)
-        return fm_failure(ctx);
+	(void)index;
+	struct fm_step_context *ctx = data;
+	struct fm_scratch *scratch = ctx->scratch;
+	fm_u32 count = ctx->count;
+	if (scratch->head >= scratch->tail)
+		return 1;
+	if (scratch->head >= FM_MAX_STATES)
+		return fm_failure(ctx);
+	fm_u32 pc = scratch->queue[scratch->head++];
+	if (pc >= count || pc >= FM_MAX_STATES)
+		return fm_failure(ctx);
+	fm_u32 key = ctx->code_base + pc;
+	if (key >= FM_MAX_ENTRIES)
+		return fm_failure(ctx);
 #ifdef FM_GLOBAL_MATCHER
-    const struct fm_blob *blob = FM_GLOBAL_BLOB_LOOKUP(key);
+	const struct fm_blob *blob = FM_GLOBAL_BLOB_LOOKUP(key);
 #else
-    const struct fm_blob *blob = FM_BLOB_LOOKUP(ctx->context, key);
+	const struct fm_blob *blob = FM_BLOB_LOOKUP(ctx->context, key);
 #endif
-    if (!blob)
-        return fm_failure(ctx);
-    struct fm_instruction_state state = {
-        .count = count, .rune = ctx->rune,
-        .at_begin = ctx->at_begin, .at_end = ctx->at_end,
-    };
-    int result = fm_apply_instruction(scratch, (const struct fm_instruction *)blob, &state);
-    if (result < 0) return fm_failure(ctx);
-    if (result) ctx->matched = 1;
-    return 0;
+	if (!blob)
+		return fm_failure(ctx);
+	struct fm_instruction_state state = {
+		.count = count,
+		.rune = ctx->rune,
+		.at_begin = ctx->at_begin,
+		.at_end = ctx->at_end,
+	};
+	int result = fm_apply_instruction(
+		scratch, (const struct fm_instruction *)blob, &state);
+	if (result < 0)
+		return fm_failure(ctx);
+	if (result)
+		ctx->matched = 1;
+	return 0;
 }
 
 FM_INLINE int fm_step(void *context, fm_u32 code_base, fm_u32 count,
-                     fm_u32 rune, int at_begin, int at_end,
-                     struct fm_scratch *scratch)
+		      fm_u32 rune, int at_begin, int at_end,
+		      struct fm_scratch *scratch)
 {
-    scratch->head = scratch->tail = 0;
-    for (fm_u32 i = 0; i < 8; i++) {
-        scratch->next[i] = 0;
-        scratch->seen[i] = 0;
-    }
-    struct fm_step_context ctx = {
-        .context = context, .scratch = scratch, .code_base = code_base,
-        .count = count, .rune = rune, .at_begin = at_begin, .at_end = at_end,
-    };
-    if (FM_LOOP(FM_MAX_STATES, fm_seed_callback, &ctx) < 0 || ctx.error)
-        return -1;
-    if (FM_LOOP(FM_MAX_STATES, fm_instruction_callback, &ctx) < 0 || ctx.error ||
-        scratch->head != scratch->tail)
-        return -1;
-    return ctx.matched;
+	scratch->head = scratch->tail = 0;
+	for (fm_u32 i = 0; i < 8; i++) {
+		scratch->next[i] = 0;
+		scratch->seen[i] = 0;
+	}
+	struct fm_step_context ctx = {
+		.context = context,
+		.scratch = scratch,
+		.code_base = code_base,
+		.count = count,
+		.rune = rune,
+		.at_begin = at_begin,
+		.at_end = at_end,
+	};
+	if (FM_LOOP(FM_MAX_STATES, fm_seed_callback, &ctx) < 0 || ctx.error)
+		return -1;
+	if (FM_LOOP(FM_MAX_STATES, fm_instruction_callback, &ctx) < 0 ||
+	    ctx.error || scratch->head != scratch->tail)
+		return -1;
+	return ctx.matched;
 }
 
 struct fm_run_context {
-    void *context;
-    const fm_u8 *input;
-    struct fm_scratch *scratch;
-    fm_u32 code_base, count, length, position;
-    int result;
+	void *context;
+	const fm_u8 *input;
+	struct fm_scratch *scratch;
+	fm_u32 code_base, count, length, position;
+	int result;
 };
 static long fm_rune_callback(fm_u32 index, void *data)
 {
-    (void)index;
-    struct fm_run_context *ctx = data;
-    int at_end = ctx->position == ctx->length;
-    fm_u32 rune = 0, width = 0;
-    if (!at_end && fm_decode(ctx->input, ctx->length, ctx->position, &rune, &width) < 0) {
-        ctx->result = -1;
-        return 1;
-    }
-    int result = fm_step(ctx->context, ctx->code_base, ctx->count, rune,
-                         ctx->position == 0, at_end, ctx->scratch);
-    if (result < 0 || at_end) {
-        ctx->result = result;
-        return 1;
-    }
-    ctx->position += width;
-    for (fm_u32 i = 0; i < 8; i++)
-        ctx->scratch->seeds[i] = ctx->scratch->next[i];
-    return 0;
+	(void)index;
+	struct fm_run_context *ctx = data;
+	int at_end = ctx->position == ctx->length;
+	fm_u32 rune = 0, width = 0;
+	if (!at_end && fm_decode(ctx->input, ctx->length, ctx->position, &rune,
+				 &width) < 0) {
+		ctx->result = -1;
+		return 1;
+	}
+	int result = fm_step(ctx->context, ctx->code_base, ctx->count, rune,
+			     ctx->position == 0, at_end, ctx->scratch);
+	if (result < 0 || at_end) {
+		ctx->result = result;
+		return 1;
+	}
+	ctx->position += width;
+	for (fm_u32 i = 0; i < 8; i++)
+		ctx->scratch->seeds[i] = ctx->scratch->next[i];
+	return 0;
 }
 
 /* Return1 for a whole-string match,0 for no match,-1 for malformed/unavailable
@@ -368,61 +408,73 @@ static long fm_rune_callback(fm_u32 index, void *data)
  * can be reused after a previous match, mismatch or error.
  */
 FM_INLINE int fm_match_inline(void *context, const struct fm_pattern *pattern,
-                      const fm_u8 *input, fm_u32 length, struct fm_scratch *scratch)
+			      const fm_u8 *input, fm_u32 length,
+			      struct fm_scratch *scratch)
 {
-    if (!pattern || !input || !scratch || length > FM_MAX_BYTES)
-        return -1;
-    /* Cache descriptor scalars once. The program map must be frozen, but loop
+	if (!pattern || !input || !scratch || length > FM_MAX_BYTES)
+		return -1;
+	/* Cache descriptor scalars once. The program map must be frozen, but loop
      * bounds should not depend on repeated loads through a map-value pointer. */
-    fm_u32 count = pattern->count, start = pattern->start;
-    fm_u32 code_base = pattern->code_base;
-    if (!count || count > FM_MAX_STATES || start >= count || !code_base ||
-        code_base >= FM_MAX_ENTRIES || count > FM_MAX_ENTRIES - code_base)
-        return -1;
-    for (fm_u32 i = 0; i < 8; i++)
-        scratch->seeds[i] = 0;
-    scratch->seeds[start >> 6] = 1ULL << (start & 63);
-    struct fm_run_context ctx = {
-        .context = context, .input = input, .scratch = scratch,
-        .code_base = code_base, .count = count, .length = length, .result = -1,
-    };
-    if (FM_LOOP(FM_MAX_BYTES + 1, fm_rune_callback, &ctx) < 0)
-        return -1;
-    return ctx.result;
+	fm_u32 count = pattern->count, start = pattern->start;
+	fm_u32 code_base = pattern->code_base;
+	if (!count || count > FM_MAX_STATES || start >= count || !code_base ||
+	    code_base >= FM_MAX_ENTRIES || count > FM_MAX_ENTRIES - code_base)
+		return -1;
+	for (fm_u32 i = 0; i < 8; i++)
+		scratch->seeds[i] = 0;
+	scratch->seeds[start >> 6] = 1ULL << (start & 63);
+	struct fm_run_context ctx = {
+		.context = context,
+		.input = input,
+		.scratch = scratch,
+		.code_base = code_base,
+		.count = count,
+		.length = length,
+		.result = -1,
+	};
+	if (FM_LOOP(FM_MAX_BYTES + 1, fm_rune_callback, &ctx) < 0)
+		return -1;
+	return ctx.result;
 }
 #ifdef FM_GLOBAL_MATCHER
 /* Fixed-map BPF programs can independently verify the entire matcher. The
  * accessor resolves the program's immutable blob map without passing an opaque
  * map pointer through the global-function ABI. All memory arguments are typed.
  */
-__attribute__((noinline))
-int fm_match_global(fm_u32 pattern_key, const struct fm_utf8_buffer *input,
-                    fm_u32 length, struct fm_scratch *scratch)
+__attribute__((noinline)) int
+fm_match_global(fm_u32 pattern_key, const struct fm_utf8_buffer *input,
+		fm_u32 length, struct fm_scratch *scratch)
 {
-    if (!input || pattern_key >= FM_MAX_ENTRIES) return -1;
-    /* Readonly map values must not cross the global memory-argument ABI: C
+	if (!input || pattern_key >= FM_MAX_ENTRIES)
+		return -1;
+	/* Readonly map values must not cross the global memory-argument ABI: C
      * const does not mark BTF memory arguments readonly. Resolve by scalar key. */
-    const struct fm_pattern *pattern = (const struct fm_pattern *)FM_GLOBAL_BLOB_LOOKUP(pattern_key);
-    return fm_match_inline(0, pattern, input->bytes, length, scratch);
+	const struct fm_pattern *pattern =
+		(const struct fm_pattern *)FM_GLOBAL_BLOB_LOOKUP(pattern_key);
+	return fm_match_inline(0, pattern, input->bytes, length, scratch);
 }
 #endif
 FM_INLINE int fm_match(void *context, const struct fm_pattern *pattern,
-                       const fm_u8 *input, fm_u32 length, struct fm_scratch *scratch)
+		       const fm_u8 *input, fm_u32 length,
+		       struct fm_scratch *scratch)
 {
-    return fm_match_inline(context, pattern, input, length, scratch);
+	return fm_match_inline(context, pattern, input, length, scratch);
 }
 /* Fixed-map BPF callers use this key boundary so the immutable pattern stays
  * inside the global function, not a falsely writable memory argument. */
 FM_INLINE int fm_match_key(void *context, fm_u32 key, const fm_u8 *input,
-                           fm_u32 length, struct fm_scratch *scratch)
+			   fm_u32 length, struct fm_scratch *scratch)
 {
-    if (key >= FM_MAX_ENTRIES) return -1;
+	if (key >= FM_MAX_ENTRIES)
+		return -1;
 #ifdef FM_GLOBAL_MATCHER
-    (void)context;
-    return fm_match_global(key, (const struct fm_utf8_buffer *)input, length, scratch);
+	(void)context;
+	return fm_match_global(key, (const struct fm_utf8_buffer *)input,
+			       length, scratch);
 #else
-    const struct fm_pattern *pattern = (const struct fm_pattern *)FM_BLOB_LOOKUP(context, key);
-    return fm_match_inline(context, pattern, input, length, scratch);
+	const struct fm_pattern *pattern =
+		(const struct fm_pattern *)FM_BLOB_LOOKUP(context, key);
+	return fm_match_inline(context, pattern, input, length, scratch);
 #endif
 }
 #undef FM_GLOBAL_MATCHER

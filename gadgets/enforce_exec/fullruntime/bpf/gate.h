@@ -20,7 +20,7 @@ typedef unsigned long long fg_u64;
  */
 FG_INLINE fg_u64 fg_read(fg_u64 *word)
 {
-    return __sync_val_compare_and_swap(word, 0, 0);
+	return __sync_val_compare_and_swap(word, 0, 0);
 }
 
 /* On success the actual task transaction must record release ownership before
@@ -28,22 +28,23 @@ FG_INLINE fg_u64 fg_read(fg_u64 *word)
  */
 FG_INLINE int fg_enter(fg_u64 *word)
 {
-    if (!word)
-        return FG_CORRUPT;
+	if (!word)
+		return FG_CORRUPT;
 #pragma clang loop unroll(disable)
-    for (unsigned int attempt = 0; attempt < FG_CAS_ATTEMPTS; attempt++) {
-        fg_u64 value = fg_read(word);
-        fg_u64 count = value & FG_COUNT_MASK;
-        if (count > FG_MAX_ADMITTED)
-            return FG_CORRUPT;
-        if (value & FG_CLOSED)
-            return FG_BUSY;
-        if (count == FG_MAX_ADMITTED)
-            return FG_CAPACITY;
-        if (__sync_val_compare_and_swap(word, value, value + 1) == value)
-            return FG_OK;
-    }
-    return FG_BUSY;
+	for (unsigned int attempt = 0; attempt < FG_CAS_ATTEMPTS; attempt++) {
+		fg_u64 value = fg_read(word);
+		fg_u64 count = value & FG_COUNT_MASK;
+		if (count > FG_MAX_ADMITTED)
+			return FG_CORRUPT;
+		if (value & FG_CLOSED)
+			return FG_BUSY;
+		if (count == FG_MAX_ADMITTED)
+			return FG_CAPACITY;
+		if (__sync_val_compare_and_swap(word, value, value + 1) ==
+		    value)
+			return FG_OK;
+	}
+	return FG_BUSY;
 }
 
 /* Call after committed-role writes and pending-state cleanup, exactly once for
@@ -52,20 +53,21 @@ FG_INLINE int fg_enter(fg_u64 *word)
  */
 FG_INLINE int fg_leave(fg_u64 *word)
 {
-    if (!word)
-        return FG_CORRUPT;
+	if (!word)
+		return FG_CORRUPT;
 #pragma clang loop unroll(disable)
-    for (unsigned int attempt = 0; attempt < FG_CAS_ATTEMPTS; attempt++) {
-        fg_u64 value = fg_read(word);
-        fg_u64 count = value & FG_COUNT_MASK;
-        if (count > FG_MAX_ADMITTED)
-            return FG_CORRUPT;
-        if (!count)
-            return FG_UNDERFLOW;
-        if (__sync_val_compare_and_swap(word, value, value - 1) == value)
-            return FG_OK;
-    }
-    return FG_BUSY;
+	for (unsigned int attempt = 0; attempt < FG_CAS_ATTEMPTS; attempt++) {
+		fg_u64 value = fg_read(word);
+		fg_u64 count = value & FG_COUNT_MASK;
+		if (count > FG_MAX_ADMITTED)
+			return FG_CORRUPT;
+		if (!count)
+			return FG_UNDERFLOW;
+		if (__sync_val_compare_and_swap(word, value, value - 1) ==
+		    value)
+			return FG_OK;
+	}
+	return FG_BUSY;
 }
 /* The caller has exclusively claimed/cleared transaction ownership, completed
  * committed/pending writes and UNLOCKED before calling this helper. A false
@@ -74,26 +76,27 @@ FG_INLINE int fg_leave(fg_u64 *word)
  * Sticky faults are never repaired/reset by this helper. */
 FG_INLINE int fg_leave_owned(fg_u64 *word, unsigned int claimed, fg_u64 *faults)
 {
-    if (!claimed)
-        return FG_OK;
-    if (!word || !faults)
-        return FG_CORRUPT;
-    fg_u64 value = fg_read(word);
-    /* A semantic/lineage fault still forbids new work/readiness, but must not
+	if (!claimed)
+		return FG_OK;
+	if (!word || !faults)
+		return FG_CORRUPT;
+	fg_u64 value = fg_read(word);
+	/* A semantic/lineage fault still forbids new work/readiness, but must not
      * strand an already claimed exact-once release after ownership was cleared.
      * Preserve the fault; validate the counter independently. */
-    if (!(value & FG_COUNT_MASK) ||
-        (value & FG_COUNT_MASK) > FG_MAX_ADMITTED) {
-        __sync_fetch_and_or(faults, 1);
-        return (value & FG_COUNT_MASK) ? FG_CORRUPT : FG_UNDERFLOW;
-    }
-    value = __sync_fetch_and_sub(word, 1);
-    if (!(value & FG_COUNT_MASK) || (value & FG_COUNT_MASK) > FG_MAX_ADMITTED) {
-        /* Impossible with valid exact-once owners: preserve corruption and
+	if (!(value & FG_COUNT_MASK) ||
+	    (value & FG_COUNT_MASK) > FG_MAX_ADMITTED) {
+		__sync_fetch_and_or(faults, 1);
+		return (value & FG_COUNT_MASK) ? FG_CORRUPT : FG_UNDERFLOW;
+	}
+	value = __sync_fetch_and_sub(word, 1);
+	if (!(value & FG_COUNT_MASK) ||
+	    (value & FG_COUNT_MASK) > FG_MAX_ADMITTED) {
+		/* Impossible with valid exact-once owners: preserve corruption and
          * latch a fault, never repair the count or reopen the gate. */
-        __sync_fetch_and_or(faults, 1);
-        return FG_CORRUPT;
-    }
-    return FG_OK;
+		__sync_fetch_and_or(faults, 1);
+		return FG_CORRUPT;
+	}
+	return FG_OK;
 }
 #endif

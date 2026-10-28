@@ -6,5 +6,5 @@
 SEC("lsm/bprm_check_security")
 long BPF_PROG(preserve_previous, struct linux_binprm *bprm, long ret)
 {
-    return ret;
+	return ret;
 }

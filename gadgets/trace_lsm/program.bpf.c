@@ -127,7 +127,7 @@
 	F(task_setscheduler)        \
 	F(task_getscheduler)        \
 	F(task_movememory)          \
-	F(task_kill)             \
+	F(task_kill)                \
 	F(task_prctl)               \
 	F(task_to_inode)            \
 	F(ipc_permission)           \
