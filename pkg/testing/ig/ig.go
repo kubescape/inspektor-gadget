@@ -172,6 +172,13 @@ func WithStdOutWriter(writer io.Writer) Option {
 	}
 }
 
+// WithStdErrWriter forwards stderr while retaining its full captured output.
+func WithStdErrWriter(writer io.Writer) Option {
+	return func(ig *runner) {
+		ig.StdErrWriter = writer
+	}
+}
+
 // WithOutputMode sets the output mode
 func WithOutputMode(outputMode string) Option {
 	return func(ig *runner) {
