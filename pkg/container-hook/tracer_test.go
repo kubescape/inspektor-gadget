@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils/testutils"
@@ -83,6 +84,14 @@ func TestCallbackAddContainerBoundedTripsWhenInFlightHigh(t *testing.T) {
 func TestContainerHookEvent(t *testing.T) {
 	utils.RequireRoot(t)
 
+	// The notifier uses the shared logrus logger, with no per-instance override.
+	// Enable its existing runtime-path/exec-argument diagnostics before children
+	// start; parent cleanup restores the level after all parallel children finish.
+	// This observational probe adds logging overhead and can perturb scheduling.
+	previousLogLevel := log.GetLevel()
+	log.SetLevel(log.DebugLevel)
+	t.Cleanup(func() { log.SetLevel(previousLogLevel) })
+
 	type testDefinition struct {
 		generateEvent func(t *testing.T) string
 		validateEvent func(t *testing.T, info *utils.RunnerInfo, containerID string, events []ContainerEvent)
@@ -137,6 +146,9 @@ func TestContainerHookEvent(t *testing.T) {
 			snapshot, matched := events.wait(expected, 100*time.Millisecond)
 			if !matched {
 				events.logMissing(t, expected, snapshot)
+				state := snapshotHookTarget(notifier, containerID)
+				t.Logf("post-deadline state (not atomic across stages): containerID=%q pendingPIDFiles=%q future=%t watched=%t callbackStats=%+v",
+					containerID, state.pendingPIDFiles, state.future, state.watched, state.callbackStats)
 			}
 			test.validateEvent(t, nil, containerID, snapshot)
 		})
