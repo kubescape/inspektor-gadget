@@ -105,6 +105,12 @@ struct observation {
 	struct fe_scratch evaluator;
 	char argument[4097];
 };
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+_Static_assert(sizeof(struct observation) == 16008,
+	       "development observation ABI");
+#else
+_Static_assert(sizeof(struct observation) == 15936, "observation ABI");
+#endif
 // A sleepable invocation owns its task-keyed scratch until every exit deletes it.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -240,36 +246,55 @@ int BPF_PROG(enforce_exec_track_memfd, struct inode *inode,
 	return ret;
 }
 SEC("lsm.s/bprm_check_security")
-int BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+long
+#else
+int
+#endif
+BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 {
 	if (ret) {
 #ifdef ENFORCE_EXEC_PERSISTENT_OWNER
 		eo_exec_suppress();
 #endif
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+		return fe_lsm_result(ret);
+#else
 		return ret;
+#endif
 	}
 	__u64 cgroup = bpf_get_current_cgroup_id(),
 	      id = bpf_get_current_pid_tgid();
 #ifdef ENFORCE_EXEC_PERSISTENT_OWNER
 	__u64 generation = 0;
 	int admitted = eo_exec_begin(bprm, &generation);
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	const __u32 execution_class = eo_exec_class();
+#else
+	const __u32 execution_class = 2;
+#endif
 	if (admitted <= 0)
-		return admitted < 0 ? -1 : 0;
+		return admitted < 0 && execution_class == 2 ? -1 : 0;
 	struct eo_config *configuration = eo_config();
 	if (!configuration) {
 		eo_exec_suppress();
-		return -1;
+		return execution_class == 2 ? -1 : 0;
 	}
 	cgroup =
 		configuration
 			->cgroup; // Original binding, including a migrated in-flight exec.
 	__u32 zero = 0;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+#define FULL_OBSERVATION_FAULT(bit) eo_exec_observation_fault(generation, bit)
+#else
 #define FULL_OBSERVATION_FAULT(bit)             \
 	do {                                    \
 		eo_data_fault(generation, bit); \
 		eo_exec_suppress();             \
 	} while (0)
+#endif
 #else
+	const __u32 execution_class = 2;
 	__u64 *binding = bpf_map_lookup_elem(&bindings, &cgroup);
 	if (!binding)
 		return 0;
@@ -293,14 +318,14 @@ int BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 	    bpf_map_update_elem(&observations, &id, empty, BPF_NOEXIST)) {
 		FULL_OBSERVATION_FAULT(2);
 		count(2);
-		return -1;
+		return execution_class == 2 ? -1 : 0;
 	}
 	struct observation *o = bpf_map_lookup_elem(&observations, &id);
 	if (!o) {
 		bpf_map_delete_elem(&observations, &id);
 		FULL_OBSERVATION_FAULT(2);
 		count(2);
-		return -1;
+		return execution_class == 2 ? -1 : 0;
 	}
 	o->facts.actor_image = -1;
 	o->facts.target_image = -1;
@@ -384,20 +409,32 @@ int BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 		FULL_OBSERVATION_FAULT(4);
 		if (!d->error)
 			d->error = FE_INVALID;
+#ifndef ENFORCE_EXEC_ABI3_DEVELOPMENT
 		d->deny = 1;
 		d->mode = 2;
+#endif
 		count(2);
 	}
 #ifdef ENFORCE_EXEC_PERSISTENT_OWNER
 	if (eo_exec_propose(bprm, d)) {
+		error = 1;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+		eo_exec_observation_fault(generation, 4);
+#endif
 		if (!d->error)
 			d->error = FE_INVALID;
+#ifndef ENFORCE_EXEC_ABI3_DEVELOPMENT
 		d->deny = 1;
 		d->mode = 2;
+#endif
 		count(2);
 	}
 #endif
-	int denied = d->deny && d->mode == 2;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	long result = fe_lsm_verdict(execution_class, ret, error, d);
+#else
+	int result = d->deny && d->mode == 2 ? -1 : 0;
+#endif
 	struct event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 	if (event) {
 		__builtin_memset(event, 0, sizeof(*event));
@@ -415,6 +452,6 @@ int BPF_PROG(enforce_exec_full, struct linux_binprm *bprm, int ret)
 	} else
 		count(1);
 	bpf_map_delete_elem(&observations, &id);
-	return denied ? -1 : 0;
+	return result;
 }
 char LICENSE[] SEC("license") = "GPL";

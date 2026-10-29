@@ -4,7 +4,11 @@
 #ifndef FULL_OWNER_TYPES_H
 #define FULL_OWNER_TYPES_H
 #include "../fullruntime/bpf/gate.h"
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+#define EO_ABI 3U
+#else
 #define EO_ABI 2U
+#endif
 #define EO_TASKS 4096U
 #define EO_WORKS (EO_TASKS + 1U)
 #define EO_VERIFIED 1U
@@ -89,6 +93,12 @@ struct eo_row {
 struct eo_exec_tx {
 	__u64 bprm, cgroup, generation, owner_cookie;
 	__u32 owned, slot, suppress, checks;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	/* Owned by the task lock; reset only on a new transaction or matching finish. */
+	__u32 execution_class, role_uncertain_mask, role_write_mask;
+	__u32 global_deny_unknown, known_deny_seen, policy_count;
+	__u32 enforced_write_mask, role_conflict_mask;
+#endif
 	struct er_row pending[ER_ACTIVE];
 };
 struct eo_fork_tx {
@@ -117,10 +127,24 @@ _Static_assert(sizeof(struct eo_health) == 128, "owner health ABI");
 _Static_assert(sizeof(struct eo_phase) == 48, "owner phase ABI");
 _Static_assert(sizeof(struct eo_anchor) == 16, "owner anchor ABI");
 _Static_assert(sizeof(struct eo_row) == 24, "owner row ABI");
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+_Static_assert(sizeof(struct eo_exec_tx) == 336, "development exec ABI");
+_Static_assert(__builtin_offsetof(struct eo_exec_tx, pending) == 80,
+	       "development pending ABI");
+_Static_assert(sizeof(struct er_state) == 520, "development state ABI");
+_Static_assert(sizeof(struct er_work) == 536, "development merge ABI");
+_Static_assert(__builtin_offsetof(struct eo_exec_tx, enforced_write_mask) == 72,
+	       "development enforced provenance ABI");
+_Static_assert(__builtin_offsetof(struct eo_exec_tx, role_conflict_mask) == 76,
+	       "development conflict provenance ABI");
+_Static_assert(sizeof(struct eo_task) == 904, "development task ABI");
+_Static_assert(sizeof(struct eo_work) == 1352, "development work ABI");
+#else
 _Static_assert(sizeof(struct eo_exec_tx) == 240, "owner exec ABI");
-_Static_assert(sizeof(struct eo_fork_tx) == 32, "owner fork ABI");
 _Static_assert(sizeof(struct eo_task) == 680, "owner task ABI");
 _Static_assert(sizeof(struct eo_work) == 1096, "owner work ABI");
+#endif
+_Static_assert(sizeof(struct eo_fork_tx) == 32, "owner fork ABI");
 struct eo_inner {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384);
