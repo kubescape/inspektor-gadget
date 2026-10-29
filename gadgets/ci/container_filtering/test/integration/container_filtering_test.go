@@ -71,6 +71,7 @@ func TestContainerFiltering(t *testing.T) {
 
 	switch utils.CurrentTestComponent {
 	case utils.IgLocalTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithLocalReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-r=%s", utils.Runtime)))
 	case utils.KubectlGadgetTestComponent:
 		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
