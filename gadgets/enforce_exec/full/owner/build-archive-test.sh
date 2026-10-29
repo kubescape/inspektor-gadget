@@ -14,6 +14,7 @@ set -euo pipefail
 if [[ $1 == --version ]]; then echo 'Ubuntu clang version 21.1.8'; exit; fi
 [[ ${FAIL_COMPILE:-0} != 1 ]] || exit 7
 printf '%s\n' "$@" > "$COMPILER_ARGS"
+if [[ -n ${INTERVENING_ARCHIVE:-} ]]; then printf 'intervening owner output\n' > "$INTERVENING_ARCHIVE"; fi
 while [[ $# -gt 0 ]]; do
     if [[ $1 == -o ]]; then printf 'fake ELF: packaging test only\n' > "$2"; exit; fi
     shift
@@ -81,3 +82,31 @@ if build "$work/bad.btf"; then echo 'unsupported BTF accepted' >&2; exit 1; fi
 cmp "$work/first.tar" "$work/owner.tar"
 [[ -z $(find "$work" -maxdepth 1 -name '.owner-archive.*' -print -quit) ]]
 echo 'PASS: deterministic packaging, metadata, platform, digests, rejection, atomic output and cleanup (fake compiler; no kernel proof)'
+# Development uses a separate output and temporary metadata, never default YAML.
+original=$(sha256sum "$owner/gadget.yaml")
+ABI3_DEVELOPMENT=1 "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftool" localhost/enforce-exec-owner:abi3-development "$work/owner.abi3-development.tar"
+grep -Fx -- '-DENFORCE_EXEC_ABI3_DEVELOPMENT=1' "$COMPILER_ARGS" >/dev/null
+mkdir "$work/development"
+tar -xf "$work/owner.abi3-development.tar" -C "$work/development"
+layout=$work/development
+index=$(jq -r '.manifests[0].digest | sub("sha256:"; "")' "$layout/index.json")
+manifest=$(jq -r '.manifests[0].digest | sub("sha256:"; "")' "$layout/blobs/sha256/$index")
+config=$(jq -r '.config.digest | sub("sha256:"; "")' "$layout/blobs/sha256/$manifest")
+grep -q 'enforce-exec-owner-abi: "3"' "$layout/blobs/sha256/$config"
+grep -q 'enforce-exec-owner-development: "true"' "$layout/blobs/sha256/$config"
+[[ $(sha256sum "$owner/gadget.yaml") == "$original" ]]
+cmp "$work/first.tar" "$work/owner.tar"
+echo 'PASS: development archive metadata/macro isolated from untouched default source and archive'
+
+# Publication must not overwrite an output created after the initial check.
+raced=$work/raced.abi3-development.tar
+if ABI3_DEVELOPMENT=1 INTERVENING_ARCHIVE="$raced" "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftool" localhost/enforce-exec-owner:abi3-development "$raced"; then
+    echo 'FAIL: development publication replaced intervening output' >&2; exit 1
+fi
+[[ $(cat "$raced") == 'intervening owner output' ]]
+ln -s "$work/ordinary.tar" "$work/alias.abi3-development.tar"
+if ABI3_DEVELOPMENT=1 "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftool" localhost/enforce-exec-owner:abi3-development "$work/alias.abi3-development.tar"; then
+    echo 'FAIL: development archive accepted ordinary canonical destination' >&2; exit 1
+fi
+[[ ! -e "$work/ordinary.tar" ]]
+echo 'PASS: development publication is no-replace and canonical-name isolated'
