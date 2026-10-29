@@ -25,7 +25,32 @@
 
 struct er_row {
 	__u64 uid, epoch, role;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	__u32 knowledge, reserved;
+#endif
 };
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+enum { ER_ROLE_EMPTY = 0, ER_ROLE_KNOWN = 1, ER_ROLE_UNKNOWN = 2 };
+_Static_assert(sizeof(struct er_row) == 32, "development role ABI");
+#else
+_Static_assert(sizeof(struct er_row) == 24, "ABI2 role ABI");
+#endif
+ER_INLINE struct er_row er_known_row(__u64 uid, __u64 epoch, __u64 role)
+{
+	struct er_row row = { .uid = uid, .epoch = epoch, .role = role };
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	row.knowledge = ER_ROLE_KNOWN;
+#endif
+	return row;
+}
+ER_INLINE int er_role_known(const struct er_row *row)
+{
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	return row->knowledge == ER_ROLE_KNOWN && row->reserved == 0;
+#else
+	return row->role != 0;
+#endif
+}
 struct er_authority {
 	__u64 uid, epoch, root;
 	__u32 new_uid, reserved;
@@ -99,8 +124,18 @@ ER_INLINE int er_candidate_valid(const struct er_candidate *c)
  * A mismatched accepted epoch is corruption, never a reason to re-root. */
 ER_INLINE int er_row_kind(const struct er_row *r, const struct er_candidate *c)
 {
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	if (!r->uid)
+		return (r->epoch || r->role || r->knowledge || r->reserved) ?
+			       ER_INVALID :
+			       0;
+	if (r->reserved ||
+	    (r->knowledge != ER_ROLE_KNOWN && r->knowledge != ER_ROLE_UNKNOWN))
+		return ER_INVALID;
+#else
 	if (!r->uid)
 		return (r->epoch || r->role) ? ER_INVALID : 0;
+#endif
 	if (!r->epoch || r->epoch == ER_UNKNOWN || !r->role)
 		return ER_INVALID;
 	__u64 er_accepted = ER_ACCEPTED_EPOCH(r->uid);
@@ -113,8 +148,10 @@ ER_INLINE int er_row_kind(const struct er_row *r, const struct er_candidate *c)
 			break;
 		const struct er_authority *a = &c->active[i];
 		if (a->uid == r->uid && a->epoch == r->epoch)
-			return a->new_uid && a->root == r->role ? 2 :
-								  ER_INVALID;
+			return a->new_uid && a->root == r->role &&
+					       er_role_known(r) ?
+				       2 :
+				       ER_INVALID;
 	}
 	return 0;
 }
@@ -180,7 +217,7 @@ ER_INLINE int er_stage_roots(struct er_work *w, const struct er_candidate *c,
 			break;
 		const struct er_authority *a = &c->active[i];
 		if (a->new_uid &&
-		    er_insert(w, (struct er_row){ a->uid, a->epoch, a->root }))
+		    er_insert(w, er_known_row(a->uid, a->epoch, a->root)))
 			return w->error;
 	}
 	return 0;
