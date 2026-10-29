@@ -84,6 +84,9 @@ func TestTraceloop(t *testing.T) {
 		commonDataOpts = append(commonDataOpts, utils.WithK8sNamespace(ns))
 	}
 
+	// Only syscall events match traceloopEvent; keep container events internal.
+	runnerOpts = append(runnerOpts, igrunner.WithOutputMode("traceloop:json,containers:none"))
+
 	runnerOpts = append(runnerOpts, igrunner.WithValidateOutput(
 		func(t *testing.T, output string) {
 			expectedEntry := &traceloopEvent{
