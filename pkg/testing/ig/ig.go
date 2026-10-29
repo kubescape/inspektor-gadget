@@ -18,12 +18,16 @@
 package ig
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	igtesting "github.com/inspektor-gadget/inspektor-gadget/pkg/testing"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/command"
@@ -38,17 +42,55 @@ type runner struct {
 
 	// command.Command contains *exec.Cmd and additional properties and methods for the same.
 	command.Command
-	flags []string
+	flags            []string
+	readinessTimeout time.Duration
+	kubernetesReady  bool
 }
 
 func (ig *runner) createCmd() {
-	ig.flags = append(ig.flags, "-o="+ig.outputMode)
 	args := append([]string{"run", ig.image}, ig.flags...)
+	args = append(args, "-o="+ig.outputMode)
 
 	ig.Cmd = exec.Command(ig.path, args...)
 }
 
+// Start waits for remote subscriptions only when Kubernetes readiness is enabled.
+func (ig *runner) Start(t *testing.T) {
+	if !ig.kubernetesReady || ig.Running() {
+		ig.Command.Start(t)
+		return
+	}
+	require.Positive(t, ig.readinessTimeout, "Kubernetes readiness timeout must be positive")
+	ctx, cancel := context.WithTimeout(t.Context(), ig.readinessTimeout)
+	defer cancel()
+	nodes, namespace, err := ig.kubernetesTargets(ctx)
+	require.NoError(t, err, "discovering gadget nodes")
+	ig.flags = append(ig.flags, "--verbose", "--node="+strings.Join(nodes, ","), "--gadget-namespace="+namespace)
+	ig.createCmd()
+	ready := newNodeReadiness(nodes)
+	ig.StdErrWriter = ready
+	ig.ObserveExit = true
+	ig.Command.Start(t)
+	// RunTestSteps normally stops the command first. Also cover a direct Start
+	// caller whose readiness check fails before it can arrange cleanup.
+	t.Cleanup(func() {
+		if ig.Running() {
+			ig.Command.Stop(t)
+		}
+	})
+	require.NoError(t, ready.wait(ctx, ig.Exited(), ig.ExitError), "waiting for remote gadget subscriptions")
+}
+
 type Option func(*runner)
+
+// WithKubernetesReady gates Start on the existing remote, node-prefixed debug
+// marker. The timeout bounds discovery and startup, not the capture interval.
+func WithKubernetesReady(timeout time.Duration) Option {
+	return func(ig *runner) {
+		ig.kubernetesReady = true
+		ig.readinessTimeout = timeout
+	}
+}
 
 // WithPath used for providing custom path to ig executable.
 func WithPath(path string) Option {
