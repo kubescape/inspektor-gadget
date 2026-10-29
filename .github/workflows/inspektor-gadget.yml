@@ -1599,7 +1599,10 @@ jobs:
     name: Test ig w/ k8s
     # level: 3
     needs: [ test-unit, build-ig, build-helper-images ]
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -1723,7 +1726,10 @@ jobs:
       - build-and-push-gadgets
       - build-helper-images
       - check-secrets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
     steps:
@@ -1843,7 +1849,10 @@ jobs:
       - build-helper-images
       - build-and-push-gadgets
       - check-secrets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -1911,7 +1920,10 @@ jobs:
       - build-ig
       - build-helper-images
       - build-and-push-gadgets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -2282,7 +2294,10 @@ jobs:
       - build-helper-images
       - build-and-push-gadgets
       - check-secrets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
