@@ -1218,7 +1218,10 @@ jobs:
       - build-ig
     name: Unit tests
     # level: 0
-    runs-on: ubuntu-latest
+    # Temporary: newer runner kernels drop syscall-enter BPF events.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4.2.2
     - name: Setup go
