@@ -139,7 +139,7 @@ func (r *nodeReadiness) wait(ctx context.Context, exited <-chan struct{}, exitEr
 
 func (ig *runner) kubernetesTargets(ctx context.Context) ([]string, string, error) {
 	flags := pflag.NewFlagSet("test readiness", pflag.ContinueOnError)
-	flags.ParseErrorsWhitelist.UnknownFlags = true
+	flags.ParseErrorsAllowlist.UnknownFlags = true
 	config := genericclioptions.NewConfigFlags(false)
 	config.AddFlags(flags)
 	var configPath string

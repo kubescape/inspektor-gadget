@@ -125,7 +125,7 @@ func TestGadgetNodes(t *testing.T) {
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "daemon", Labels: map[string]string{"k8s-app": "gadget"}}, Spec: corev1.PodSpec{NodeName: "node-b"}},
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "daemon"}, Spec: corev1.PodSpec{NodeName: "wrong-node"}},
 	}
-	client := fake.NewSimpleClientset(pods...)
+	client := fake.NewClientset(pods...)
 	for _, tc := range []struct {
 		name     string
 		selected []string
@@ -157,7 +157,7 @@ func TestGadgetNodes(t *testing.T) {
 }
 
 func TestGadgetNamespace(t *testing.T) {
-	client := fake.NewSimpleClientset()
+	client := fake.NewClientset()
 	ns, err := gadgetNamespace(context.Background(), client)
 	require.NoError(t, err)
 	require.Equal(t, "gadget", ns)
