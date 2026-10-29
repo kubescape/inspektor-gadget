@@ -92,10 +92,16 @@ func runTestForLanguages(t *testing.T, testFunc func(t *testing.T, path string))
 }
 
 func TestWasm(t *testing.T) {
-	runTestForLanguages(t, testWasm)
+	// Parent cleanup runs only after both language trees and their cleanups finish.
+	reports := newPerfDiagnosticReports(t, func(child, line string) {
+		t.Logf("perf diagnostic [%s]: %s", child, line)
+	})
+	runTestForLanguages(t, func(t *testing.T, path string) {
+		testWasm(t, path, reports)
+	})
 }
 
-func testWasm(t *testing.T, path string) {
+func testWasm(t *testing.T, path string, reports *perfDiagnosticReports) {
 	utils.RequireRoot(t)
 
 	t.Parallel()
@@ -117,6 +123,13 @@ func testWasm(t *testing.T, path string) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			gadgetCtx := createGadgetCtx(t, path, test.name)
+			if test.name == "perf" {
+				diagnostics := &perfDiagnosticLogger{Logger: gadgetCtx.Logger(), ctx: gadgetCtx}
+				gadgetcontext.WithLogger(diagnostics)(gadgetCtx)
+				childName := t.Name()
+				// Freeze locally without logging: a sibling may still be measuring.
+				t.Cleanup(func() { reports.collect(childName, diagnostics.lines) })
+			}
 			err := runGadget(t, gadgetCtx, nil)
 			if test.errExpected {
 				require.Error(t, err)

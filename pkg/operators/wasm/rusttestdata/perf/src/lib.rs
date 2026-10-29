@@ -36,10 +36,13 @@ fn gadgetStart() -> i32 {
         return 1;
     };
 
+    info!("perf diagnostic configure");
     let Ok(perf_reader) = PerfReader::new(&perf_array, 4096, true) else {
         errorf!("creating perf reader");
         return 1;
     };
+
+    info!("perf diagnostic created");
 
     if let Ok(_) = perf_reader.read(&sample) {
         errorf!("perf over writable reader must be paused before reading");
@@ -51,6 +54,7 @@ fn gadgetStart() -> i32 {
         info!("testing perf array");
     }
 
+    info!("perf diagnostic before-pause");
     if let Err(_) = perf_reader.pause() {
         errorf!("pausing perf reader");
         return 1;
