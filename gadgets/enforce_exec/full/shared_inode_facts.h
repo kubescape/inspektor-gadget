@@ -33,7 +33,8 @@
 #define SE_INODE_INVALID (-3)
 
 struct se_inode_identity {
-	__u64 inode_address, birth_cookie, charge_scope_cookie, charge_generation;
+	__u64 inode_address, birth_cookie, charge_scope_cookie,
+		charge_generation;
 };
 struct se_inode_row {
 	struct se_inode_identity identity;
@@ -55,18 +56,20 @@ struct se_inode_fact {
  */
 static inline int se_inode_lookup(__u64 address, struct se_inode_row **row);
 static inline int se_inode_insert(const struct se_inode_row *row);
-static inline int se_inode_delete_exact(const struct se_inode_identity *identity);
+static inline int
+se_inode_delete_exact(const struct se_inode_identity *identity);
 static inline int se_inode_account(__u64 scope, __u64 generation,
 				   struct se_inode_quota **account);
 
 static inline int se_inode_identity_valid(const struct se_inode_identity *i)
 {
-	return i->inode_address && i->birth_cookie && i->birth_cookie != ~0ULL &&
-	       i->charge_scope_cookie && i->charge_scope_cookie != ~0ULL &&
-	       i->charge_generation && i->charge_generation != ~0ULL;
+	return i->inode_address && i->birth_cookie &&
+	       i->birth_cookie != ~0ULL && i->charge_scope_cookie &&
+	       i->charge_scope_cookie != ~0ULL && i->charge_generation &&
+	       i->charge_generation != ~0ULL;
 }
 static inline int se_inode_identity_equal(const struct se_inode_identity *a,
-					 const struct se_inode_identity *b)
+					  const struct se_inode_identity *b)
 {
 	return a->inode_address == b->inode_address &&
 	       a->birth_cookie == b->birth_cookie &&
@@ -74,7 +77,7 @@ static inline int se_inode_identity_equal(const struct se_inode_identity *a,
 	       a->charge_generation == b->charge_generation;
 }
 static inline int se_inode_quota_matches(const struct se_inode_quota *q,
-					const struct se_inode_identity *i)
+					 const struct se_inode_identity *i)
 {
 	return q && q->scope_cookie == i->charge_scope_cookie &&
 	       q->generation == i->charge_generation;
@@ -87,7 +90,8 @@ static inline int se_inode_charge(struct se_inode_quota *q)
 		__u32 used = __sync_fetch_and_add(&q->used, 0);
 		if (used >= q->limit)
 			break;
-		if (__sync_val_compare_and_swap(&q->used, used, used + 1) == used)
+		if (__sync_val_compare_and_swap(&q->used, used, used + 1) ==
+		    used)
 			return SE_INODE_OK;
 	}
 	return SE_INODE_QUOTA_ERROR;
@@ -108,9 +112,11 @@ static inline int se_inode_mark_memfd(const struct se_inode_identity *identity)
 	struct se_inode_row *existing = 0;
 	int result = se_inode_lookup(identity->inode_address, &existing);
 	if (result == SE_INODE_OK) {
-		if (!existing || !se_inode_identity_equal(&existing->identity, identity))
+		if (!existing ||
+		    !se_inode_identity_equal(&existing->identity, identity))
 			return SE_INODE_CONFLICT;
-		return existing->valid_memfd == 1 ? SE_INODE_OK : SE_INODE_INVALID;
+		return existing->valid_memfd == 1 ? SE_INODE_OK :
+						    SE_INODE_INVALID;
 	}
 	if (result != SE_INODE_MISSING)
 		return result;
@@ -127,14 +133,15 @@ static inline int se_inode_mark_memfd(const struct se_inode_identity *identity)
 	struct se_inode_row row = { .identity = *identity, .valid_memfd = 1 };
 	result = se_inode_insert(&row);
 	if (result != SE_INODE_OK)
-		se_inode_refund(q); /* this failed attempt only, not an existing row */
+		se_inode_refund(
+			q); /* this failed attempt only, not an existing row */
 	return result;
 }
 
 /* Ownership is not transferred when another binding executes the same file.
  * A positive physical fact can be read while its original account is retired. */
 static inline int se_inode_read_memfd(__u64 address, __u64 birth_cookie,
-				     struct se_inode_fact *out)
+				      struct se_inode_fact *out)
 {
 	*out = (struct se_inode_fact){};
 	if (!address || !birth_cookie || birth_cookie == ~0ULL)
