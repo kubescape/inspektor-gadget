@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -90,6 +91,7 @@ func TestTopBlockio(t *testing.T) {
 			),
 		)
 	case utils.KubectlGadgetTestComponent:
+		runnerOpts = append(runnerOpts, igrunner.WithKubernetesReady(2*time.Minute))
 		runnerOpts = append(runnerOpts, igrunner.WithFlags(fmt.Sprintf("-n=%s", ns)))
 		testingOpts = append(testingOpts, igtesting.WithCbBeforeCleanup(utils.PrintLogsFn(ns)))
 		commonDataOpts = append(commonDataOpts, utils.WithK8sNamespace(ns))
