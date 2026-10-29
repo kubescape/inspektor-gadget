@@ -5,6 +5,7 @@ package fullpolicy
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -115,5 +116,223 @@ func TestSharedPolicyIdentityModeAndUnionCaps(t *testing.T) {
 	}
 	if _, err := NewSharedSnapshot(1, 1, "app", []SharedPolicyRef{{a, 1}, {b, 1}}); err == nil {
 		t.Fatal("union exceeded 256 rules")
+	}
+}
+
+func sharedCapacityPolicies(kind string, count, amount int) []Policy {
+	policies := make([]Policy, count)
+	for n := range policies {
+		p := base()
+		p.ID = fmt.Sprintf("policy-%d", n)
+		switch kind {
+		case "patterns":
+			for left := amount; left > 0; {
+				size := min(left, MaxValues)
+				paths := make([]string, size)
+				for i := range paths {
+					paths[i] = "/same"
+				}
+				p.Rules = append(p.Rules, Rule{Name: fmt.Sprint(left), Action: Allow, Target: Target{Path: paths}})
+				left -= size
+			}
+		case "instructions":
+			paths := make([]string, amount)
+			for i := range paths {
+				paths[i] = fmt.Sprintf("/%s-%d-%03d", strings.Repeat("x", 50), n, i)
+			}
+			p.Rules = []Rule{{Name: "long-paths", Action: Allow, Target: Target{Path: paths}}}
+		case "strings":
+			values := make([]string, MaxValues)
+			for i := range values {
+				values[i] = "literal"
+			}
+			for i := 0; i < amount; i++ {
+				p.Rules = append(p.Rules, Rule{Name: fmt.Sprint(i), Action: Allow, Actor: Actor{Container: values}, Target: Target{Argv: &Argv{Contains: values, Prefix: values}}})
+			}
+		case "values":
+			values := make([]int64, MaxValues)
+			for i := 0; i < amount; i++ {
+				p.Rules = append(p.Rules, Rule{Name: fmt.Sprint(i), Action: Allow, Actor: Actor{UID: values}})
+			}
+		}
+		policies[n] = p
+	}
+	return policies
+}
+
+func TestSharedSnapshotWholeUnionCapacity(t *testing.T) {
+	cases := []struct {
+		name, kind, diagnostic string
+		count, valid, invalid  int
+	}{
+		{"pattern-count-two", "patterns", "pattern capacity", 2, 512, 513},
+		{"pattern-count-eight", "patterns", "pattern capacity", 8, 128, 129},
+		{"matcher-instructions", "instructions", "regex instructions", 2, 60, 80},
+		{"string-blob-entries", "strings", "entry capacity", 2, 10, 11},
+		{"value-blob-entries", "values", "entry capacity", 2, 31, 32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, over := range []bool{false, true} {
+				amount := tc.valid
+				if over {
+					amount = tc.invalid
+				}
+				policies := sharedCapacityPolicies(tc.kind, tc.count, amount)
+				_, unionErr := CompileKernel(policies, 1, "app")
+				if over && (unionErr == nil || !strings.Contains(unionErr.Error(), tc.diagnostic)) {
+					t.Fatalf("fixture failed to exceed intended union cap: %v", unionErr)
+				}
+				if !over && unionErr != nil {
+					t.Fatalf("within-boundary fixture: %v", unionErr)
+				}
+				refs := make([]SharedPolicyRef, len(policies))
+				for i, p := range policies {
+					object, err := CompileSharedPolicy(p)
+					if err != nil {
+						t.Fatalf("individual object %d invalid: %v", i, err)
+					}
+					refs[i] = SharedPolicyRef{Object: object, RootEpoch: 1}
+				}
+				// Caller cannot erase the authored capacity demand after the
+				// independently compiled objects have retained their provenance.
+				if over {
+					for _, p := range policies {
+						for i := range p.Rules {
+							p.Rules[i] = Rule{Name: fmt.Sprint(i), Action: Allow}
+						}
+					}
+				}
+				_, err := NewSharedSnapshot(1, 1, "app", refs)
+				if (err != nil) != over {
+					t.Fatalf("snapshot did not match whole native union admission: over=%v error=%v", over, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSharedPolicyRetainsOnlyCompilerOwnedSource(t *testing.T) {
+	p := base()
+	p.Rules = []Rule{{
+		Name: "all", Origin: "authored", Action: Allow, Mode: Audit,
+		Actor:  Actor{Path: []string{"/actor"}, FromImage: ptr(true), Ancestor: &Ancestor{Path: []string{"/init"}, Depth: 2}, Role: []string{"agent"}, UID: []int64{1000}, Container: []string{"app"}},
+		Target: Target{Path: []string{"/target"}, FromImage: ptr(false), FSType: []string{"tmpfs"}, Argv: &Argv{Contains: []string{"--arg"}, Prefix: []string{"--key="}, StdinIsPipe: ptr(true)}, SetRole: "child"},
+	}}
+	before, err := CompileKernel([]Policy{p}, 7, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := CompileSharedPolicy(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twin, err := CompileSharedPolicy(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &p.Rules[0]
+	r.Actor.Path[0] = "relative"
+	*r.Actor.FromImage = false
+	r.Actor.Ancestor.Path[0] = "relative"
+	r.Actor.Ancestor.Depth = 0
+	r.Actor.Role[0] = "changed"
+	r.Actor.UID[0] = -1
+	r.Actor.Container[0] = "changed"
+	r.Target.Path[0] = "relative"
+	*r.Target.FromImage = true
+	r.Target.FSType[0] = "invalid"
+	r.Target.Argv.Contains[0] = "changed"
+	r.Target.Argv.Prefix[0] = "changed"
+	*r.Target.Argv.StdinIsPipe = false
+	r.Target.SetRole = "changed"
+	r.Name = ""
+	r.Origin = "changed"
+	r.Action = Deny
+	r.Mode = Enforce
+	p.ID = "changed"
+	p.Revision = "changed"
+	p.Mode = Audit
+	p.RootRole = "changed"
+	p.Default = Deny
+	p.Rules[0] = Rule{}
+	p.Rules = nil
+	refs := []SharedPolicyRef{{Object: object, RootEpoch: 2}}
+	snapshot, err := NewSharedSnapshot(11, 7, "app", refs)
+	if err != nil {
+		t.Fatal("caller mutation changed admission", err)
+	}
+	refs[0] = SharedPolicyRef{}
+	if snapshot.Policies[0].Object != object || snapshot.Policies[0].RootEpoch != 2 {
+		t.Fatal("snapshot retained caller ref slice")
+	}
+	retained, err := CompileKernel([]Policy{*object.source}, 7, "app")
+	if err != nil || !reflect.DeepEqual(before, retained) || !object.Equal(twin) {
+		t.Fatal("compiler source or canonical content aliases authored policy", err)
+	}
+	forged := *object
+	forged.source = nil
+	if _, err := NewSharedSnapshot(11, 7, "app", []SharedPolicyRef{{Object: &forged, RootEpoch: 2}}); err == nil {
+		t.Fatal("snapshot admitted object without compiler-owned provenance")
+	}
+}
+
+func TestSharedSnapshotPreservesUnionDefaults(t *testing.T) {
+	a := base()
+	a.ID = "default-deny"
+	a.Default = Deny
+	b := base()
+	b.ID = "allow-rule"
+	b.Default = ""
+	b.Rules = []Rule{{Name: "known-match", Action: Allow, Target: Target{Path: []string{"/allowed"}}}}
+	var refs []SharedPolicyRef
+	for _, p := range []Policy{a, b} {
+		object, err := CompileSharedPolicy(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, SharedPolicyRef{Object: object, RootEpoch: 1})
+	}
+	snapshot, err := NewSharedSnapshot(1, 1, "app", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make([]Policy, len(snapshot.Policies))
+	for i, ref := range snapshot.Policies {
+		sources[i] = *ref.Object.source
+	}
+	// Reuse the existing union evaluator as a semantic oracle, not a shared
+	// kernel execution claim or independent-per-policy deny composition.
+	for _, path := range []string{"/allowed", "/unmatched"} {
+		want, err := compile(t, a, b).Evaluate(Facts{TargetPath: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := compile(t, sources...).Evaluate(Facts{TargetPath: path})
+		if err != nil || !reflect.DeepEqual(want, got) {
+			t.Fatal("source admission changed union defaults", got, want, err)
+		}
+		if got.Block != (path == "/unmatched") {
+			t.Fatal("known allow failed to suppress cross-policy default", got)
+		}
+	}
+}
+
+func TestSharedSnapshotUsesNativeMatcherDedupBudget(t *testing.T) {
+	policies := sharedCapacityPolicies("instructions", 2, 80)
+	policies[1].Rules[0].Target.Path = append([]string(nil), policies[0].Rules[0].Target.Path...)
+	if _, err := CompileKernel(policies, 1, "app"); err != nil {
+		t.Fatal("deduplicated union must fit", err)
+	}
+	refs := make([]SharedPolicyRef, len(policies))
+	for i, p := range policies {
+		object, err := CompileSharedPolicy(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = SharedPolicyRef{Object: object, RootEpoch: 1}
+	}
+	if _, err := NewSharedSnapshot(1, 1, "app", refs); err != nil {
+		t.Fatal("independent-object instruction sums replaced native dedup admission", err)
 	}
 }

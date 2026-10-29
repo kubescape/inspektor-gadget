@@ -16,11 +16,14 @@ const SharedCompilerABI uint32 = 1
 
 // SharedPolicy is immutable compiler-owned content. It is NOT installable as a
 // legacy KernelProgram: generation, observed container and root epoch live in
-// the binding snapshot. Provenance is separately retained by each caller.
+// the binding snapshot. Verdict provenance is separately retained by each caller;
+// compiler-owned authored source is private whole-set admission evidence.
 type SharedPolicy struct {
 	entries []Blob
 	digest  [32]byte
 	uid     uint64
+	// source is compiler-owned immutable admission provenance, not digest input.
+	source *Policy
 }
 
 func (p *SharedPolicy) Entries() []Blob {
@@ -53,7 +56,19 @@ func (p *SharedPolicy) Equal(q *SharedPolicy) bool {
 // container predicates remain in the object; only the observed container is
 // removed. No scope epoch or image-readiness authority enters this API.
 func CompileSharedPolicy(policy Policy) (*SharedPolicy, error) {
-	p, err := CompileKernel([]Policy{policy}, 1, "shared-object")
+	// Reuse Compile's complete deep-copy contract, including every nested rule
+	// predicate. Never retain caller-owned slices/pointers for later admission.
+	compiled, err := Compile([]Policy{policy})
+	if err != nil {
+		return nil, err
+	}
+	owned := compiled.policies[0]
+	source := owned.source
+	source.Rules = make([]Rule, len(owned.rules))
+	for i, rule := range owned.rules {
+		source.Rules[i] = rule.source
+	}
+	p, err := CompileKernel([]Policy{source}, 1, "shared-object")
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +99,7 @@ func CompileSharedPolicy(policy Policy) (*SharedPolicy, error) {
 	for i := range p.Entries {
 		_, _ = hash.Write(p.Entries[i][:])
 	}
-	result := &SharedPolicy{entries: p.Entries, uid: k.UID}
+	result := &SharedPolicy{entries: p.Entries, uid: k.UID, source: &source}
 	copy(result.digest[:], hash.Sum(nil))
 	return result, nil
 }
@@ -109,9 +124,9 @@ func NewSharedSnapshot(scope, generation uint64, container string, refs []Shared
 	if err := validateString(container); err != nil {
 		return SharedSnapshot{}, err
 	}
-	rules := uint32(0)
+	policies := make([]Policy, len(refs))
 	for i, r := range refs {
-		if r.Object == nil || r.Object.uid == 0 || r.RootEpoch == 0 || r.RootEpoch > generation {
+		if r.Object == nil || r.Object.uid == 0 || r.Object.source == nil || r.RootEpoch == 0 || r.RootEpoch > generation {
 			return SharedSnapshot{}, fmt.Errorf("invalid scoped policy epoch")
 		}
 		for _, prior := range refs[:i] {
@@ -119,14 +134,14 @@ func NewSharedSnapshot(scope, generation uint64, container string, refs []Shared
 				return SharedSnapshot{}, fmt.Errorf("duplicate scoped policy UID")
 			}
 		}
-		h, err := Decode[KernelHeader](r.Object.entries[0])
-		if err != nil {
-			return SharedSnapshot{}, err
-		}
-		rules += h.RuleCount
+		policies[i] = *r.Object.source
 	}
-	if rules > MaxRules {
-		return SharedSnapshot{}, fmt.Errorf("shared policy union exceeds rule cap")
+	// Independently compiled objects are not an admission receipt for their
+	// union. Run the SAME native compiler over its owned authored inputs so
+	// patterns, matcher code, strings/values and all blob budgets remain global.
+	// This also preserves whole-set UID/role validation without reconstructing IR.
+	if _, err := CompileKernel(policies, generation, container); err != nil {
+		return SharedSnapshot{}, fmt.Errorf("shared policy union: %w", err)
 	}
 	return SharedSnapshot{ScopeCookie: scope, Generation: generation, Container: container, Policies: slices.Clone(refs)}, nil
 }
