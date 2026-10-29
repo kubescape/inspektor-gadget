@@ -43,13 +43,11 @@ func gadgetStart() int32 {
 		return 1
 	}
 
-	api.Infof("perf diagnostic configure")
 	perfReader, err := api.NewPerfReader(perfArray, uint32(4096), true)
 	if err != nil {
 		api.Errorf("creating perf reader")
 		return 1
 	}
-	api.Infof("perf diagnostic created")
 	defer perfReader.Close()
 
 	if err = perfReader.Read(sample); err == nil {
@@ -62,7 +60,6 @@ func gadgetStart() int32 {
 		api.Infof("testing perf array")
 	}
 
-	api.Infof("perf diagnostic before-pause")
 	err = perfReader.Pause()
 	if err != nil {
 		api.Errorf("pausing perf reader")
