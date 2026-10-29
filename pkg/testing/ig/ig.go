@@ -75,7 +75,7 @@ func (ig *runner) Start(t *testing.T) {
 	// caller whose readiness check fails before it can arrange cleanup.
 	t.Cleanup(func() {
 		if ig.Running() {
-			ig.Command.Stop(t)
+			ig.Stop(t)
 		}
 	})
 	require.NoError(t, ready.wait(ctx, ig.Exited(), ig.ExitError), "waiting for remote gadget subscriptions")
