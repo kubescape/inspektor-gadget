@@ -45,6 +45,7 @@ type runner struct {
 	flags            []string
 	readinessTimeout time.Duration
 	kubernetesReady  bool
+	localReady       bool
 }
 
 func (ig *runner) createCmd() {
@@ -54,21 +55,35 @@ func (ig *runner) createCmd() {
 	ig.Cmd = exec.Command(ig.path, args...)
 }
 
-// Start waits for remote subscriptions only when Kubernetes readiness is enabled.
+// Start waits for gadget startup only when a readiness option is enabled.
 func (ig *runner) Start(t *testing.T) {
-	if !ig.kubernetesReady || ig.Running() {
+	if (!ig.kubernetesReady && !ig.localReady) || ig.Running() {
 		ig.Command.Start(t)
 		return
 	}
-	require.Positive(t, ig.readinessTimeout, "Kubernetes readiness timeout must be positive")
+	require.NoError(t, ig.validateReadiness(), "invalid readiness options")
 	ctx, cancel := context.WithTimeout(t.Context(), ig.readinessTimeout)
 	defer cancel()
-	nodes, namespace, err := ig.kubernetesTargets(ctx)
-	require.NoError(t, err, "discovering gadget nodes")
-	ig.flags = append(ig.flags, "--verbose", "--node="+strings.Join(nodes, ","), "--gadget-namespace="+namespace)
+	var writer io.Writer
+	var waitReady func() error
+	if ig.localReady {
+		ready := newLocalReadiness()
+		writer = ready
+		waitReady = func() error { return ready.wait(ctx, ig.Exited(), ig.ExitError) }
+	} else {
+		nodes, namespace, err := ig.kubernetesTargets(ctx)
+		require.NoError(t, err, "discovering gadget nodes")
+		ig.flags = append(ig.flags, "--node="+strings.Join(nodes, ","), "--gadget-namespace="+namespace)
+		ready := newNodeReadiness(nodes)
+		writer = ready
+		waitReady = func() error { return ready.wait(ctx, ig.Exited(), ig.ExitError) }
+	}
+	ig.flags = append(ig.flags, "--verbose")
 	ig.createCmd()
-	ready := newNodeReadiness(nodes)
-	ig.StdErrWriter = ready
+	if ig.StdErrWriter != nil {
+		writer = io.MultiWriter(ig.StdErrWriter, writer)
+	}
+	ig.StdErrWriter = writer
 	ig.ObserveExit = true
 	ig.Command.Start(t)
 	// RunTestSteps normally stops the command first. Also cover a direct Start
@@ -78,10 +93,33 @@ func (ig *runner) Start(t *testing.T) {
 			ig.Stop(t)
 		}
 	})
-	require.NoError(t, ready.wait(ctx, ig.Exited(), ig.ExitError), "waiting for remote gadget subscriptions")
+	require.NoError(t, waitReady(), "waiting for gadget readiness")
+}
+
+func (ig *runner) validateReadiness() error {
+	if ig.localReady && ig.kubernetesReady {
+		return fmt.Errorf("local and Kubernetes readiness options are mutually exclusive")
+	}
+	if (ig.localReady || ig.kubernetesReady) && ig.readinessTimeout <= 0 {
+		return fmt.Errorf("readiness timeout must be positive")
+	}
+	return nil
 }
 
 type Option func(*runner)
+
+// WithLocalReady gates Start on the local GadgetContext.Run debug marker after
+// operator Start, final Readiness checks and the startup callback. It does not
+// wait for later asynchronous AddContainer callbacks. Use only with local ig,
+// never a remote client, whose bare marker is emitted before remote readiness.
+// The timeout bounds startup, not capture; it cannot be combined with
+// WithKubernetesReady.
+func WithLocalReady(timeout time.Duration) Option {
+	return func(ig *runner) {
+		ig.localReady = true
+		ig.readinessTimeout = timeout
+	}
+}
 
 // WithKubernetesReady gates Start on the existing remote, node-prefixed debug
 // marker. The timeout bounds discovery and startup, not the capture interval.
