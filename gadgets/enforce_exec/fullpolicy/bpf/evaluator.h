@@ -6,7 +6,33 @@
 #if defined(FM_GLOBAL_BLOB_LOOKUP)
 #define FE_GLOBAL_MATCHER 1
 #endif
+/* Ordinary BPF images retain ABI2 behavior. Host oracle fixtures exercise the
+ * development semantics; they do not authorize live selection. */
+#if defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || !defined(__bpf__)
+#define FE_AUDIT_ISOLATION 1
+#endif
 #define FE_INLINE static __attribute__((always_inline)) inline
+/* Same-register signed errno clamp proved by the Gate-A ingress fixture.
+ * A valid prior LSM denial is preserved; malformed nonzero input cannot allow.
+ * Keep the return type long: an int return can lose the verifier's signed bound. */
+FE_INLINE long fe_lsm_result(int prior)
+{
+	long result = prior;
+#ifdef __BPF__
+	__asm__ __volatile__("%[value] <<= 32;\n"
+			     "%[value] s>>= 32;\n"
+			     "if %[value] s> 0 goto 1f;\n"
+			     "if %[value] s>= -4095 goto 2f;\n"
+			     "1: %[value] = -1;\n"
+			     "2:\n"
+			     : [value] "+r"(result));
+#else
+	if (result < -4095 || result > 0)
+		result = -1;
+#endif
+	return result;
+}
+
 #ifdef __bpf__
 #define FE_LOOP(count, callback, context) \
 	fm_bpf_loop(count, callback, context, 0)
@@ -40,19 +66,69 @@ struct fe_facts {
 	int stdin_pipe;
 };
 enum { FE_TMPFS = 1, FE_MEMFD = 2, FE_DELETED = 4, FE_OVERLAY = 8 };
-enum { FE_OK = 0, FE_INVALID = 1, FE_UNKNOWN = 2, FE_ROLE_CONFLICT = 3 };
+enum {
+	FE_OK = 0,
+	FE_INVALID = 1,
+	FE_UNKNOWN = 2,
+	FE_ROLE_CONFLICT = 3,
+	FE_AUDIT_UNKNOWN = 4
+};
+/* Upper bit cancels earlier interpreter-check proposals as well as this call. */
+#define FE_AUDIT_DIAGNOSTIC_MASK 0xffU
+#define FE_ROLE_UNCERTAIN_SHIFT 8
+#define FE_ROLE_WRITE_SHIFT 16
+#define FE_AUDIT_GLOBAL_SUPPRESS (1U << 31)
+#define FE_UNCERTAINTY_VALID_MASK (0x00ffffffU | FE_AUDIT_GLOBAL_SUPPRESS)
+#define FE_ROLE_UNCERTAIN(word) (((word) >> FE_ROLE_UNCERTAIN_SHIFT) & 0xffU)
+#define FE_ROLE_WRITES(word) (((word) >> FE_ROLE_WRITE_SHIFT) & 0xffU)
 struct fe_decision {
 	fm_u32 deny, mode;
 	fm_u64 matched_rules[4], proposed_roles[8];
-	fm_u32 error;
+	fm_u32 error, audit_unknown;
+#ifdef FE_AUDIT_ISOLATION
+	fm_u32 enforced_writes, role_conflicts;
+	/* Comparison only: never grant or export these when proposals are uncertain. */
+	fm_u64 known_role_witnesses[8];
+#endif
 };
+/* Immutable invocation class governs faults, never a partially merged mode.
+ * A known audit deny remains nonblocking even in an enforcement-capable union. */
+FE_INLINE long fe_lsm_verdict(fm_u32 execution_class, int prior, int error,
+			      const struct fe_decision *decision)
+{
+	if (prior)
+		return fe_lsm_result(prior);
+	if (execution_class == 1)
+		return 0;
+	if (execution_class != 2 || error || !decision)
+		return -1;
+	return decision->deny && decision->mode == 2 ? -1 : 0;
+}
 struct fe_scratch {
 	struct fm_scratch matcher;
 	struct fe_decision decision;
 	fm_u32 arg_lengths[64];
 };
 _Static_assert(sizeof(struct fe_facts) == 9216, "facts ABI");
+#ifdef FE_AUDIT_ISOLATION
+_Static_assert(sizeof(struct fe_decision) == 184, "development decision ABI");
+_Static_assert(__builtin_offsetof(struct fe_decision, known_role_witnesses) ==
+		       120,
+	       "comparison-only witness ABI");
+_Static_assert(__builtin_offsetof(struct fe_decision, enforced_writes) == 112,
+	       "enforced provenance ABI");
+_Static_assert(__builtin_offsetof(struct fe_decision, role_conflicts) == 116,
+	       "conflict provenance ABI");
+_Static_assert(sizeof(struct fe_scratch) == 2688,
+	       "development evaluator scratch ABI");
+#else
 _Static_assert(sizeof(struct fe_decision) == 112, "decision ABI");
+_Static_assert(sizeof(struct fe_scratch) == 2616, "evaluator scratch ABI");
+#endif
+_Static_assert(__builtin_offsetof(struct fe_decision, error) == 104,
+	       "error ABI");
+_Static_assert(__builtin_offsetof(struct fe_decision, audit_unknown) == 108,
+	       "uncertainty uses decision padding");
 struct fe_header {
 	fm_u64 generation;
 	fm_u32 policies, rule_base, rules, container;
@@ -93,6 +169,54 @@ FE_INLINE const struct fm_blob *fe_blob(void *ctx, fm_u32 key)
 #else
 	return FM_BLOB_LOOKUP(ctx, key);
 #endif
+}
+/* Full immutable-program classification, independent of facts or match order.
+ * The owner latches this only while holding the admitted program read lease. */
+struct fe_class_context {
+	void *blob_context;
+	fm_u32 policies, execution_class, invalid, role_writers;
+};
+static long fe_class_rule(fm_u32 i, void *opaque)
+{
+	struct fe_class_context *c = opaque;
+	if (i >= 256) {
+		c->invalid = 1;
+		return 1;
+	}
+	const struct fe_rule *r = (const void *)fe_blob(c->blob_context, 9 + i);
+	if (!r || r->policy >= c->policies || r->mode < 1 || r->mode > 2) {
+		c->invalid = 1;
+		return 1;
+	}
+	if (r->mode > c->execution_class)
+		c->execution_class = r->mode;
+	if (r->set_role)
+		c->role_writers |= 1U << r->policy;
+	return 0;
+}
+FE_INLINE int fe_execution_class(void *blob_context, fm_u64 generation,
+				 fm_u32 *policies, fm_u32 *role_writers)
+{
+	const struct fe_header *h = (const void *)fe_blob(blob_context, 0);
+	if (!h || h->generation != generation || !h->policies ||
+	    h->policies > 8 || h->rules > 256 || h->rule_base != 9)
+		return -1;
+	struct fe_class_context c = { blob_context, h->policies, 1, 0, 0 };
+	for (fm_u32 i = 0; i < 8; i++) {
+		if (i >= h->policies)
+			break;
+		const struct fe_policy *p =
+			(const void *)fe_blob(blob_context, 1 + i);
+		if (!p || p->mode < 1 || p->mode > 2)
+			return -1;
+		if (p->mode > c.execution_class)
+			c.execution_class = p->mode;
+	}
+	if (FE_LOOP(h->rules, fe_class_rule, &c) < 0 || c.invalid)
+		return -1;
+	*policies = h->policies;
+	*role_writers = c.role_writers;
+	return c.execution_class;
 }
 FE_INLINE int fe_list_valid(struct fe_list list)
 {
@@ -436,7 +560,8 @@ struct fe_eval_context {
 	const struct fe_facts *facts;
 	struct fe_scratch *scratch;
 	const struct fe_header *header;
-	fm_u32 matched, allow_mode, deny_mode;
+	fm_u32 matched, allow_mode, deny_mode, uncertain_deny, enforced_grants,
+		role_conflicts;
 };
 /* Resolve all eight policy-local role records in an independent verifier
  * compartment. Absence is unknown, never an implicit root-role bootstrap. */
@@ -729,8 +854,29 @@ static long fe_rule_step(fm_u32 i, void *opaque)
 	}
 	int match = fe_rule_match(e, r, p, e->header->rule_base + i);
 	if (match < 0) {
+#ifdef FE_AUDIT_ISOLATION
+		if (r->mode == 1) {
+			d->audit_unknown |= 1U << r->policy;
+			if (r->set_role)
+				d->audit_unknown |=
+					(1U << (r->policy +
+						FE_ROLE_UNCERTAIN_SHIFT)) |
+					(1U
+					 << (r->policy + FE_ROLE_WRITE_SHIFT));
+			if (!d->error)
+				d->error = FE_AUDIT_UNKNOWN;
+			if (r->deny) {
+				e->uncertain_deny = 1;
+				d->audit_unknown |= FE_AUDIT_GLOBAL_SUPPRESS;
+			}
+		} else {
+			d->error = FE_UNKNOWN;
+		}
+		return 0;
+#else
 		d->error = FE_UNKNOWN;
 		return 1;
+#endif
 	}
 	if (!match)
 		return 0;
@@ -749,8 +895,36 @@ static long fe_rule_step(fm_u32 i, void *opaque)
 			return 1;
 		}
 		if (r->set_role) {
-			if (d->proposed_roles[index] &&
-			    d->proposed_roles[index] != r->set_role) {
+#ifdef FE_AUDIT_ISOLATION
+			if (!d->known_role_witnesses[index])
+				d->known_role_witnesses[index] = r->set_role;
+#endif
+			d->audit_unknown |= 1U << (index + FE_ROLE_WRITE_SHIFT);
+			if (r->mode == 2) {
+				e->enforced_grants |= 1U << index;
+#ifdef FE_AUDIT_ISOLATION
+				d->enforced_writes |= 1U << index;
+#endif
+			}
+			if ((e->role_conflicts & (1U << index)) ||
+			    (d->proposed_roles[index] &&
+			     d->proposed_roles[index] != r->set_role)) {
+				e->role_conflicts |= 1U << index;
+#ifdef FE_AUDIT_ISOLATION
+				d->role_conflicts |= 1U << index;
+#endif
+#ifdef FE_AUDIT_ISOLATION
+				if (!(e->enforced_grants & (1U << index))) {
+					d->audit_unknown |=
+						(1U << index) |
+						(1U
+						 << (index +
+						     FE_ROLE_UNCERTAIN_SHIFT));
+					if (!d->error)
+						d->error = FE_AUDIT_UNKNOWN;
+					return 0;
+				}
+#endif
 				d->error = FE_ROLE_CONFLICT;
 				return 1;
 			}
@@ -767,6 +941,13 @@ FE_INLINE int fe_evaluate(void *blob_context, const struct fe_facts *f,
 	s->decision.deny = 0;
 	s->decision.mode = 1;
 	s->decision.error = 0;
+	s->decision.audit_unknown = 0;
+#ifdef FE_AUDIT_ISOLATION
+	s->decision.enforced_writes = 0;
+	s->decision.role_conflicts = 0;
+	for (fm_u32 i = 0; i < 8; i++)
+		s->decision.known_role_witnesses[i] = 0;
+#endif
 	for (fm_u32 i = 0; i < 4; i++)
 		s->decision.matched_rules[i] = 0;
 	for (fm_u32 i = 0; i < 8; i++)
@@ -785,10 +966,15 @@ FE_INLINE int fe_evaluate(void *blob_context, const struct fe_facts *f,
 		s->decision.error = FE_INVALID;
 		return -1;
 	}
-	struct fe_eval_context e = { blob_context, f, s, h, 0, 1, 1 };
+	struct fe_eval_context e = { blob_context, f, s, h, 0, 1, 1, 0, 0, 0 };
 	if (FE_LOOP(h->rules, fe_rule_step, &e) < 0)
 		s->decision.error = FE_INVALID;
+#ifdef FE_AUDIT_ISOLATION
+	if (s->decision.error && s->decision.error != FE_UNKNOWN &&
+	    s->decision.error != FE_AUDIT_UNKNOWN) {
+#else
 	if (s->decision.error) {
+#endif
 		for (fm_u32 i = 0; i < 8; i++)
 			s->decision.proposed_roles[i] = 0;
 		return -1;
@@ -814,9 +1000,13 @@ FE_INLINE int fe_evaluate(void *blob_context, const struct fe_facts *f,
 		}
 	}
 	s->decision.mode = s->decision.deny ? e.deny_mode : e.allow_mode;
-	if (s->decision.deny)
-		for (fm_u32 i = 0; i < 8; i++)
+	for (fm_u32 i = 0; i < 8; i++) {
+		if (s->decision.deny || e.uncertain_deny ||
+		    s->decision.error == FE_UNKNOWN ||
+		    (FE_ROLE_UNCERTAIN(s->decision.audit_unknown) & (1U << i)))
 			s->decision.proposed_roles[i] = 0;
-	return 0;
+	}
+	return s->decision.error && s->decision.error != FE_AUDIT_UNKNOWN ? -1 :
+									    0;
 }
 #endif

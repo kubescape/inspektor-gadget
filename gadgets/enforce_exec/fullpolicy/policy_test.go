@@ -239,3 +239,35 @@ func TestAllowedModeAndOverlappingFilesystemKinds(t *testing.T) {
 		t.Fatalf("enforced allow masked audit deny mode: %+v %v", d, e)
 	}
 }
+
+func TestAuditEvaluationFaultsDoNotBlock(t *testing.T) {
+	audit := Policy{ID: "a", Revision: "1", Mode: Audit, Rules: []Rule{
+		{Name: "one", Action: Allow, Target: Target{SetRole: "one"}},
+		{Name: "two", Action: Allow, Target: Target{SetRole: "two"}},
+	}}
+	strict := Policy{ID: "b", Revision: "1", Mode: Enforce, Rules: []Rule{{Name: "grant", Action: Allow, Target: Target{SetRole: "known"}}}}
+	for _, policies := range [][]Policy{{audit}, {audit, strict}} {
+		d, err := compile(t, policies...).Evaluate(Facts{})
+		if err != nil || d.Block || d.SetRoles["a"] != "" || !d.AuditUnknown["a"] {
+			t.Fatalf("audit-local conflict: %+v %v", d, err)
+		}
+		if len(policies) == 2 && d.SetRoles["b"] != "known" {
+			t.Fatalf("unrelated grant poisoned: %+v", d)
+		}
+	}
+	d, err := compile(t, audit).Evaluate(Facts{ActorPath: "/bad\x00"})
+	if err == nil || d.Block {
+		t.Fatalf("shared audit-only error introduced denial: %+v %v", d, err)
+	}
+}
+
+func TestAuditPredicateUncertaintyWithoutRoleWritePreservesKnownGrant(t *testing.T) {
+	p := Policy{ID: "a", Revision: "1", Mode: Audit, Rules: []Rule{
+		{Name: "observe", Action: Allow, Actor: Actor{UID: []int64{1}}},
+		{Name: "known", Action: Allow, Target: Target{SetRole: "known"}},
+	}}
+	d, err := compile(t, p).Evaluate(Facts{})
+	if err != nil || d.Block || d.SetRoles["a"] != "known" || !d.AuditUnknown["a"] {
+		t.Fatalf("non-causal uncertainty erased grant: %+v %v", d, err)
+	}
+}

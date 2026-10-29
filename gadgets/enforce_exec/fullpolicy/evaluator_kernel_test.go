@@ -18,6 +18,7 @@ import (
 )
 
 // TestEvaluatorKernel proves the fact-driven semantics with BPF_PROG_TEST_RUN.
+// It explicitly selects development evaluator semantics; ordinary owner builds stay ABI2.
 // It does not attach to any hook and does not prove authoritative fact acquisition.
 func TestEvaluatorKernel(t *testing.T) {
 	if os.Getenv("IG_FULL_EVALUATOR_KERNEL_TEST") != "1" {
@@ -34,7 +35,7 @@ func TestEvaluatorKernel(t *testing.T) {
 		source = "testdata/evaluator_runner.c"
 	}
 	object := filepath.Join(t.TempDir(), "evaluator.bpf.o")
-	if output, err := exec.Command("clang", "-target", "bpf", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", source, "-o", object).CombinedOutput(); err != nil {
+	if output, err := exec.Command("clang", "-target", "bpf", "-DENFORCE_EXEC_ABI3_DEVELOPMENT=1", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", source, "-o", object).CombinedOutput(); err != nil {
 		t.Fatalf("compile evaluator BPF: %v\n%s", err, output)
 	}
 	spec, err := ebpf.LoadCollectionSpec(object)
@@ -58,7 +59,7 @@ func TestEvaluatorKernel(t *testing.T) {
 	if blobs.Flags()&(1<<7) == 0 {
 		t.Fatal("blob map must forbid BPF writes")
 	}
-	if blobs.Type() != ebpf.Hash || blobs.MaxEntries() != MaxKernelEntries || blobs.ValueSize() != KernelBlobSize || inputs.ValueSize() != 9216 || scratch.ValueSize() != 2616 {
+	if blobs.Type() != ebpf.Hash || blobs.MaxEntries() != MaxKernelEntries || blobs.ValueSize() != KernelBlobSize || inputs.ValueSize() != 9216 || scratch.ValueSize() != 2688 {
 		t.Fatal("unexpected evaluator map ABI")
 	}
 	if output, err := exec.Command("uname", "-a").CombinedOutput(); err == nil {

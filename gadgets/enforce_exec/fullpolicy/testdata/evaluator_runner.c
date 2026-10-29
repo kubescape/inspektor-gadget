@@ -77,6 +77,18 @@ static const struct fm_blob *lookup_global(unsigned int key)
 #endif
 int main(int argc, char **argv)
 {
+	if (argc == 7 && !strcmp(argv[1], "verdict")) {
+		struct fe_decision d = { .deny = (unsigned int)atoi(argv[5]),
+					 .mode = (unsigned int)atoi(argv[6]) };
+		printf("%ld\n",
+		       fe_lsm_verdict((unsigned int)atoi(argv[2]),
+				      atoi(argv[3]), atoi(argv[4]), &d));
+		return 0;
+	}
+	if (argc == 2) {
+		printf("%ld\n", fe_lsm_result((int)strtol(argv[1], NULL, 10)));
+		return 0;
+	}
 	if (argc != 3)
 		return 2;
 	FILE *program = fopen(argv[1], "rb"), *facts = fopen(argv[2], "rb");
@@ -109,7 +121,13 @@ int main(int argc, char **argv)
 		printf(" %llu", first.matched_rules[i]);
 	for (unsigned int i = 0; i < 8; i++)
 		printf(" %llu", first.proposed_roles[i]);
-	puts("");
+	fm_u32 policies = 0, writers = 0;
+	const struct fe_header *head = (const void *)fixture.entries;
+	int execution_class = fe_execution_class(&fixture, head->generation,
+						 &policies, &writers);
+	printf(" %u %u %u %u %u\n", first.audit_unknown,
+	       (unsigned int)execution_class, writers, first.enforced_writes,
+	       first.role_conflicts);
 	fclose(program);
 	fclose(facts);
 	free(fixture.entries);

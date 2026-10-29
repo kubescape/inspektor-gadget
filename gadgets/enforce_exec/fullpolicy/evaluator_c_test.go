@@ -161,10 +161,10 @@ func runCEvaluator(t *testing.T, runner string, p *KernelProgram, facts evaluato
 		t.Fatalf("runner %v: %s", err, output)
 	}
 	fields := strings.Fields(string(output))
-	if len(fields) != 16 {
+	if len(fields) != 21 {
 		t.Fatalf("bad response: %s", output)
 	}
-	values := make([]uint64, 16)
+	values := make([]uint64, 21)
 	for i, field := range fields {
 		if i == 0 && field == "-1" {
 			values[i] = ^uint64(0)
@@ -300,6 +300,8 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 	multi("mixed-deny-mode", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{rule}}, {ID: "q", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "deny", Action: Deny}}}})
 	multi("merged-default", []Policy{{ID: "p", Revision: "r", Mode: Audit, Default: Deny}, {ID: "q", Revision: "r", Mode: Enforce, Default: Allow}})
 	multi("conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}})
+	multi("audit-conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}, {ID: "q", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "grant", Action: Allow, Target: Target{SetRole: "known"}}}}})
+	multi("audit-conflict-then-enforced-grant", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}, {Name: "c", Action: Allow, Mode: Enforce, Target: Target{SetRole: "one"}}}}})
 	multi("deny-clears-role", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Deny}}}})
 	paths := make([]string, 128)
 	for i := range paths {
@@ -405,7 +407,7 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 				if got[0] != ^uint64(0) || got[3] == 0 {
 					t.Fatalf("want error %v, got %v", werr, got)
 				}
-				for i, role := range got[8:] {
+				for i, role := range got[8:16] {
 					if role != 0 {
 						t.Fatalf("C error retained role proposal at policy %d: %v", i, got)
 					}
@@ -503,11 +505,179 @@ func TestCEvaluatorMalformedBounds(t *testing.T) {
 			if got[0] != ^uint64(0) || got[3] == 0 {
 				t.Fatalf("malformed input accepted: %v", got)
 			}
-			for _, role := range got[8:] {
+			for _, role := range got[8:16] {
 				if role != 0 {
 					t.Fatalf("error retained role proposal: %v", got)
 				}
 			}
 		})
+	}
+}
+
+func TestAuditUncertaintyKnownResults(t *testing.T) {
+	for _, flags := range [][]string{nil, {"-DFE_FIXED_MAP_TEST"}} {
+		runner := buildEvaluatorRunner(t, flags...)
+		unknown := Rule{Name: "unknown", Action: Allow, Actor: Actor{Role: []string{"root"}}, Target: Target{SetRole: "uncertain"}}
+		for _, tc := range []struct {
+			name            string
+			audit           Rule
+			strict          []Rule
+			fallback        Action
+			block, proposal bool
+		}{
+			{"known-deny", unknown, []Rule{{Name: "deny", Action: Deny}}, Allow, true, false},
+			{"local-role", unknown, []Rule{{Name: "allow", Action: Allow, Target: Target{SetRole: "known"}}}, Deny, false, true},
+			{"unproved-exception", unknown, nil, Deny, true, false},
+			{"unknown-deny-cancels-proposal", Rule{Name: "unknown", Action: Deny, Actor: Actor{Role: []string{"root"}}}, []Rule{{Name: "allow", Action: Allow, Target: Target{SetRole: "known"}}}, Deny, false, false},
+		} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/reverse=%v/flags=%v", tc.name, reverse, flags), func(t *testing.T) {
+					policies := []Policy{{ID: "audit", Revision: "1", Mode: Audit, RootRole: "root", Rules: []Rule{tc.audit}}, {ID: "strict", Revision: "1", Mode: Enforce, Default: tc.fallback, Rules: tc.strict}}
+					if reverse {
+						policies[0].ID = "z-audit"
+						policies[1].ID = "a-strict"
+					}
+					auditID, strictID := policies[0].ID, policies[1].ID
+					p := compile(t, policies...)
+					d, err := p.Evaluate(Facts{})
+					if err != nil || d.Block != tc.block || (d.SetRoles[strictID] != "") != tc.proposal || d.SetRoles[auditID] != "" {
+						t.Errorf("Go result: %+v, %v", d, err)
+					}
+					kp, err := CompileKernel(policies, 1, "app")
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := runCEvaluator(t, runner, kp, evaluatorFactBytes(t, kp, policies, Facts{}))
+					if got[16]&(1<<31) != 0 != (tc.audit.Action == Deny) {
+						t.Errorf("global uncertainty flag: %v", got)
+					}
+					if got[0] != 0 || (got[1] != 0 && got[2] == 2) != tc.block {
+						t.Errorf("C result: %v", got)
+					}
+					for i := range policies {
+						policy := mustDecode[KernelPolicy](t, kp, uint32(i+1))
+						name := kp.Identities[policy.UID]
+						want := name == strictID && tc.proposal
+						if (got[8+i] != 0) != want {
+							t.Errorf("C proposal %s: %v", name, got)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestEnforcedAndSharedUncertaintyRemainErrors(t *testing.T) {
+	for _, flags := range [][]string{nil, {"-DFE_FIXED_MAP_TEST"}} {
+		runner := buildEvaluatorRunner(t, flags...)
+		for _, reverse := range []bool{false, true} {
+			policies := []Policy{
+				{ID: "a", Revision: "1", Mode: Audit, Rules: []Rule{{Name: "audit-unknown", Action: Allow, Actor: Actor{Role: []string{"root"}}}}},
+				{ID: "b", Revision: "1", Mode: Enforce, Rules: []Rule{{Name: "enforced-unknown", Action: Deny, Actor: Actor{UID: []int64{1}}}}},
+			}
+			if reverse {
+				policies[0].ID, policies[1].ID = "b", "a"
+			}
+			for _, facts := range []Facts{{}, {ActorPath: "/bad\x00"}} {
+				oracle := compile(t, policies...)
+				if _, err := oracle.Evaluate(facts); err == nil {
+					t.Fatal("enforced/shared uncertainty accepted")
+				}
+				program, err := CompileKernel(policies, 1, "app")
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := runCEvaluator(t, runner, program, evaluatorFactBytes(t, program, policies, facts))
+				if got[0] != ^uint64(0) || got[3] == 0 || got[3] == 4 {
+					t.Fatalf("enforced/shared error became audit diagnostic: %v", got)
+				}
+				for _, role := range got[8:16] {
+					if role != 0 {
+						t.Fatalf("error grants role: %v", got)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestLSMResultPreservesSignedPriorDenials(t *testing.T) {
+	runner := buildEvaluatorRunner(t)
+	for _, tc := range []struct{ prior, want int }{{0, 0}, {-1, -1}, {-13, -13}, {-4095, -4095}, {-4096, -1}, {1, -1}, {2147483647, -1}, {-2147483648, -1}} {
+		out, err := exec.Command(runner, strconv.Itoa(tc.prior)).CombinedOutput()
+		if err != nil || strings.TrimSpace(string(out)) != strconv.Itoa(tc.want) {
+			t.Fatalf("prior=%d want=%d: %s %v", tc.prior, tc.want, out, err)
+		}
+	}
+}
+
+func TestImmutableClassLSMFaultMatrix(t *testing.T) {
+	runner := buildEvaluatorRunner(t)
+	for _, class := range []int{1, 2} {
+		for _, prior := range []int{0, -13} {
+			for _, failed := range []int{0, 1} {
+				for _, mode := range []int{1, 2} {
+					want := prior
+					if prior == 0 && class == 2 && (failed == 1 || mode == 2) {
+						want = -1
+					}
+					out, err := exec.Command(runner, "verdict", strconv.Itoa(class), strconv.Itoa(prior), strconv.Itoa(failed), "1", strconv.Itoa(mode)).CombinedOutput()
+					if err != nil || strings.TrimSpace(string(out)) != strconv.Itoa(want) {
+						t.Fatalf("class=%d prior=%d failed=%d denyMode=%d want=%d got=%s err=%v", class, prior, failed, mode, want, out, err)
+					}
+				}
+			}
+		}
+	}
+	for _, declared := range []Mode{Audit, Enforce} {
+		for _, override := range []Mode{Audit, Enforce} {
+			rules := make([]Rule, 256)
+			for i := range rules {
+				rules[i] = Rule{Name: fmt.Sprintf("r%03d", i), Action: Allow, Mode: Audit}
+			}
+			rules[255].Mode = override
+			policies := []Policy{{ID: "a", Revision: "1", Mode: declared, Rules: rules}}
+			program, err := CompileKernel(policies, 1, "app")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := runCEvaluator(t, runner, program, evaluatorFactBytes(t, program, policies, Facts{}))
+			want := uint64(1)
+			if declared == Enforce || override == Enforce {
+				want = 2
+			}
+			if got[17] != want {
+				t.Fatalf("complete immutable class ignored policy/last rule: %v", got)
+			}
+		}
+	}
+}
+
+func TestRoleConflictVersusUnknownProvenance(t *testing.T) {
+	for _, flags := range [][]string{nil, {"-DFE_FIXED_MAP_TEST"}} {
+		runner := buildEvaluatorRunner(t, flags...)
+		for _, conflict := range []bool{false, true} {
+			for _, enforced := range []bool{false, true} {
+				rules := []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}
+				if !conflict {
+					rules[1].Actor.Role = []string{"missing"}
+				}
+				if enforced {
+					rules = append(rules, Rule{Name: "c", Action: Allow, Mode: Enforce, Target: Target{SetRole: "one"}})
+				}
+				policies := []Policy{{ID: "a", Revision: "1", Mode: Audit, Rules: rules}}
+				_, oracleErr := compile(t, policies...).Evaluate(Facts{})
+				program, err := CompileKernel(policies, 1, "app")
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := runCEvaluator(t, runner, program, evaluatorFactBytes(t, program, policies, Facts{}))
+				wantError := conflict && enforced
+				if (oracleErr != nil) != wantError || (got[0] != 0) != wantError || (got[19] != 0) != enforced || (got[20] != 0) != conflict {
+					t.Fatalf("conflict=%v enforced=%v oracle=%v C=%v", conflict, enforced, oracleErr, got)
+				}
+			}
+		}
 	}
 }

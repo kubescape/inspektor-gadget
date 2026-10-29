@@ -4,6 +4,7 @@
 package fullpolicy
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -49,17 +50,41 @@ type Decision struct {
 	Matches []Match
 	// Role updates are policy-local and must be committed only on successful exec.
 	SetRoles map[string]string
+	// AuditUnknown records diagnostic uncertainty without making it a denial.
+	AuditUnknown   map[string]bool
+	UncertainRoles map[string]bool
+	RoleWrites     map[string]bool
+	// SuppressRoles also cancels proposals from earlier checks in this exec.
+	SuppressRoles bool
+}
+
+// executionClass is conservative declared capability, not a partial decision.
+func (p *Program) executionClass() Mode {
+	for _, policy := range p.policies {
+		if policy.source.Mode == Enforce {
+			return Enforce
+		}
+		for _, rule := range policy.rules {
+			if rule.source.Mode == Enforce {
+				return Enforce
+			}
+		}
+	}
+	return Audit
 }
 
 // Evaluate is a reference oracle for kernel parity tests, not a userspace
-// enforcement fallback. Unknown required facts fail evaluation, never match false.
+// enforcement fallback. Audit-local unknowns are diagnostics, never known matches;
+// enforced or shared uncertainty fails evaluation.
 func (p *Program) Evaluate(f Facts) (Decision, error) {
 	for _, v := range append([]string{f.ActorPath, f.TargetPath}, f.Ancestors...) {
 		if len(v) > MaxStringBytes || strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
-			return Decision{}, fmt.Errorf("path observation invalid or exceeds %d bytes", MaxStringBytes)
+			return Decision{Block: p.executionClass() == Enforce}, fmt.Errorf("path observation invalid or exceeds %d bytes", MaxStringBytes)
 		}
 	}
-	d := Decision{Action: Allow, Mode: Audit, SetRoles: map[string]string{}}
+	d := Decision{Action: Allow, Mode: Audit, SetRoles: map[string]string{}, AuditUnknown: map[string]bool{}, UncertainRoles: map[string]bool{}, RoleWrites: map[string]bool{}}
+	var evaluationError error
+	uncertainDeny := false
 	matched := false
 	allowMode, denyMode := Audit, Audit
 	for _, policy := range p.policies {
@@ -69,20 +94,31 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 			role = ps.RootRole
 		}
 		roles := map[string]bool{}
+		enforcedGrant := false
 		for _, rule := range policy.rules {
-			ok, err := rule.matches(f, role)
-			if err != nil {
-				return Decision{}, fmt.Errorf("policy %s rule %s: %w", ps.ID, rule.source.Name, err)
-			}
-			if !ok {
-				continue
-			}
-			matched = true
 			r := rule.source
 			mode := r.Mode
 			if mode == "" {
 				mode = ps.Mode
 			}
+			ok, err := rule.matches(f, role)
+			if err != nil {
+				if mode == Audit {
+					d.AuditUnknown[ps.ID] = true
+					if r.Target.SetRole != "" {
+						d.UncertainRoles[ps.ID] = true
+						d.RoleWrites[ps.ID] = true
+					}
+					uncertainDeny = uncertainDeny || r.Action == Deny
+				} else {
+					evaluationError = errors.Join(evaluationError, fmt.Errorf("policy %s rule %s: %w", ps.ID, r.Name, err))
+				}
+				continue
+			}
+			if !ok {
+				continue
+			}
+			matched = true
 			d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Rule: r.Name, Origin: r.Origin, Action: r.Action, Mode: mode})
 			if r.Action == Deny {
 				d.Action = Deny
@@ -96,11 +132,18 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 				}
 				if r.Target.SetRole != "" {
 					roles[r.Target.SetRole] = true
+					d.RoleWrites[ps.ID] = true
+					enforcedGrant = enforcedGrant || mode == Enforce
 				}
 			}
 		}
 		if len(roles) > 1 {
-			return Decision{}, fmt.Errorf("policy %s: overlapping allows assign conflicting roles", ps.ID)
+			if enforcedGrant {
+				evaluationError = errors.Join(evaluationError, fmt.Errorf("policy %s: overlapping allows assign conflicting roles", ps.ID))
+			} else {
+				d.AuditUnknown[ps.ID] = true
+				d.UncertainRoles[ps.ID] = true
+			}
 		}
 		for role := range roles {
 			d.SetRoles[ps.ID] = role
@@ -137,7 +180,22 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 		}
 		return strings.Compare(a.Rule, b.Rule)
 	})
-	return d, nil
+	d.SuppressRoles = uncertainDeny || d.Action == Deny || evaluationError != nil
+	if d.SuppressRoles {
+		clear(d.SetRoles)
+	}
+	if uncertainDeny {
+		for uid := range d.RoleWrites {
+			d.UncertainRoles[uid] = true
+		}
+	}
+	for uid := range d.UncertainRoles {
+		delete(d.SetRoles, uid)
+	}
+	if evaluationError != nil {
+		d.Block = p.executionClass() == Enforce
+	}
+	return d, evaluationError
 }
 
 func (r compiledRule) matches(f Facts, role string) (bool, error) {
