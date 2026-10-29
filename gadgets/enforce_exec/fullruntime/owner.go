@@ -60,12 +60,22 @@ type BindingLease interface {
 	Close() error
 }
 type OwnerConfig struct {
-	Program      *fullpolicy.KernelProgram
-	CgroupID     uint64
-	InitHostPID  uint32
-	ControlRoot  string // canonical admin-selected writable cgroup-v2 control path
-	Acquire      func(context.Context) (BindingLease, error)
-	ImageOrigins *execruntime.ImageOriginSnapshot
+	// ABI3Development is trusted native consent for the isolated development image.
+	// It is never inferred from policy/image annotations and defaults to false.
+	ABI3Development bool
+	Program         *fullpolicy.KernelProgram
+	CgroupID        uint64
+	InitHostPID     uint32
+	ControlRoot     string // canonical admin-selected writable cgroup-v2 control path
+	Acquire         func(context.Context) (BindingLease, error)
+	ImageOrigins    *execruntime.ImageOriginSnapshot
+}
+
+func (c OwnerConfig) ownerABI() uint32 {
+	if c.ABI3Development {
+		return OwnerDevelopmentABI
+	}
+	return OwnerABI
 }
 
 // Owner owns a single, persistent OCI binding. Native callers MUST retain this
@@ -160,8 +170,9 @@ func (*ownerOperator) InstantiateDataOperator(gc operators.GadgetContext, _ api.
 		}
 		return nil, nil
 	}
-	if abi != fmt.Sprint(OwnerABI) || owner == nil {
-		return nil, fmt.Errorf("persistent-owner image requires native ABI%d configuration", OwnerABI)
+	development := metadata.GetBool("annotations.enforce-exec-owner-development")
+	if owner == nil || abi != fmt.Sprint(owner.config.ownerABI()) || development != owner.config.ABI3Development {
+		return nil, fmt.Errorf("persistent-owner image requires matching native ABI/development configuration (default ABI%d)", OwnerABI)
 	}
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
@@ -353,7 +364,7 @@ func (o *Owner) Start(gc operators.GadgetContext) error {
 	if cookie == 0 {
 		return fmt.Errorf("invalid random owner cookie")
 	}
-	o.control, err = NewOwnerControl(ctx, ControlConfig{Cookie: cookie, Cgroup: o.config.CgroupID, InitHostPID: o.config.InitHostPID, TaskLimit: OwnerTaskLimit, GateSlot: index, ABI: OwnerABI}, o.resources, gate)
+	o.control, err = newOwnerControl(ctx, ControlConfig{Cookie: cookie, Cgroup: o.config.CgroupID, InitHostPID: o.config.InitHostPID, TaskLimit: OwnerTaskLimit, GateSlot: index, ABI: o.config.ownerABI()}, o.resources, gate, o.config.ABI3Development)
 	if err != nil {
 		return err
 	}

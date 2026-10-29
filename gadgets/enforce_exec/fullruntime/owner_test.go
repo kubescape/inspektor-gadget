@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -452,5 +453,64 @@ func TestOwnerAbortPendingRequiresRunningOwner(t *testing.T) {
 	owner := &Owner{publisher: publisher, prepared: true}
 	if err := owner.AbortPending(t.Context()); err != nil {
 		t.Fatal("no pending publication must be idempotent", err)
+	}
+}
+
+// Metadata is not trusted consent: both the native option and the explicit
+// development image marker must agree, before resources or Acquire are touched.
+func TestOwnerDevelopmentAdmissionBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, abi             string
+		opt, marker, accepted bool
+	}{
+		{"default", "2", false, false, true},
+		{"abi3_without_opt", "3", false, true, false},
+		{"abi3_without_marker", "3", true, false, false},
+		{"abi2_with_opt", "2", true, false, false},
+		{"abi2_with_marker", "2", false, true, false},
+		{"development", "3", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := ownerTestConfig(t)
+			config.ABI3Development = tc.opt
+			budget := testBudget(t, 1)
+			owner, err := NewOwner(config, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer owner.ReleaseAfterDetach()
+			gc := gadgetcontext.New(t.Context(), "trusted:test", WithOwner(owner))
+			defer gc.Cancel()
+			metadata := viper.New()
+			metadata.Set("annotations.enforce-exec-owner-abi", tc.abi)
+			metadata.Set("annotations.enforce-exec-owner-development", tc.marker)
+			gc.SetVar("config", metadata)
+			_, err = New().InstantiateDataOperator(gc, nil)
+			if err == nil {
+				t.Fatal("missing manifest must still refuse admission")
+			}
+			// Accepted selector reaches resource admission; rejected selector must not.
+			selectorError := strings.Contains(err.Error(), "configuration") || strings.Contains(err.Error(), "development")
+			if selectorError == tc.accepted {
+				t.Fatalf("selector accepted=%v: %v", tc.accepted, err)
+			}
+			if owner.claimed {
+				t.Fatal("invalid admission claimed owner")
+			}
+		})
+	}
+}
+
+func TestDevelopmentControlABIRequiresTrustedOption(t *testing.T) {
+	cfg := ControlConfig{Cookie: 1, Cgroup: 1, InitHostPID: 1, TaskLimit: 1, ABI: OwnerDevelopmentABI}
+	if _, err := NewOwnerControl(t.Context(), cfg, ControlResources{}, nil); err == nil || !strings.Contains(err.Error(), "configuration") {
+		t.Fatalf("public ABI2 control constructor selected development ABI: %v", err)
+	}
+	if _, err := newOwnerControl(t.Context(), cfg, ControlResources{}, nil, true); err == nil || !strings.Contains(err.Error(), "gate required") {
+		t.Fatalf("explicit development control selection: %v", err)
+	}
+	cfg.ABI = OwnerABI
+	if _, err := newOwnerControl(t.Context(), cfg, ControlResources{}, nil, true); err == nil || !strings.Contains(err.Error(), "configuration") {
+		t.Fatalf("development accepted ABI2 control: %v", err)
 	}
 }

@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	OwnerABI       = 2
-	OwnerTaskLimit = 4096
-	pidfdThread    = 0x80 // Linux PIDFD_THREAD; older x/sys versions omit the name.
+	OwnerABI            = 2
+	OwnerDevelopmentABI = 3
+	OwnerTaskLimit      = 4096
+	pidfdThread         = 0x80 // Linux PIDFD_THREAD; older x/sys versions omit the name.
 )
 
 const (
@@ -94,7 +95,16 @@ func ControlResourcesFromContext(gc operators.GadgetContext) (ControlResources, 
 	return r, nil
 }
 
-func (r ControlResources) validate() error {
+func (r ControlResources) validate(abi uint32) error {
+	taskSize, workSize := uint32(680), uint32(1096)
+	switch abi {
+	case OwnerABI:
+	case OwnerDevelopmentABI:
+		// Transitional Stage A layout, not the complete ADR resource profile.
+		taskSize, workSize = 904, 1352
+	default:
+		return fmt.Errorf("unsupported owner map ABI")
+	}
 	for _, row := range []struct {
 		name                   string
 		m                      *ebpf.Map
@@ -108,10 +118,10 @@ func (r ControlResources) validate() error {
 		{"phase", r.Phase, ebpf.Array, 4, 48, 1, unix.BPF_F_RDONLY},
 		{"rows", r.Rows, ebpf.Array, 4, 24, OwnerTaskLimit, unix.BPF_F_RDONLY},
 		{"admin", r.Admin, ebpf.TaskStorage, 4, 8, 0, unix.BPF_F_NO_PREALLOC},
-		{"tasks", r.Tasks, ebpf.Hash, 8, 680, OwnerTaskLimit, unix.BPF_F_NO_PREALLOC | unix.BPF_F_RDONLY},
+		{"tasks", r.Tasks, ebpf.Hash, 8, taskSize, OwnerTaskLimit, unix.BPF_F_NO_PREALLOC | unix.BPF_F_RDONLY},
 		{"task identities", r.TaskIDs, ebpf.TaskStorage, 4, 8, 0, unix.BPF_F_NO_PREALLOC},
-		{"zero task", r.ZeroTask, ebpf.Array, 4, 680, 1, unix.BPF_F_RDONLY_PROG},
-		{"work", r.Work, ebpf.TaskStorage, 4, 1096, 0, unix.BPF_F_NO_PREALLOC},
+		{"zero task", r.ZeroTask, ebpf.Array, 4, taskSize, 1, unix.BPF_F_RDONLY_PROG},
+		{"work", r.Work, ebpf.TaskStorage, 4, workSize, 0, unix.BPF_F_NO_PREALLOC},
 		{"anchor", r.Anchor, ebpf.Array, 4, 16, 1, unix.BPF_F_WRONLY},
 		{"births", r.Births, ebpf.Hash, 8, 8, OwnerTaskLimit, unix.BPF_F_NO_PREALLOC | unix.BPF_F_WRONLY},
 	} {
@@ -241,10 +251,14 @@ type OwnerControl struct {
 }
 
 func NewOwnerControl(ctx context.Context, cfg ControlConfig, r ControlResources, gate *Gate) (*OwnerControl, error) {
+	return newOwnerControl(ctx, cfg, r, gate, false)
+}
+
+func newOwnerControl(ctx context.Context, cfg ControlConfig, r ControlResources, gate *Gate, development bool) (*OwnerControl, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if runtime.GOARCH != "amd64" || cfg.ABI != OwnerABI || cfg.Cookie == 0 || cfg.Cgroup == 0 || cfg.InitHostPID == 0 || cfg.InitHostPID > 0x7fffffff || cfg.TaskLimit == 0 || cfg.TaskLimit > OwnerTaskLimit || cfg.GateSlot >= MaxLifetimeSlots {
+	if runtime.GOARCH != "amd64" || cfg.ABI != (OwnerConfig{ABI3Development: development}).ownerABI() || cfg.Cookie == 0 || cfg.Cgroup == 0 || cfg.InitHostPID == 0 || cfg.InitHostPID > 0x7fffffff || cfg.TaskLimit == 0 || cfg.TaskLimit > OwnerTaskLimit || cfg.GateSlot >= MaxLifetimeSlots {
 		return nil, fmt.Errorf("unsupported or incomplete native owner configuration")
 	}
 	if gate == nil {
@@ -257,7 +271,7 @@ func NewOwnerControl(ctx context.Context, cfg ControlConfig, r ControlResources,
 	if !closed || count != 0 {
 		return nil, fmt.Errorf("owner setup requires its closed/drained publication lease")
 	}
-	if err = r.validate(); err != nil {
+	if err = r.validate(cfg.ABI); err != nil {
 		return nil, err
 	}
 	var existing ControlConfig
