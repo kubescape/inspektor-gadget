@@ -28,13 +28,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/moby/moby/pkg/jsonmessage"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/jsonmessage"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -364,7 +362,7 @@ func runBuild(cmd *cobra.Command, opts *cmdOpts) error {
 
 func pullImage(ctx context.Context, cli *client.Client, imageReference string) error {
 	fmt.Printf("Pulling builder image %s\n", imageReference)
-	reader, err := cli.ImagePull(ctx, imageReference, image.PullOptions{})
+	reader, err := cli.ImagePull(ctx, imageReference, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling builder image: %w", err)
 	}
@@ -377,15 +375,15 @@ func pullImage(ctx context.Context, cli *client.Client, imageReference string) e
 }
 
 func isImageLocallyAvailable(ctx context.Context, cli *client.Client, imageReference string) (bool, error) {
-	f := filters.NewArgs()
+	f := client.Filters{}
 	f.Add("reference", imageReference)
 
-	images, err := cli.ImageList(ctx, image.ListOptions{Filters: f})
+	images, err := cli.ImageList(ctx, client.ImageListOptions{Filters: f})
 	if err != nil {
 		return false, fmt.Errorf("listing images: %w", err)
 	}
 
-	for _, img := range images {
+	for _, img := range images.Items {
 		for _, tag := range img.RepoTags {
 			if tag == imageReference {
 				return true, nil
@@ -433,7 +431,7 @@ func buildInContainer(opts *cmdOpts, conf *buildFile) error {
 	}
 
 	ctx := context.TODO()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("creating docker client: %w", err)
 	}
@@ -508,42 +506,43 @@ func buildInContainer(opts *cmdOpts, conf *buildFile) error {
 
 	resp, err := cli.ContainerCreate(
 		ctx,
-		&container.Config{
-			Image:      opts.builderImage,
-			Cmd:        cmd,
-			WorkingDir: gadgetSourcePath,
-			User:       fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		client.ContainerCreateOptions{
+			Config: &container.Config{
+				Image:      opts.builderImage,
+				Cmd:        cmd,
+				WorkingDir: gadgetSourcePath,
+				User:       fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+			},
+			HostConfig: &container.HostConfig{
+				Mounts: mounts,
+			},
 		},
-		&container.HostConfig{
-			Mounts: mounts,
-		},
-		nil, nil, "",
 	)
 	if err != nil {
 		return fmt.Errorf("creating builder container: %w", err)
 	}
 	defer func() {
-		if err := cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{}); err != nil {
+		if _, err := cli.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{}); err != nil {
 			fmt.Printf("Failed to remove builder container: %s\n", err)
 		}
 	}()
 
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("starting builder container: %w", err)
 	}
 
 	var status container.WaitResponse
 
-	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	wait := cli.ContainerWait(ctx, resp.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
-	case err := <-errCh:
+	case err := <-wait.Error:
 		if err != nil {
 			return fmt.Errorf("waiting for builder container: %w", err)
 		}
-	case status = <-statusCh:
+	case status = <-wait.Result:
 	}
 
-	outputOpts := container.LogsOptions{ShowStderr: true}
+	outputOpts := client.ContainerLogsOptions{ShowStderr: true}
 
 	if status.StatusCode != 0 || common.Verbose {
 		outputOpts.ShowStdout = true
@@ -554,6 +553,7 @@ func buildInContainer(opts *cmdOpts, conf *buildFile) error {
 		return fmt.Errorf("getting builder container logs: %w", err)
 	}
 
+	defer out.Close()
 	fmt.Println("Build logs start:")
 	stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 	fmt.Println("Build logs end")

@@ -22,9 +22,8 @@ import (
 	"time"
 
 	securejoin "github.com/cyphar/filepath-securejoin"
-	"github.com/docker/docker/api/types/container"
-	dockerfilters "github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils/cgroups"
@@ -71,8 +70,9 @@ func NewDockerClient(socketPath string, protocol string) (runtimeclient.Containe
 		socketPath = runtimeclient.DockerDefaultSocketPath
 	}
 
-	cli, err := client.NewClientWithOpts(
-		client.WithAPIVersionNegotiation(),
+	// The supported Moby SDK negotiates API versions automatically (minimum 1.40).
+	// Keep negotiation lazy: constructing a client must not contact the daemon.
+	cli, err := client.New(
 		client.WithHost("unix://"+socketPath),
 		client.WithTimeout(DefaultTimeout),
 	)
@@ -86,8 +86,8 @@ func NewDockerClient(socketPath string, protocol string) (runtimeclient.Containe
 	}, nil
 }
 
-func listContainers(c *DockerClient, filter *dockerfilters.Args) ([]container.Summary, error) {
-	opts := container.ListOptions{
+func listContainers(c *DockerClient, filter *client.Filters) ([]container.Summary, error) {
+	opts := client.ContainerListOptions{
 		// We need to request for all containers (also non-running) because
 		// when we are enriching a container that is being created, it is
 		// not in "running" state yet.
@@ -108,13 +108,13 @@ func listContainers(c *DockerClient, filter *dockerfilters.Args) ([]container.Su
 	// that they are using a given network namespace. See issue
 	// https://github.com/inspektor-gadget/inspektor-gadget/issues/1095.
 	noPauseContainers := []container.Summary{}
-	for _, c := range containers {
+	for _, c := range containers.Items {
 		if c.Labels["io.kubernetes.docker.type"] == "podsandbox" {
 			continue
 		}
 		noPauseContainers = append(noPauseContainers, c)
 	}
-	if filter != nil && len(containers) != 0 && len(noPauseContainers) == 0 {
+	if filter != nil && len(containers.Items) != 0 && len(noPauseContainers) == 0 {
 		return nil, runtimeclient.ErrPauseContainer
 	}
 
@@ -137,7 +137,7 @@ func (c *DockerClient) GetContainers() ([]*runtimeclient.ContainerData, error) {
 }
 
 func (c *DockerClient) GetContainer(containerID string) (*runtimeclient.ContainerData, error) {
-	filter := dockerfilters.NewArgs()
+	filter := client.Filters{}
 	filter.Add("id", containerID)
 
 	containers, err := listContainers(c, &filter)
@@ -162,11 +162,12 @@ func (c *DockerClient) GetContainerDetails(containerID string) (*runtimeclient.C
 		return nil, err
 	}
 
-	containerJSON, err := c.client.ContainerInspect(context.Background(), containerID)
+	inspect, err := c.client.ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return nil, err
 	}
 
+	containerJSON := inspect.Container
 	if containerJSON.State == nil {
 		return nil, errors.New("container state is nil")
 	}
@@ -185,7 +186,7 @@ func (c *DockerClient) GetContainerDetails(containerID string) (*runtimeclient.C
 		containerJSON.Name,
 		containerJSON.Config.Image,
 		c.getContainerImageDigest(containerJSON.Image),
-		containerJSON.State.Status,
+		string(containerJSON.State.Status),
 		containerJSON.Config.Labels)
 
 	containerDetailsData := runtimeclient.ContainerDetailsData{
@@ -287,7 +288,7 @@ func DockerContainerToContainerData(container *container.Summary) *runtimeclient
 		containerName,
 		container.Image,
 		imageDigest,
-		container.State,
+		string(container.State),
 		container.Labels)
 }
 
