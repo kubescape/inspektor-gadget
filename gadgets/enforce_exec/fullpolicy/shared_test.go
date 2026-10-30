@@ -336,3 +336,63 @@ func TestSharedSnapshotUsesNativeMatcherDedupBudget(t *testing.T) {
 		t.Fatal("independent-object instruction sums replaced native dedup admission", err)
 	}
 }
+
+func TestSharedSnapshotExecutionMetadataOrderAndOwnership(t *testing.T) {
+	policies := []Policy{
+		{ID: "z-writer", Revision: "r", RootRole: "root", Mode: Enforce, Rules: []Rule{{Name: "write", Action: Allow, Target: Target{SetRole: "next"}}}},
+		{ID: "a-deny", Revision: "r", RootRole: "root", Mode: Audit, Rules: []Rule{{Name: "deny", Action: Deny, Actor: Actor{Role: []string{"root"}}}}},
+		{ID: "b-default", Revision: "r", RootRole: "root", Mode: Audit, Default: Deny},
+		{ID: "c-exception", Revision: "r", RootRole: "root", Mode: Audit, Rules: []Rule{{Name: "exception", Action: Allow, Actor: Actor{Role: []string{"root"}}}}},
+		{ID: "d-writer", Revision: "r", RootRole: "root", Mode: Audit, Rules: []Rule{{Name: "write", Action: Allow, Actor: Actor{Role: []string{"root"}}, Target: Target{SetRole: "next"}}}},
+		{ID: "e-plain", Revision: "r", RootRole: "root", Mode: Audit, Default: Allow},
+		{ID: "f-role", Revision: "r", RootRole: "root", Mode: Enforce, Rules: []Rule{{Name: "role", Action: Allow, Actor: Actor{Role: []string{"root"}}}}},
+		{ID: "g-audit", Revision: "r", RootRole: "root", Mode: Audit},
+	}
+	refs := make([]SharedPolicyRef, len(policies))
+	for i, p := range policies {
+		object, err := CompileSharedPolicy(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = SharedPolicyRef{Object: object, RootEpoch: 1}
+	}
+	for rotation := 0; rotation < len(refs); rotation++ {
+		ordered := append(append([]SharedPolicyRef(nil), refs[rotation:]...), refs[:rotation]...)
+		snapshot, err := NewSharedSnapshot(7, 2, "app", ordered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary, err := snapshot.ExecutionMetadata()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var writers, required uint32
+		for i, ref := range ordered {
+			for original, source := range refs {
+				if ref.Object == source.Object {
+					if original == 0 || original == 4 {
+						writers |= 1 << i
+					}
+					if original == 1 || original == 3 || original == 4 || original == 6 {
+						required |= 1 << i
+					}
+				}
+			}
+		}
+		if summary.PolicyCount != 8 || summary.ExecutionClass != 2 || summary.RoleWriters != writers || summary.RequiredKnown != required {
+			t.Fatalf("rotation%d summary%+v want writers%x required%x", rotation, summary, writers, required)
+		}
+		summary.RequiredKnown = 0
+		again, err := snapshot.ExecutionMetadata()
+		if err != nil || again.RequiredKnown != required {
+			t.Fatal("returned summary aliases compiler state")
+		}
+		snapshot.Policies[0], snapshot.Policies[1] = snapshot.Policies[1], snapshot.Policies[0]
+		if _, err := snapshot.ExecutionMetadata(); err == nil {
+			t.Fatal("reordered mutable refs used stale metadata")
+		}
+	}
+	if _, err := (SharedSnapshot{}).ExecutionMetadata(); err == nil {
+		t.Fatal("uncompiled snapshot supplied metadata")
+	}
+}

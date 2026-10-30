@@ -55,7 +55,8 @@ type Decision struct {
 	UncertainRoles map[string]bool
 	RoleWrites     map[string]bool
 	// SuppressRoles also cancels proposals from earlier checks in this exec.
-	SuppressRoles bool
+	SuppressRoles     bool
+	UncertainFallback bool // Audit fallback deny may be suppressed by an unknown allow.
 }
 
 // executionClass is conservative declared capability, not a partial decision.
@@ -84,7 +85,7 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 	}
 	d := Decision{Action: Allow, Mode: Audit, SetRoles: map[string]string{}, AuditUnknown: map[string]bool{}, UncertainRoles: map[string]bool{}, RoleWrites: map[string]bool{}}
 	var evaluationError error
-	uncertainDeny := false
+	uncertainDeny, uncertainAllow := false, false
 	matched := false
 	allowMode, denyMode := Audit, Audit
 	for _, policy := range p.policies {
@@ -101,7 +102,7 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 			if mode == "" {
 				mode = ps.Mode
 			}
-			ok, err := rule.matches(f, role)
+			ok, err := ruleMatches(rule, f, role)
 			if err != nil {
 				if mode == Audit {
 					d.AuditUnknown[ps.ID] = true
@@ -110,6 +111,7 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 						d.RoleWrites[ps.ID] = true
 					}
 					uncertainDeny = uncertainDeny || r.Action == Deny
+					uncertainAllow = uncertainAllow || r.Action == Allow
 				} else {
 					evaluationError = errors.Join(evaluationError, fmt.Errorf("policy %s rule %s: %w", ps.ID, r.Name, err))
 				}
@@ -168,6 +170,10 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 			d.Matches = append(d.Matches, Match{PolicyID: ps.ID, Revision: ps.Revision, Action: Deny, Mode: ps.Mode})
 		}
 	}
+	if !matched && uncertainAllow && d.Action == Deny && denyMode == Audit {
+		d.UncertainFallback = true
+		uncertainDeny = true
+	}
 	if d.Action == Deny {
 		d.Mode = denyMode
 		clear(d.SetRoles)
@@ -198,7 +204,7 @@ func (p *Program) Evaluate(f Facts) (Decision, error) {
 	return d, evaluationError
 }
 
-func (r compiledRule) matches(f Facts, role string) (bool, error) {
+func ruleMatches(r compiledRule, f Facts, role string) (bool, error) {
 	a, t := r.source.Actor, r.source.Target
 	if len(r.actor) > 0 {
 		if f.ActorPath == "" {
