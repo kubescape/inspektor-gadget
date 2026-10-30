@@ -515,7 +515,7 @@ func (l *localManagerTrace) handleGadgetInstance(log logger.Logger) error {
 					case containercollection.EventTypePreCreateContainer:
 						// nothing to do
 					default:
-						log.Errorf("unknown event type, expected either %s, %s, %s or %s, got %s",
+						log.Errorf("unknown event type, expected either %v, %v, %v or %v, got %v",
 							containercollection.EventTypePreCreateContainer,
 							containercollection.EventTypeAddContainer,
 							containercollection.EventTypeRemoveContainer,
