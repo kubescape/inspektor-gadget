@@ -13,13 +13,27 @@ custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
 distribution kernels and arm64 are not supported by this profile. BPF LSM and
 ftrace availability alone do not satisfy its admission checks.
 
-**Audit is not yet safe as a nonblocking trial mode in this implementation.**
-Evaluator/observation errors, owner faults and closed admission during reload or
-re-attestation can deny exec even for an audit-only policy. Strictly nonblocking
-audit, including these failure paths, is required follow-up work, not a property
-established by the existing isolated proofs. Enforced policies must not fall open
-to hide such failures. Do not interpret an audit verdict or a successful reload
-test as proof that all audit failure paths permit execution.
+**Audit is best effort across operational faults and reloads.** Audit policy
+evaluation must not intentionally deny audited decisions or evaluator
+unknown/error results, must not grant uncertain roles, and must preserve earlier
+LSM denials. This does not promise uninterrupted execution: tracking, resource or
+structural faults and closed admission during reload or re-attestation may block
+even audit-only workloads. Enforcement-capable policies remain fail-closed; do
+not fall open to hide an operational fault.
+
+On a precommit candidate refusal, retain the last-good active policy and accepted
+history. The embedding must report failure/NotReady rather than advertise the
+rejected revision as active. Reopen admission only after safe rollback and phase
+cleanup; failed rollback retains pending ownership and the closed gate until
+recovery. Do not discard trusted state to force admission. A postcommit error
+requires resuming the same committed generation, not rolling back to the old
+policy.
+
+The legacy mocked Go regression `TestLegacyOwnerUpdateBestEffortAdmission`
+covers precommit refusal, drain cancellation and rollback failure/recovery
+through `Owner.Update` with fake maps/control and a heap admission word. This is
+protocol coverage, not native bootstrap, ABI3/shared activation, physical Ready,
+Kubernetes status propagation or kernel qualification.
 
 ### Scope, runtime helpers and operator consent
 
@@ -139,9 +153,10 @@ or pending-transition ownership to forked/cloned children.
 
 `BeginUpdate(ctx)` atomically closes admission while retaining the count, waits
 for zero and returns an exclusive publication lease. Publish a fully prepared,
-frozen inner map before `Reopen`; on preparation/publication failure, retain the
-old map and reopen. A timeout reopens only the closure this owner acquired,
-preserving outstanding admissions. A stale lease cannot reopen a later
+frozen inner map before `Reopen`; on precommit preparation/publication failure,
+retain the old map and reopen only after safe candidate cleanup. A timeout reopens
+only the closure this owner acquired, preserving outstanding admissions. A stale
+lease cannot reopen a later
 publisher's closure. `Retire` permanently closes a drained slot. `GateMap.Close`
 refuses unmapping until all slots have been retired.
 

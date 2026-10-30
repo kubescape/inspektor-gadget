@@ -7,7 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
 type fakePublicationControl struct {
@@ -312,5 +317,226 @@ func TestPublisherRequiresPreparedFirstStartup(t *testing.T) {
 	}
 	if err = u.Abort(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// These tests exercise the legacy publisher protocol with heap-backed admission,
+// fake map writers and fake control receipts, not ABI3/shared or kernel readiness.
+// Best-effort audit permits a closed gate during reload, but a rejected candidate
+// must retain last-good state and reopen only after safe rollback.
+func TestLegacyOwnerUpdateBestEffortAdmission(t *testing.T) {
+	for _, mode := range []fullpolicy.Mode{fullpolicy.Audit, fullpolicy.Enforce} {
+		t.Run(string(mode), func(t *testing.T) {
+			for _, test := range []struct {
+				name        string
+				after       bool
+				cancelDrain bool
+				failAbort   bool
+			}{
+				{name: "refusal-before-phase-change"},
+				{name: "refusal-after-phase-change", after: true},
+				{name: "cancel-during-drain", cancelDrain: true},
+				{name: "rollback-failure", after: true, failAbort: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					p, control, outer, epochs := publicationFixture(t)
+					program := func(generation uint64, policies ...fullpolicy.Policy) *fullpolicy.KernelProgram {
+						compiled, err := fullpolicy.CompileKernelWithRoleEpochs(policies, generation, "app", p.slot.Epochs())
+						if err != nil {
+							t.Fatal(err)
+						}
+						return compiled
+					}
+					activePolicy := fullpolicy.Policy{ID: "active", Revision: "r1", Mode: mode, RootRole: "root"}
+					active := program(1, activePolicy)
+					if _, err := p.Publish(t.Context(), active); err != nil {
+						t.Fatal(err)
+					}
+					// Deliberately legacy: do not bypass the ABI3 constructor rejection
+					// by labeling this fake-control fixture as development activation.
+					owner := &Owner{publisher: p, slot: p.slot, gate: p.slot.gate, current: active, prepared: true}
+					candidate := program(2, activePolicy, fullpolicy.Policy{ID: "candidate", Revision: "r2", Mode: fullpolicy.Audit, RootRole: "root"})
+					beforeEpochs := p.slot.Epochs()
+					beforeRows := maps.Clone(epochs.rows)
+					beforeActive := outer.rows[uint32(0)]
+					if err := p.slot.gate.Enter(); err != nil {
+						t.Fatal(err)
+					}
+					var leaveOnce, releaseOnce sync.Once
+					leave := func() {
+						leaveOnce.Do(func() {
+							if err := p.slot.gate.Leave(); err != nil {
+								t.Error(err)
+							}
+						})
+					}
+					staged, release := make(chan struct{}), make(chan struct{})
+					unblock := func() { releaseOnce.Do(func() { close(release) }) }
+					control.calls = nil
+					control.fail, control.after = OwnerBootstrapA, test.after
+					control.hook = func(command ControlCommand) {
+						switch command.Operation {
+						case OwnerBootstrapA:
+							close(staged)
+							<-release
+						case OwnerBootstrapAbort:
+							if test.failAbort {
+								control.fail, control.after = OwnerBootstrapAbort, false
+							}
+						}
+					}
+					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					type outcome struct {
+						result PublicationResult
+						err    error
+					}
+					done, finished := make(chan outcome, 1), make(chan struct{})
+					go func() {
+						defer close(finished)
+						result, err := owner.Update(ctx, candidate)
+						done <- outcome{result, err}
+					}()
+					t.Cleanup(func() {
+						cancel()
+						leave()
+						unblock()
+						select {
+						case <-finished:
+						case <-time.After(5 * time.Second):
+							t.Error("owner update did not join after cancellation and release")
+						}
+					})
+
+					// The outstanding admission deterministically holds the drain;
+					// no fake control fields are read while Update may mutate them.
+					ticker := time.NewTicker(time.Millisecond)
+					defer ticker.Stop()
+					for {
+						closed, count, err := p.slot.gate.State()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if closed {
+							if count != 1 {
+								t.Fatalf("drain lost held admission: %d", count)
+							}
+							break
+						}
+						select {
+						case early := <-done:
+							t.Fatalf("update ended before drain: %+v %v", early.result, early.err)
+						case <-ctx.Done():
+							t.Fatal("update never closed admission", ctx.Err())
+						case <-ticker.C:
+						}
+					}
+					select {
+					case <-staged:
+						t.Fatal("bootstrap ran before the held admission drained")
+					default:
+					}
+					if err := p.slot.gate.Enter(); !errors.Is(err, ErrGateBusy) {
+						if err == nil {
+							_ = p.slot.gate.Leave()
+						}
+						t.Fatalf("closed reload admission = %v", err)
+					}
+					if test.cancelDrain {
+						cancel()
+					} else {
+						leave()
+						select {
+						case <-staged:
+						case early := <-done:
+							t.Fatalf("candidate never reached refusal: %+v %v", early.result, early.err)
+						case <-ctx.Done():
+							t.Fatal("candidate never reached refusal", ctx.Err())
+						}
+						requireState(t, p.slot.gate, true, 0)
+						unblock()
+					}
+					var result outcome
+					select {
+					case result = <-done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("owner update did not return")
+					}
+					<-finished
+					wantErr := errSlotFailure
+					if test.cancelDrain {
+						wantErr = context.Canceled
+						if len(control.calls) != 0 {
+							t.Fatalf("control ran during cancelled drain: %v", control.calls)
+						}
+					}
+					if !errors.Is(result.err, wantErr) || errors.Is(result.err, context.DeadlineExceeded) {
+						t.Fatalf("update error = %v, want %v", result.err, wantErr)
+					}
+					if result.result.Committed || result.result.Generation != 1 || result.result.Admitting == test.failAbort {
+						t.Fatalf("refused update result: %+v", result.result)
+					}
+					if p.slot.Generation() != 1 || owner.current != active || outer.rows[uint32(0)] != beforeActive || !maps.Equal(p.slot.Epochs(), beforeEpochs) || !maps.Equal(epochs.rows, beforeRows) {
+						t.Fatal("refused update changed last-good program or accepted epochs")
+					}
+					aborts := 0
+					for _, operation := range control.calls {
+						if operation == OwnerBootstrapAbort {
+							aborts++
+						}
+						if operation == OwnerPublicationBegin || operation == OwnerPublicationCommitted || operation == OwnerPhaseClear {
+							t.Fatalf("refused update reached publication operation %d", operation)
+						}
+					}
+					wantAborts := 0
+					if test.after {
+						wantAborts = 1
+					}
+					if aborts != wantAborts {
+						t.Fatalf("rollback calls = %d, want %d", aborts, wantAborts)
+					}
+					if test.failAbort {
+						if owner.pending == nil || p.pending == nil || control.phase.State != OwnerStaging || control.phase.CandidateGeneration != 2 {
+							t.Fatal("failed rollback lost candidate ownership")
+						}
+						header, err := fullpolicy.Decode[fullpolicy.KernelHeader](owner.pending.Entries[0])
+						if err != nil || header.Generation != 2 {
+							t.Fatalf("retained candidate generation = %d: %v", header.Generation, err)
+						}
+						if _, err := owner.Update(t.Context(), candidate); !errors.Is(err, ErrGateBusy) {
+							t.Fatalf("unfinished rollback accepted another update: %v", err)
+						}
+						requireState(t, p.slot.gate, true, 0)
+						// Check must refuse pending publication before consulting native
+						// control. Successful physical readiness is outside this fixture.
+						if err := owner.Check(t.Context()); !errors.Is(err, ErrGateBusy) {
+							t.Fatalf("unfinished rollback reported ready: %v", err)
+						}
+						control.fail, control.after, control.hook = 0, false, nil
+						if err := owner.AbortPending(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if p.slot.Generation() != 1 || owner.current != active || outer.rows[uint32(0)] != beforeActive || !maps.Equal(p.slot.Epochs(), beforeEpochs) || !maps.Equal(epochs.rows, beforeRows) {
+						t.Fatal("rollback recovery changed last-good program or accepted epochs")
+					}
+					if owner.pending != nil || p.pending != nil || control.phase.State != OwnerIdle || control.phase.CandidateGeneration != 0 {
+						t.Fatal("successful rollback retained pending publication")
+					}
+					count := uint64(0)
+					if test.cancelDrain {
+						count = 1
+					}
+					requireState(t, p.slot.gate, false, count)
+					if err := p.slot.gate.Enter(); err != nil {
+						t.Fatalf("admission did not recover after rollback: %v", err)
+					}
+					if err := p.slot.gate.Leave(); err != nil {
+						t.Fatal(err)
+					}
+					leave()
+					requireState(t, p.slot.gate, false, 0)
+				})
+			}
+		})
 	}
 }
