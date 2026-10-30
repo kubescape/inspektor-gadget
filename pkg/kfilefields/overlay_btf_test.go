@@ -21,7 +21,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/moby/moby/pkg/parsers/kernel"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/kernel"
 )
 
 func TestCheckOverlayModuleBTF(t *testing.T) {

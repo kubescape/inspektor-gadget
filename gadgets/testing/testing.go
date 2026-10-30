@@ -22,11 +22,11 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/moby/moby/pkg/parsers/kernel"
 	"github.com/stretchr/testify/require"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/gadgetrunner"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/utils"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/kernel"
 )
 
 const (
@@ -95,6 +95,7 @@ func GetArch(t testing.TB) string {
 }
 
 // GetKernelVersion returns the kernel version of the current node.
+// VersionInfo is provided by the project pkg/utils/kernel package, not Moby.
 // When used in Kubernetes, it gets the kernel version from a random node in the cluster.
 func GetKernelVersion(t testing.TB) *kernel.VersionInfo {
 	t.Helper()

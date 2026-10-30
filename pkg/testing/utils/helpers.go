@@ -26,11 +26,11 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/google/go-cmp/cmp"
-	"github.com/moby/moby/pkg/parsers/kernel"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/kernel"
 )
 
 // HostInit initializes the host package for testing without any automatic workarounds.
@@ -76,6 +76,8 @@ func RequireRoot(t testing.TB) {
 	}
 }
 
+// RequireKernelVersion skips tests on older kernels. VersionInfo is provided by
+// the project pkg/utils/kernel package, not the former Moby parser package.
 func RequireKernelVersion(t testing.TB, expectedVersion *kernel.VersionInfo) {
 	version, err := kernel.GetKernelVersion()
 	require.Nil(t, err, "Failed to get kernel version: %s", err)
