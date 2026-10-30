@@ -52,3 +52,30 @@ func TestSharedArenaRanges(t *testing.T) {
 		}
 	}
 }
+
+// Pool reservations include all live key cells: active, candidate and retiring.
+// Two snapshot records may share immutable evidence; Images is not handle count.
+func TestSharedImageKeyCellReservations(t *testing.T) {
+	p := sharedTestProfile()
+	p.Images = 65538
+	p.PerBinding.Images = 32769
+	a, err := p.Validate()
+	if err != nil || a.Snapshots != 4 {
+		t.Fatalf("key pool confused with handles: %+v %v", a, err)
+	}
+	for name, mutate := range map[string]func(*SharedProfile){
+		"missing pool":   func(p *SharedProfile) { p.Images = 0 },
+		"missing quota":  func(p *SharedProfile) { p.PerBinding.Images = 0 },
+		"pool overflow":  func(p *SharedProfile) { p.Images = uint64(math.MaxUint32) + 1 },
+		"quota overflow": func(p *SharedProfile) { p.PerBinding.Images = math.MaxUint64 },
+		"overreserved":   func(p *SharedProfile) { p.PerBinding.Images++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := p
+			mutate(&q)
+			if _, err := q.Validate(); err == nil {
+				t.Fatal("invalid key reservation accepted")
+			}
+		})
+	}
+}

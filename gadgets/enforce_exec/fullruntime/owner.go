@@ -158,6 +158,11 @@ func (*ownerOperator) InstanceParams() api.Params { return nil }
 func (*ownerOperator) InstantiateDataOperator(gc operators.GadgetContext, _ api.ParamValues) (operators.DataOperatorInstance, error) {
 	value, _ := gc.GetVar("config")
 	metadata, ok := value.(*viper.Viper)
+	sharedValue, sharedSupplied := gc.GetVar(sharedNodeKey)
+	if sharedSupplied || (ok && metadata != nil && metadata.GetString("annotations.enforce-exec-shared-profile") != "") {
+		node, _ := sharedValue.(*NodeEnforcer)
+		return instantiateSharedNode(gc, metadata, node)
+	}
 	supplied, _ := gc.GetVar(ownerKey)
 	owner, _ := supplied.(*Owner)
 	abi := ""

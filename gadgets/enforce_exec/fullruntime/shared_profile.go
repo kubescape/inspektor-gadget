@@ -13,11 +13,17 @@ import (
 const SharedProfileVersion uint32 = 1
 
 // SharedQuota reserves each binding's capacity, including during candidate
-// preparation. It does not certify ingress, kernel support or physical memory.
+// preparation. Images counts reserved image-origin KEY CELLS across active,
+// candidate and retiring evidence together, not evidence sets or snapshot handles.
+// A reused immutable evidence set is charged once until its last reference retires.
+// It does not certify ingress, kernel support or physical memory.
 type SharedQuota struct{ Tasks, Scratch, InodeFacts, AcceptedUIDs, Images uint64 }
 
 // SharedProfile has no inferred defaults. PolicySlots is indexed by the fixed
 // cell classes 256,1024,4096,16384, globally, NOT once per binding.
+// Images is the global image-origin key-cell pool, not a per-input validation
+// limit. Image-set metadata remains bounded by the two snapshot records per
+// binding; reserving key cells does not authorize complete image evidence.
 type SharedProfile struct {
 	Version                                                        uint32
 	Bindings                                                       uint64

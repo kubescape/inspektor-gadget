@@ -140,9 +140,10 @@ var ErrControlClosed = errors.New("owner command thread closed")
 type (
 	controlFailure struct{ err error }
 	controlJob     struct {
-		ctx    context.Context
-		run    func() error
-		result chan error
+		ctx     context.Context
+		run     func() error
+		result  chan error
+		private bool // scalar-result callers use non-retaining panic recovery
 	}
 )
 
@@ -158,6 +159,22 @@ func safeControlCall(fn func() error) (err error, panicked bool) {
 		if value := recover(); value != nil {
 			err = fmt.Errorf("owner command panic: %v", value)
 			panicked = true
+		}
+	}()
+	return fn(), false
+}
+
+// A private panic has a fixed terminal owner and never formats or retains the
+// recovered payload. This does not bound allocations made before the panic.
+var (
+	errPrivateControlPanic     = errors.New("private owner command panic")
+	privateControlPanicFailure = &controlFailure{err: errPrivateControlPanic}
+)
+
+func safePrivateControlCall(fn func() error) (err error, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			err, panicked = errPrivateControlPanic, true
 		}
 	}()
 	return fn(), false
@@ -188,10 +205,23 @@ func startControlThread(setup func() error) (*controlThread, error) {
 					job.result <- err
 					continue
 				}
-				err, panicked := safeControlCall(job.run)
+				isPrivate := job.private
+				var err error
+				var panicked bool
+				if isPrivate {
+					err, panicked = safePrivateControlCall(job.run)
+					if panicked {
+						// Publish terminal state BEFORE the result is observable.
+						w.failure.Store(privateControlPanicFailure)
+					}
+				} else {
+					err, panicked = safeControlCall(job.run)
+				}
 				job.result <- err
 				if panicked {
-					w.failure.Store(&controlFailure{err})
+					if !isPrivate {
+						w.failure.Store(&controlFailure{err})
+					}
 					return
 				}
 			}
@@ -212,23 +242,34 @@ func (w *controlThread) unavailable() error {
 }
 
 func (w *controlThread) do(ctx context.Context, fn func() error) error {
-	if err := ctx.Err(); err != nil {
+	err, canceled, accepted := w.doJoined(ctx, fn, false)
+	if !accepted {
 		return err
 	}
-	job := controlJob{ctx: ctx, run: fn, result: make(chan error, 1)}
+	return errors.Join(err, canceled)
+}
+
+// doJoined separates execution from rich error presentation. The acceptance bit
+// preserves direct pre-submission errors versus joined accepted-call errors.
+// Callers must not let cleanup/finish replace this cancellation snapshot.
+func (w *controlThread) doJoined(ctx context.Context, fn func() error, private bool) (err, canceled error, accepted bool) {
+	if err := ctx.Err(); err != nil {
+		return err, nil, false
+	}
+	job := controlJob{ctx: ctx, run: fn, result: make(chan error, 1), private: private}
 	select {
 	case <-w.done:
-		return w.unavailable()
+		return w.unavailable(), nil, false
 	case <-ctx.Done():
-		return ctx.Err()
+		return ctx.Err(), nil, false
 	case <-w.stop:
-		return ErrControlClosed
+		return ErrControlClosed, nil, false
 	case w.jobs <- job:
 	}
 	// Once accepted, a bounded kernel call must be JOINED even after cancellation.
 	// Returning early would let native rollback/reopen race an unfinished writer.
-	err := <-job.result
-	return errors.Join(err, ctx.Err())
+	err = <-job.result
+	return err, ctx.Err(), true
 }
 
 func (w *controlThread) close() error {

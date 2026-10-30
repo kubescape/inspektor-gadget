@@ -6,6 +6,7 @@ package fullruntime
 import (
 	"fmt"
 	"math"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
@@ -24,6 +25,16 @@ type sharedResourceUsage struct {
 
 const sharedProtocolRodataMaxBytes uint32 = 4096
 
+// One pending admin request per NODE, not per binding or compile worker. This
+// includes Go struct padding and its retained pointer (1136 bytes on admitted
+// amd64), but not allocator overhead or any claim of physical RSS bounds.
+const sharedPendingCommandNativeBytes = uint64(unsafe.Sizeof(sharedPendingCommand{})) + uint64(unsafe.Sizeof((*sharedPendingCommand)(nil)))
+
+// The admitted amd64 compiler snapshot retains an 80-byte immutable execution
+// summary and one 8-byte pointer. Reserve both records per binding before any
+// coordinator can retain them; layout parity is locked by an independent test.
+const sharedSnapshotMetadataNativeBytes uint64 = 88
+
 func checkedSharedResourceSum(values ...uint64) (uint64, error) {
 	var total uint64
 	for _, value := range values {
@@ -33,6 +44,26 @@ func checkedSharedResourceSum(values ...uint64) (uint64, error) {
 		total += value
 	}
 	return total, nil
+}
+
+// Account the fixed protocol ownership records, binding-slot pointer table and
+// the bounded shutdown cancellation snapshot. Runtime/allocator overhead is
+// separate from these logical fields and the declared RolloutBytes allowance.
+func sharedProtocolOwnershipBytes(bindings uint64) (uint64, error) {
+	perScope := uint64(unsafe.Sizeof(sharedScopeCommandState{})) + uint64(unsafe.Sizeof((*sharedPhysicalScope)(nil)))
+	scopes, err := checkedSharedProduct(bindings, perScope)
+	if err != nil {
+		return 0, err
+	}
+	operations, err := checkedSharedResourceSum(bindings, 1)
+	if err != nil {
+		return 0, err
+	}
+	joining, err := checkedSharedProduct(operations, uint64(unsafe.Sizeof(sharedStartupOperation{})))
+	if err != nil {
+		return 0, err
+	}
+	return checkedSharedResourceSum(uint64(unsafe.Sizeof(sharedProtocolHostOwnership{})), scopes, joining)
 }
 
 // validateSharedProtocolResources validates the current protocol-only manifest
@@ -51,10 +82,12 @@ func validateSharedProtocolResources(profile SharedProfile, resources *operators
 	expected := map[string]operators.NativeMapResource{
 		"se_configuration": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 56, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
 		"se_admin":         {Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: 8, Flags: unix.BPF_F_NO_PREALLOC},
-		"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 696, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
+		"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1112, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
 		"se_receipts":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 48, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
 		"se_objects":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 80, MaxEntries: uint32(admission.PolicyObjects), Flags: unix.BPF_F_RDONLY},
-		"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 824, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1632, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_routes":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 88, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_route_index":   {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 8, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
 		"se_arena":         {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: uint32(admission.ArenaCells), Flags: unix.BPF_F_RDONLY},
 	}
 	for name, want := range expected {
@@ -95,7 +128,19 @@ func validateSharedProtocolResources(profile SharedProfile, resources *operators
 	if err != nil {
 		return sharedResourceUsage{}, err
 	}
-	usage.NativeAllowanceBytes, err = checkedSharedResourceSum(compileBytes, profile.CandidateBytes, profile.TelemetryBytes, profile.RolloutBytes)
+	snapshotMetadataBytes, err := checkedSharedProduct(admission.Snapshots, sharedSnapshotMetadataNativeBytes)
+	if err != nil {
+		return sharedResourceUsage{}, err
+	}
+	protocolOwnershipBytes, err := sharedProtocolOwnershipBytes(profile.Bindings)
+	if err != nil {
+		return sharedResourceUsage{}, err
+	}
+	objectRegistryBytes, err := sharedObjectRegistryBytes(profile)
+	if err != nil {
+		return sharedResourceUsage{}, err
+	}
+	usage.NativeAllowanceBytes, err = checkedSharedResourceSum(objectRegistryBytes, compileBytes, profile.CandidateBytes, profile.TelemetryBytes, profile.RolloutBytes, sharedPendingCommandNativeBytes, snapshotMetadataBytes, protocolOwnershipBytes)
 	if err != nil {
 		return sharedResourceUsage{}, err
 	}

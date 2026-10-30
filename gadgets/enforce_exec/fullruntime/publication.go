@@ -67,6 +67,12 @@ func NewPublisher(slot *ProgramSlot, control *OwnerControl, verify func(context.
 	if slot == nil || control == nil || verify == nil {
 		return nil, fmt.Errorf("program slot, qualified control and trusted lease verifier required")
 	}
+	if control.config.ABI == OwnerDevelopmentABI {
+		// This constructor still owns ABI2 map replacement and drained gates.
+		// Never turn that receipt into an ABI3 activation while the fixed-bank
+		// candidate/ARM publisher is being integrated.
+		return nil, fmt.Errorf("development publication requires authenticated fixed-bank ARM, not legacy activation")
+	}
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
 	if slot.closed || slot.retiring || slot.broken != nil {

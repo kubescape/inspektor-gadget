@@ -26,9 +26,12 @@ type fakePublicationControl struct {
 	hook   func(ControlCommand)
 }
 
-func (c *fakePublicationControl) Phase() (ControlPhase, error)           { return c.phase, nil }
-func (c *fakePublicationControl) Health() (ControlHealth, error)         { return c.health, nil }
+func (c *fakePublicationControl) Phase() (ControlPhase, error) { return c.phase, nil }
+
+func (c *fakePublicationControl) Health() (ControlHealth, error) { return c.health, nil }
+
 func (c *fakePublicationControl) GenerationFault(uint64) (uint64, error) { return c.fault, nil }
+
 func (c *fakePublicationControl) Call(ctx context.Context, cmd ControlCommand) (ControlHealth, error) {
 	if err := ctx.Err(); err != nil {
 		return c.health, err
@@ -538,5 +541,22 @@ func TestLegacyOwnerUpdateBestEffortAdmission(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestDevelopmentPublisherRejectsLegacyActivation(t *testing.T) {
+	p, _, _, _ := publicationFixture(t)
+	initial, err := p.slot.Begin(t.Context(), slotProgram(t, p.slot, 1, "uid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := initial.Abort(); err != nil {
+			t.Error(err)
+		}
+	}()
+	control := &OwnerControl{config: ControlConfig{ABI: OwnerDevelopmentABI}}
+	if _, err := NewPublisher(p.slot, control, p.verify, initial); err == nil {
+		t.Fatal("ABI3 owner accepted legacy gate/map publication without ACTIVE dispatch receipt")
 	}
 }
