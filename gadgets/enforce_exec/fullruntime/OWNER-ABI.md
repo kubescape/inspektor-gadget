@@ -1,5 +1,24 @@
 # Persistent binding owner — experimental implementation contract
 
+## Legacy ABI2 reference and shared Go boundary
+
+**The lifetime, publication, withdrawal and isolated-proof descriptions below
+refer to the legacy per-binding ABI2 owner, not the shared-node replacement.**
+The published shared Go foundation provides preparation, ownership/accounting,
+receipt cleanup and bounded clean retry only. Its default startup/Ready paths
+refuse activation, and the legacy publisher rejects development ABI3 activation.
+See the [published-source boundaries](README.md#legacy-abi2-reference-and-shared-go-boundary).
+No new wire ABI, accepted-generation shared publication/reload, native withdrawal
+integration, physical Ready or shared kernel qualification follows from this
+reference. Legacy allocation credits are not proof of shared kernel reclamation.
+
+The [best-effort operational audit contract](README.md#best-effort-operational-audit)
+applies: operational faults and reloads may block; non-denying audit evaluation,
+no uncertain role grants and preservation of earlier LSM denials remain required.
+These requirements are not evidence of shared kernel behavior. Enforcement
+remains fail-closed, with last-good state and truthful failure/NotReady on
+precommit refusal; recovery must respect the documented commit boundary.
+
 One gadget/map lifetime owns one exact runtime container/cgroup identity. Policy
 revisions do not replace that gadget. No production Ready claim follows from the
 isolated fixtures or from this document.

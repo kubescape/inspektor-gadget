@@ -1,5 +1,25 @@
 # Experimental persistent exec owner
 
+## Legacy ABI2 reference and shared Go boundary
+
+**The legacy per-binding ABI2 lifecycle below is not the shared-node activation
+contract.** [Commit `dabee7d08`](https://github.com/kubescape/inspektor-gadget/commit/dabee7d08345752cada90c326e25cd7b6855d62d)
+publishes ordinary-Go shared preparation, ownership/accounting, receipt cleanup
+and bounded clean retry. Those paths and their selected Go tests do not establish
+kernel reclamation, accepted-generation publication/reload or native withdrawal
+integration for the shared replacement.
+
+The published [`StartNode`](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/shared_node.go#L67-L72)
+refuses startup; binding inspection cannot report protection.
+[Full-image admission and `Ready`](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/shared_host.go#L64-L74)
+also refuse shared activation (`Ready` is defined at
+[lines 191–199](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/shared_host.go#L191-L199)).
+The [legacy publisher](https://github.com/kubescape/inspektor-gadget/blob/dabee7d08345752cada90c326e25cd7b6855d62d/gadgets/enforce_exec/fullruntime/publication.go#L70-L74)
+rejects development ABI3 activation rather than treating ABI2 publication as a
+shared receipt. This boundary defines no new wire ABI. Shared native integration,
+physical Ready and kernel qualification remain unavailable or unproved; the
+legacy isolated matrix and lifetime-credit rules below do not qualify them.
+
 This package provides the native persistent owner, bounded whole-exec gate,
 publication coordinator and isolated tests for frozen policy-map revisions. The
 embedding supplies authenticated runtime leases and public event provenance;
@@ -12,6 +32,8 @@ This is the **full persistent-owner profile**, not the
 custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
 distribution kernels and arm64 are not supported by this profile. BPF LSM and
 ftrace availability alone do not satisfy its admission checks.
+
+### Best-effort operational audit
 
 **Audit is best effort across operational faults and reloads.** Audit policy
 evaluation must not intentionally deny audited decisions or evaluator
@@ -242,6 +264,10 @@ become authoritative in another attempt. Kernel socket parity proof is separate
 from the native C matrix and from production lifecycle wiring.
 
 ## Experimental assembled owner and native publication coordinator
+
+**Legacy ABI2 reference:** this section and the native OCI lifecycle below do not
+implement or qualify the shared-node replacement; see the
+[shared Go boundary](#legacy-abi2-reference-and-shared-go-boundary).
 
 The shared full source now has an explicit `ENFORCE_EXEC_PERSISTENT_OWNER`
 profile. `../full/owner/Makefile` packages it separately; its metadata does **not**
