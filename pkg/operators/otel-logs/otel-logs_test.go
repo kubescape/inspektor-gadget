@@ -16,10 +16,20 @@ package otellogs
 
 import (
 	"context"
+	"net"
 	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"oras.land/oras-go/v2"
@@ -60,6 +70,7 @@ func (m *mockGadgetContext) ImageName() string { return "test-image" }
 func (m *mockGadgetContext) RegisterDataSource(t datasource.Type, name string) (datasource.DataSource, error) {
 	return nil, nil
 }
+
 func (m *mockGadgetContext) GetDataSources() map[string]datasource.DataSource { return m.dataSources }
 func (m *mockGadgetContext) SetVar(name string, value any)                    {}
 func (m *mockGadgetContext) GetVar(name string) (any, bool)                   { return nil, false }
@@ -120,21 +131,21 @@ func TestPreStart_NoAnnotations(t *testing.T) {
 	rec := exporter.records[0]
 
 	// Check body is empty (fallback behavior)
-	assert.Equal(t, otellog.StringValue(""), rec.Body())
+	assert.Equal(t, attribute.StringValue(""), rec.Body())
 
 	// Check attributes (fallback behavior: all fields as attributes)
-	attrMap := make(map[string]otellog.Value)
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrMap[kv.Key] = kv.Value
+	attrMap := make(map[string]attribute.Value)
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrMap[string(kv.Key)] = kv.Value
 		return true
 	})
 
 	require.Contains(t, attrMap, "foo")
-	assert.Equal(t, otellog.StringValue("hello"), attrMap["foo"])
+	assert.Equal(t, attribute.StringValue("hello"), attrMap["foo"])
 
 	require.Contains(t, attrMap, "bar")
 	// Int32 is converted to Int64Value
-	assert.Equal(t, otellog.Int64Value(42), attrMap["bar"])
+	assert.Equal(t, attribute.Int64Value(42), attrMap["bar"])
 }
 
 func TestPreStart_WithAnnotations(t *testing.T) {
@@ -190,18 +201,18 @@ func TestPreStart_WithAnnotations(t *testing.T) {
 	rec := exporter.records[0]
 
 	// Check body is empty (default if not set)
-	assert.Equal(t, otellog.StringValue(""), rec.Body())
+	assert.Equal(t, attribute.StringValue(""), rec.Body())
 
 	// Check attributes
-	attrMap := make(map[string]otellog.Value)
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrMap[kv.Key] = kv.Value
+	attrMap := make(map[string]attribute.Value)
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrMap[string(kv.Key)] = kv.Value
 		return true
 	})
 
 	// "custom.foo" should be present
 	require.Contains(t, attrMap, "custom.foo")
-	assert.Equal(t, otellog.StringValue("hello"), attrMap["custom.foo"])
+	assert.Equal(t, attribute.StringValue("hello"), attrMap["custom.foo"])
 
 	// "bar" should NOT be present because we have at least one annotated field, so fallback is disabled.
 	require.NotContains(t, attrMap, "bar")
@@ -257,12 +268,12 @@ func TestPreStart_BodyAnnotation(t *testing.T) {
 	rec := exporter.records[0]
 
 	// Check body is set
-	assert.Equal(t, otellog.StringValue("body-content"), rec.Body())
+	assert.Equal(t, attribute.StringValue("body-content"), rec.Body())
 
 	// Check attributes
-	attrMap := make(map[string]otellog.Value)
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrMap[kv.Key] = kv.Value
+	attrMap := make(map[string]attribute.Value)
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrMap[string(kv.Key)] = kv.Value
 		return true
 	})
 
@@ -317,18 +328,18 @@ func TestPreStart_BytesField(t *testing.T) {
 	rec := exporter.records[0]
 
 	// Check body is empty (fallback behavior)
-	assert.Equal(t, otellog.StringValue(""), rec.Body())
+	assert.Equal(t, attribute.StringValue(""), rec.Body())
 
 	// Check attributes (fallback behavior: all fields as attributes)
-	attrMap := make(map[string]otellog.Value)
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrMap[kv.Key] = kv.Value
+	attrMap := make(map[string]attribute.Value)
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrMap[string(kv.Key)] = kv.Value
 		return true
 	})
 
 	require.Contains(t, attrMap, "foo")
 	// Bytes are preserved as BytesValue
-	assert.Equal(t, otellog.BytesValue([]byte("hello-bytes")), attrMap["foo"])
+	assert.Equal(t, attribute.ByteSliceValue([]byte("hello-bytes")), attrMap["foo"])
 }
 
 func TestPreStart_BoolField(t *testing.T) {
@@ -375,17 +386,17 @@ func TestPreStart_BoolField(t *testing.T) {
 	rec := exporter.records[0]
 
 	// Check body is empty (fallback behavior)
-	assert.Equal(t, otellog.StringValue(""), rec.Body())
+	assert.Equal(t, attribute.StringValue(""), rec.Body())
 
 	// Check attributes (fallback behavior: all fields as attributes)
-	attrMap := make(map[string]otellog.Value)
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrMap[kv.Key] = kv.Value
+	attrMap := make(map[string]attribute.Value)
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrMap[string(kv.Key)] = kv.Value
 		return true
 	})
 
 	require.Contains(t, attrMap, "flag")
-	assert.Equal(t, otellog.BoolValue(true), attrMap["flag"])
+	assert.Equal(t, attribute.BoolValue(true), attrMap["flag"])
 }
 
 func TestPreStart_ParentWithChildren_NotEmitted(t *testing.T) {
@@ -446,9 +457,9 @@ func TestPreStart_ParentWithChildren_NotEmitted(t *testing.T) {
 	require.Len(t, exporter.records, 1)
 	rec := exporter.records[0]
 
-	attrMap := make(map[string]otellog.Value)
-	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
-		attrMap[kv.Key] = kv.Value
+	attrMap := make(map[string]attribute.Value)
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrMap[string(kv.Key)] = kv.Value
 		return true
 	})
 
@@ -459,4 +470,87 @@ func TestPreStart_ParentWithChildren_NotEmitted(t *testing.T) {
 	require.NotContains(t, attrMap, "proc")
 	// sibling should be present
 	require.Contains(t, attrMap, "other")
+}
+
+// Retaining an exported record must not retain a caller's mutable byte buffer.
+func TestCopyBytesToLogValueOwnsBuffer(t *testing.T) {
+	input := []byte{0, 255, 42}
+	value := copyBytesToLogValue(input)
+	input[0] = 99
+	require.Equal(t, []byte{0, 255, 42}, value.AsByteSlice())
+	require.Equal(t, attribute.BYTESLICE, value.Type())
+}
+
+type wireLogCollector struct {
+	collectorlogs.UnimplementedLogsServiceServer
+	requests chan *collectorlogs.ExportLogsServiceRequest
+}
+
+func (s *wireLogCollector) Export(_ context.Context, request *collectorlogs.ExportLogsServiceRequest) (*collectorlogs.ExportLogsServiceResponse, error) {
+	s.requests <- request
+	return &collectorlogs.ExportLogsServiceResponse{}, nil
+}
+
+// Assert OTLP protobuf kinds, not SDK value internals: upgrading the SDK must
+// not turn binary data into strings or booleans into numeric attributes.
+func TestPreStart_OTLPWireKinds(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	collector := &wireLogCollector{requests: make(chan *collectorlogs.ExportLogsServiceRequest, 1)}
+	collectorlogs.RegisterLogsServiceServer(server, collector)
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+	conn, err := grpc.NewClient("passthrough:///in-memory-otel", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithGRPCConn(conn))
+	require.NoError(t, err)
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exporter)))
+	defer func() { require.NoError(t, provider.Shutdown(ctx)) }()
+	ds, err := datasource.New(datasource.TypeSingle, "wire")
+	require.NoError(t, err)
+	ds.AddAnnotation(AnnotationLogsSeverity, "13")
+	text, err := ds.AddField("text", api.Kind_String)
+	require.NoError(t, err)
+	integer, err := ds.AddField("integer", api.Kind_Int64)
+	require.NoError(t, err)
+	floating, err := ds.AddField("floating", api.Kind_Float64)
+	require.NoError(t, err)
+	flag, err := ds.AddField("flag", api.Kind_Bool)
+	require.NoError(t, err)
+	binaryField, err := ds.AddField("binary", api.Kind_Bytes)
+	require.NoError(t, err)
+	inst := &otelLogsOperatorInstance{loggers: map[datasource.DataSource]otellog.Logger{ds: provider.Logger("wire-test")}}
+	require.NoError(t, inst.PreStart(&mockGadgetContext{ctx: ctx, dataSources: map[string]datasource.DataSource{"wire": ds}}))
+	packet, err := ds.NewPacketSingle()
+	require.NoError(t, err)
+	require.NoError(t, text.PutString(packet, "hello"))
+	require.NoError(t, integer.PutInt64(packet, -42))
+	require.NoError(t, floating.PutFloat64(packet, 1.25))
+	require.NoError(t, flag.PutBool(packet, true))
+	require.NoError(t, binaryField.PutBytes(packet, []byte{0, 255, 42}))
+	require.NoError(t, ds.EmitAndRelease(packet))
+	var request *collectorlogs.ExportLogsServiceRequest
+	select {
+	case request = <-collector.requests:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.Len(t, request.ResourceLogs, 1)
+	require.Len(t, request.ResourceLogs[0].ScopeLogs, 1)
+	records := request.ResourceLogs[0].ScopeLogs[0].LogRecords
+	require.Len(t, records, 1)
+	require.EqualValues(t, 13, records[0].SeverityNumber)
+	require.Equal(t, &commonpb.AnyValue_StringValue{StringValue: ""}, records[0].Body.Value)
+	attrs := map[string]*commonpb.AnyValue{}
+	for _, kv := range records[0].Attributes {
+		attrs[kv.Key] = kv.Value
+	}
+	require.Equal(t, &commonpb.AnyValue_StringValue{StringValue: "hello"}, attrs["text"].Value)
+	require.Equal(t, &commonpb.AnyValue_IntValue{IntValue: -42}, attrs["integer"].Value)
+	require.Equal(t, &commonpb.AnyValue_DoubleValue{DoubleValue: 1.25}, attrs["floating"].Value)
+	require.Equal(t, &commonpb.AnyValue_BoolValue{BoolValue: true}, attrs["flag"].Value)
+	require.Equal(t, &commonpb.AnyValue_BytesValue{BytesValue: []byte{0, 255, 42}}, attrs["binary"].Value)
 }

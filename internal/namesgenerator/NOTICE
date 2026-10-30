@@ -1,0 +1,5 @@
+Docker
+Copyright 2012-2017 Docker, Inc.
+
+This package includes software developed at Docker, Inc. (https://www.docker.com),
+copied from github.com/moby/moby v28.5.2, pkg/namesgenerator.

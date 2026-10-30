@@ -17,9 +17,9 @@ package common
 import (
 	"os"
 
-	"github.com/containers/common/pkg/auth"
-	"github.com/containers/image/v5/types"
 	"github.com/spf13/cobra"
+	"go.podman.io/common/pkg/auth"
+	"go.podman.io/image/v5/types"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/oci"
 )

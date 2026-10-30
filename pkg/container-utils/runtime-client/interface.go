@@ -23,6 +23,9 @@ import (
 )
 
 const (
+	// K8sContainerdNamespace is the containerd namespace used by Kubernetes CRI.
+	K8sContainerdNamespace = "k8s.io"
+
 	// Make sure to keep these settings in sync with pkg/resources/manifests/deploy.yaml
 	CrioDefaultSocketPath       = "/run/crio/crio.sock"
 	PodmanDefaultSocketPath     = "/run/podman/podman.sock"

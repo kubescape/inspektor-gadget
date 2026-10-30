@@ -20,14 +20,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/network"
+
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,7 +57,7 @@ type DockerContainer struct {
 
 func (d *DockerContainer) initClient() error {
 	var err error
-	d.client, err = client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	d.client, err = client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("creating a client: %w", err)
 	}
@@ -65,11 +68,12 @@ func (d *DockerContainer) Run(t *testing.T) {
 	err := d.initClient()
 	require.NoError(t, err, "Failed to initialize client")
 
-	_ = d.client.ContainerRemove(d.options.ctx, d.name, container.RemoveOptions{})
+	_, _ = d.client.ContainerRemove(d.options.ctx, d.name, client.ContainerRemoveOptions{})
 
-	reader, err := d.client.ImagePull(d.options.ctx, d.options.image, image.PullOptions{})
+	reader, err := d.client.ImagePull(d.options.ctx, d.options.image, client.ImagePullOptions{})
 	require.NoError(t, err, "Failed to pull image container")
 	io.Copy(io.Discard, reader)
+	reader.Close()
 
 	hostConfig := &container.HostConfig{}
 	if d.options.seccompProfile != "" {
@@ -83,7 +87,24 @@ func (d *DockerContainer) Run(t *testing.T) {
 	}
 
 	if d.options.portBindings != nil {
-		hostConfig.PortBindings = d.options.portBindings
+		hostConfig.PortBindings = make(network.PortMap, len(d.options.portBindings))
+		for oldPort, bindings := range d.options.portBindings {
+			port, err := network.ParsePort(string(oldPort))
+			require.NoError(t, err, "invalid container port")
+			if bindings != nil {
+				hostConfig.PortBindings[port] = make([]network.PortBinding, 0, len(bindings))
+			} else {
+				hostConfig.PortBindings[port] = nil
+			}
+			for _, binding := range bindings {
+				var ip netip.Addr
+				if binding.HostIP != "" {
+					ip, err = netip.ParseAddr(binding.HostIP)
+					require.NoError(t, err, "invalid host IP")
+				}
+				hostConfig.PortBindings[port] = append(hostConfig.PortBindings[port], network.PortBinding{HostIP: ip, HostPort: binding.HostPort})
+			}
+		}
 	}
 
 	for _, m := range d.options.mounts {
@@ -101,13 +122,13 @@ func (d *DockerContainer) Run(t *testing.T) {
 		})
 	}
 
-	resp, err := d.client.ContainerCreate(d.options.ctx, &container.Config{
+	resp, err := d.client.ContainerCreate(d.options.ctx, client.ContainerCreateOptions{Config: &container.Config{
 		Image:      d.options.image,
 		Entrypoint: []string{"/bin/sh", "-c", d.cmd},
 		Tty:        false,
-	}, hostConfig, nil, nil, d.name)
+	}, HostConfig: hostConfig, Name: d.name})
 	require.NoError(t, err, "Failed to create container")
-	err = d.client.ContainerStart(d.options.ctx, resp.ID, container.StartOptions{})
+	_, err = d.client.ContainerStart(d.options.ctx, resp.ID, client.ContainerStartOptions{})
 	if d.options.expectStartError {
 		require.Error(t, err, "Expected error creating container")
 		t.Logf("Failed to create container as expected: %s", err)
@@ -124,32 +145,54 @@ func (d *DockerContainer) Run(t *testing.T) {
 	d.id = resp.ID
 
 	if d.options.wait {
-		statusCh, errCh := d.client.ContainerWait(d.options.ctx, resp.ID, container.WaitConditionNotRunning)
+		wait := d.client.ContainerWait(d.options.ctx, resp.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 		select {
-		case err := <-errCh:
+		case err := <-wait.Error:
 			require.NoError(t, err, "Failed to wait for container")
-		case <-statusCh:
+		case <-wait.Result:
 		}
 	}
-	containerJSON, err := d.client.ContainerInspect(d.options.ctx, d.id)
+	containerJSON, err := d.client.ContainerInspect(d.options.ctx, d.id, client.ContainerInspectOptions{})
 	require.NoError(t, err, "Failed to inspect container")
-	d.pid = containerJSON.State.Pid
+	d.pid = containerJSON.Container.State.Pid
 
-	require.LessOrEqual(t, len(containerJSON.NetworkSettings.Networks), 1, "Multiple networks are not supported")
+	require.LessOrEqual(t, len(containerJSON.Container.NetworkSettings.Networks), 1, "Multiple networks are not supported")
 
-	if len(containerJSON.NetworkSettings.Networks) == 1 {
-		for _, network := range containerJSON.NetworkSettings.Networks {
-			d.ip = network.IPAddress
+	d.ip = ""
+	if len(containerJSON.Container.NetworkSettings.Networks) == 1 {
+		for _, network := range containerJSON.Container.NetworkSettings.Networks {
+			if network.IPAddress.IsValid() {
+				d.ip = network.IPAddress.String()
+			}
 		}
 	}
 
-	d.portBindings = containerJSON.NetworkSettings.Ports
+	d.portBindings = nil
+	if ports := containerJSON.Container.NetworkSettings.Ports; ports != nil {
+		d.portBindings = make(nat.PortMap, len(ports))
+		for port, bindings := range ports {
+			oldPort := nat.Port(port.String())
+			if bindings != nil {
+				d.portBindings[oldPort] = make([]nat.PortBinding, 0, len(bindings))
+			} else {
+				d.portBindings[oldPort] = nil
+			}
+			for _, binding := range bindings {
+				ip := ""
+				if binding.HostIP.IsValid() {
+					ip = binding.HostIP.String()
+				}
+				d.portBindings[oldPort] = append(d.portBindings[oldPort], nat.PortBinding{HostIP: ip, HostPort: binding.HostPort})
+			}
+		}
+	}
 
 	if d.options.logs {
-		out, err := d.client.ContainerLogs(d.options.ctx, resp.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+		out, err := d.client.ContainerLogs(d.options.ctx, resp.ID, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true})
 		require.NoError(t, err, "Failed to get container logs")
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(out)
+		out.Close()
 		t.Logf("Container %q output:\n%s", d.name, buf.String())
 	}
 
@@ -192,13 +235,13 @@ func (d *DockerContainer) Stop(t *testing.T) {
 
 	if !d.options.expectStartError {
 		killAndWait := func(signal string, wait time.Duration, next func()) {
-			err := d.client.ContainerKill(d.options.ctx, d.id, signal)
+			_, err := d.client.ContainerKill(d.options.ctx, d.id, client.ContainerKillOptions{Signal: signal})
 			require.NoError(t, err, "killing container with %s", signal)
 			ctxTimeout, cancel := context.WithTimeout(d.options.ctx, wait)
 			defer cancel()
-			statusCh, errCh := d.client.ContainerWait(ctxTimeout, d.id, container.WaitConditionNotRunning)
+			result := d.client.ContainerWait(ctxTimeout, d.id, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 			select {
-			case err := <-errCh:
+			case err := <-result.Error:
 				if err != nil {
 					if errors.Is(err, context.DeadlineExceeded) && next != nil {
 						next()
@@ -206,7 +249,7 @@ func (d *DockerContainer) Stop(t *testing.T) {
 					}
 					require.NoError(t, err, "Failed to wait for container")
 				}
-			case <-statusCh:
+			case <-result.Result:
 			}
 		}
 
@@ -216,10 +259,10 @@ func (d *DockerContainer) Stop(t *testing.T) {
 
 		if d.options.expectedExitCode != nil {
 			// check exit code
-			inspect, err := d.client.ContainerInspect(d.options.ctx, d.id)
+			inspect, err := d.client.ContainerInspect(d.options.ctx, d.id, client.ContainerInspectOptions{})
 			require.NoError(t, err, "inspecting container")
 
-			require.Equal(t, *d.options.expectedExitCode, inspect.State.ExitCode)
+			require.Equal(t, *d.options.expectedExitCode, inspect.Container.State.ExitCode)
 		}
 	}
 
@@ -229,7 +272,7 @@ func (d *DockerContainer) Stop(t *testing.T) {
 }
 
 func (d *DockerContainer) removeAndClose() error {
-	err := d.client.ContainerRemove(d.options.ctx, d.name, container.RemoveOptions{Force: true})
+	_, err := d.client.ContainerRemove(d.options.ctx, d.name, client.ContainerRemoveOptions{Force: true})
 	if err != nil {
 		return fmt.Errorf("removing container: %w", err)
 	}

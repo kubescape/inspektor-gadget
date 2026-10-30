@@ -24,7 +24,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/containerd/containerd/pkg/cri/constants"
 	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -144,7 +143,7 @@ func (l *localManager) GlobalParamDescs() params.ParamDescs {
 		},
 		{
 			Key:          ContainerdNamespace,
-			DefaultValue: constants.K8sContainerdNamespace,
+			DefaultValue: runtimeclient.K8sContainerdNamespace,
 			Description:  "Containerd namespace to use",
 		},
 		{
@@ -512,7 +511,7 @@ func (l *localManagerTrace) handleGadgetInstance(log logger.Logger) error {
 					case containercollection.EventTypePreCreateContainer:
 						// nothing to do
 					default:
-						log.Errorf("unknown event type, expected either %s, %s, %s or %s, got %s",
+						log.Errorf("unknown event type, expected either %v, %v, %v or %v, got %v",
 							containercollection.EventTypePreCreateContainer,
 							containercollection.EventTypeAddContainer,
 							containercollection.EventTypeRemoveContainer,
