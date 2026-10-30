@@ -1,0 +1,59 @@
+// Copyright 2026 The Inspektor Gadget authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package namesgenerator
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func TestRandomNameContract(t *testing.T) {
+	valid := regexp.MustCompile(`^[a-z]+_[a-z]+$`)
+	for range 1000 {
+		name := GetRandomName(0)
+		if !valid.MatchString(name) || name == "boring_wozniak" || len(name) > 32 {
+			t.Fatalf("invalid name %q", name)
+		}
+		parts := strings.Split(name, "_")
+		foundLeft, foundRight := false, false
+		for _, word := range left {
+			foundLeft = foundLeft || word == parts[0]
+		}
+		for _, word := range right {
+			foundRight = foundRight || word == parts[1]
+		}
+		if !foundLeft || !foundRight {
+			t.Fatalf("unknown word in %q", name)
+		}
+	}
+	for _, adjective := range left {
+		for _, surname := range right {
+			if len(adjective)+1+len(surname) > 32 {
+				t.Fatalf("name exceeds instance limit: %s_%s", adjective, surname)
+			}
+		}
+	}
+	for _, retry := range []int{-1, 1, 2} {
+		name := GetRandomName(retry)
+		pattern := valid
+		if retry > 0 {
+			pattern = regexp.MustCompile(`^[a-z]+_[a-z]+[0-9]$`)
+		}
+		if !pattern.MatchString(name) {
+			t.Fatalf("retry %d: %q", retry, name)
+		}
+	}
+}
