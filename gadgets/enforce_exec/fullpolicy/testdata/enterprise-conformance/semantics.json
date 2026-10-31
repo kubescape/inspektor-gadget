@@ -151,6 +151,23 @@
          "facts": {},
          "want": {"decision": {"Action": "allow", "Mode": "audit", "Block": false, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "first", "Origin": "authored", "Action": "allow", "Mode": "audit"}, {"PolicyID": "p", "Revision": "r1", "Rule": "second", "Origin": "authored", "Action": "allow", "Mode": "audit"}], "SetRoles": {}, "AuditUnknown": {"p": true}, "UncertainRoles": {"p": true}, "RoleWrites": {"p": true}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
       ]
+    },
+    {
+      "name": "decision-stage-argv-relevance",
+      "policies": [
+        {"ID": "p", "Revision": "r1", "Mode": "enforce", "RootRole": "agent", "Default": "allow", "Rules": [{"Name": "deny-interpreter-argument", "Origin": "authored", "Action": "deny", "Target": {"Path": ["/usr/bin/interpreter"], "Argv": {"Contains": ["--restricted"]}}}]}
+      ],
+      "cases": [
+        {"name": "initial-script-irrelevant-unknown-argv",
+         "facts": {"TargetPath": "/work/script", "ArgvComplete": false},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "final-elf-matching-argv",
+         "facts": {"TargetPath": "/usr/bin/interpreter", "Argv": ["/usr/bin/interpreter", "--restricted", "/work/script"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "deny", "Mode": "enforce", "Block": true, "Matches": [{"PolicyID": "p", "Revision": "r1", "Rule": "deny-interpreter-argument", "Origin": "authored", "Action": "deny", "Mode": "enforce"}], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": true, "UncertainFallback": false}, "evaluationError": false}},
+        {"name": "final-elf-nonmatching-argv",
+         "facts": {"TargetPath": "/usr/bin/interpreter", "Argv": ["/usr/bin/interpreter", "--allowed", "/work/script"], "ArgvComplete": true},
+         "want": {"decision": {"Action": "allow", "Mode": "enforce", "Block": false, "Matches": [], "SetRoles": {}, "AuditUnknown": {}, "UncertainRoles": {}, "RoleWrites": {}, "SuppressRoles": false, "UncertainFallback": false}, "evaluationError": false}}
+      ]
     }
   ]
 }
