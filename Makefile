@@ -39,7 +39,7 @@ BPFTOOL ?= bpftool
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's/ppc64le/powerpc/' | sed 's/mips.*/mips/')
 
 # This version number must be kept in sync with CI workflow lint one.
-LINTER_IMAGE ?= golangci/golangci-lint:v2.6.0@sha256:cc8c1277eefdb5f88ba1381ee30a8bdf709e3615db9c843c9fcc04d9ac1d27a8
+LINTER_IMAGE ?= golangci/golangci-lint:v2.15.0@sha256:fbfcfd12a6f8d7f1b97b3362ca80fc2a244d46863148c73cb88e7793af96c481
 
 PLATFORMS ?= "linux/amd64,linux/arm64"
 

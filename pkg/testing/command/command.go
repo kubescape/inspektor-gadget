@@ -43,6 +43,15 @@ type Command struct {
 	// It's used in situations where we want to process the output on-line without saving it.
 	StdOutWriter io.Writer
 
+	// StdErrWriter observes stderr without replacing its captured output.
+	StdErrWriter io.Writer
+
+	// ObserveExit enables asynchronous exit notification for startup barriers.
+	// Stop still owns stopping the command and verifying its output.
+	ObserveExit bool
+	exited      chan struct{}
+	exitErr     error
+
 	// StartAndStop indicates this command should first be started then stopped.
 	// It corresponds to gadget like execsnoop which wait user to type Ctrl^C.
 	StartAndStop bool
@@ -75,6 +84,9 @@ func (c *Command) Running() bool {
 func (c *Command) initExecCmd() {
 	c.Cmd.Stdout = &c.stdout
 	c.Cmd.Stderr = &c.stderr
+	if c.StdErrWriter != nil {
+		c.Cmd.Stderr = io.MultiWriter(&c.stderr, c.StdErrWriter)
+	}
 
 	if c.StdOutWriter != nil {
 		c.Cmd.Stdout = c.StdOutWriter
@@ -136,7 +148,20 @@ func (c *Command) Start(t *testing.T) {
 	require.NoError(t, err, "failed to start command(%s)", c.Name)
 
 	c.started = true
+	if c.ObserveExit {
+		c.exited = make(chan struct{})
+		go func() {
+			c.exitErr = c.Cmd.Wait()
+			close(c.exited)
+		}()
+	}
 }
+
+// Exited is closed after an observed command exits and its output has been drained.
+func (c *Command) Exited() <-chan struct{} { return c.exited }
+
+// ExitError returns the exit result after Exited has closed.
+func (c *Command) ExitError() error { return c.exitErr }
 
 // Stop stops a Command previously started with Start().
 // To do so, it Kill() the process corresponding to this Cmd and then wait for
@@ -150,6 +175,13 @@ func (c *Command) Stop(t *testing.T) {
 
 	t.Logf("[%s] Stop command(%s)\n", time.Now().UTC(), c.Name)
 	err := c.kill()
+	if c.ObserveExit {
+		select {
+		case <-c.exited:
+			c.started = false
+		default:
+		}
+	}
 	t.Logf("[%s] Command returned(%s):\n%s\n%s\n",
 		time.Now().UTC(), c.Name, c.stderr.String(), c.stdout.String())
 	require.NoError(t, err, "failed to kill command(%s)", c.Name)
@@ -163,6 +195,25 @@ func (c *Command) Stop(t *testing.T) {
 // immediately and avoid that the signal is trapped.
 func (c *Command) kill() error {
 	const sig syscall.Signal = syscall.SIGKILL
+
+	if c.ObserveExit && c.exited != nil {
+		select {
+		case <-c.exited:
+			return c.exitErr
+		default:
+		}
+		if err := syscall.Kill(-c.Cmd.Process.Pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		<-c.exited
+		var exitErr *exec.ExitError
+		if errors.As(c.exitErr, &exitErr) {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signal() == sig {
+				return nil
+			}
+		}
+		return c.exitErr
+	}
 
 	// No need to kill, command has not been executed yet or it already exited
 	if c.Cmd == nil || (c.Cmd.ProcessState != nil && c.Cmd.ProcessState.Exited()) {

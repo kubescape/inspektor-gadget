@@ -42,6 +42,7 @@ import (
 	"oras.land/oras-go/v2"
 
 	"github.com/inspektor-gadget/inspektor-gadget/internal/version"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/config"
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
@@ -182,6 +183,7 @@ type ebpfInstance struct {
 	logger         logger.Logger
 	collectionSpec *ebpf.CollectionSpec
 	collection     *ebpf.Collection
+	policy         *policy
 
 	tracers     map[string]*Tracer
 	structs     map[string]*Struct
@@ -206,8 +208,9 @@ type ebpfInstance struct {
 	// map from ebpf variable name to ebpfVar struct
 	vars map[string]*ebpfVar
 
-	links   []link.Link
-	perfFds []int
+	links             []link.Link
+	nativeAttachments map[string]*operators.NativeAttachment
+	perfFds           []int
 
 	containers map[string]*containercollection.Container
 
@@ -219,6 +222,7 @@ type ebpfInstance struct {
 
 	gadgetCtx operators.GadgetContext
 	done      chan struct{}
+	doneOnce  sync.Once
 
 	// used to be sure all tracers are done before returning from Stop()
 	wg sync.WaitGroup
@@ -389,6 +393,20 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 		return fmt.Errorf("initializing: %w", err)
 	}
 
+	// Snapshot only administrator configuration; image metadata and request
+	// parameters never supply or override the BPF admission policy.
+	policyConfig, err := NewConfigFromViper(config.Config)
+	if err != nil {
+		return fmt.Errorf("loading BPF policy: %w", err)
+	}
+	i.policy, err = NewPolicy(policyConfig)
+	if err != nil {
+		return fmt.Errorf("creating BPF policy: %w", err)
+	}
+	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
+		return err
+	}
+
 	// add extra info to gadgetcontext if requested
 	if gadgetCtx.ExtraInfo() {
 		err = i.addExtraInfo(gadgetCtx)
@@ -529,6 +547,7 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 	for name, m := range i.collectionSpec.Maps {
 		gadgetCtx.SetVar(operators.MapSpecPrefix+name, m)
 	}
+	i.publishNativeResources(gadgetCtx)
 
 	return nil
 }
@@ -902,6 +921,15 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 		opts.Programs.KernelTypes = btfSpec
 	}
+	// Recheck transformed instructions before kernel map or program loading.
+	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
+		return fmt.Errorf("verifying BPF policy before loading: %w", err)
+	}
+	// Parameters, context variables and enrichers can change map dimensions
+	// after native preflight. Validate the exact final spec before allocating.
+	if err := i.validateNativeResources(gadgetCtx); err != nil {
+		return fmt.Errorf("validating native resources before loading: %w", err)
+	}
 	collection, err := ebpf.NewCollectionWithOptions(i.collectionSpec, opts)
 	if err != nil {
 		var verifierErr *ebpf.VerifierError
@@ -963,6 +991,8 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 	}
 
+	i.publishCommandPrograms(gadgetCtx)
+
 	// Attach programs
 	for progName, p := range i.collectionSpec.Programs {
 		l, err := i.attachProgram(gadgetCtx, p, i.collection.Programs[progName])
@@ -975,6 +1005,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 
 		i.links = append(i.links, l)
+		if err = i.publishNativeAttachment(gadgetCtx, progName, p, l); err != nil {
+			return err
+		}
 
 		// We need to store iterators' links because we need them to run the programs
 		if p.Type == ebpf.Tracing && strings.HasPrefix(p.SectionName, iterPrefix) {
@@ -1019,16 +1052,22 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 }
 
 func (i *ebpfInstance) PreStop(gadgetCtx operators.GadgetContext) error {
-	close(i.done)
+	i.doneOnce.Do(func() {
+		if i.done != nil {
+			close(i.done)
+		}
+	})
 	return nil
 }
 
 func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
+	i.PreStop(gadgetCtx)
 	for _, t := range i.tracers {
 		t.close()
 	}
 	i.tracers = nil
 
+	i.unpublishNativeAttachments(gadgetCtx)
 	for _, l := range i.links {
 		gadgets.CloseLink(l)
 	}
@@ -1047,12 +1086,15 @@ func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 		}
 	}
 
+	i.perfFds = nil
 	i.wg.Wait()
 	return nil
 }
 
 func (i *ebpfInstance) Close(gadgetCtx operators.GadgetContext) error {
+	i.Stop(gadgetCtx)
 	if i.collection != nil {
+		i.unpublishCommandPrograms(gadgetCtx)
 		i.collection.Close()
 		i.collection = nil
 	}

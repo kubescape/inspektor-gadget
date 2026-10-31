@@ -350,7 +350,7 @@ func (m *KubeManagerInstance) handleGadgetInstance(log logger.Logger) error {
 				case containercollection.EventTypePreCreateContainer:
 					// nothing to do
 				default:
-					log.Errorf("unknown event type, expected either %s, %s, %s or %s, got %s",
+					log.Errorf("unknown event type, expected either %v, %v, %v or %v, got %v",
 						containercollection.EventTypePreCreateContainer,
 						containercollection.EventTypeAddContainer,
 						containercollection.EventTypeRemoveContainer,
@@ -449,7 +449,8 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 		containersPublisher: containersPublisher,
 	}
 
-	activate := false
+	// A gadget can consume lifecycle events without requesting enrichment maps.
+	activate := enableContainersDs
 
 	// Check, whether the gadget requested a map from us
 	if t, ok := gadgetCtx.GetVar(gadgets.MntNsFilterMapName); ok {

@@ -156,6 +156,13 @@ func getFormattersForEnums(enums []*enum, ds datasource.DataSource, btfSpec *btf
 }
 
 func (i *ebpfInstance) initStackConverter(gadgetCtx operators.GadgetContext) error {
+	return i.initStackConverterWithDependencies(gadgetCtx, kallsyms.NewKAllSyms, func(key, valueOut interface{}) error {
+		// The map is assigned after formatter initialization, when the collection loads.
+		return i.kernelStackMap.Lookup(key, valueOut)
+	})
+}
+
+func (i *ebpfInstance) initStackConverterWithDependencies(gadgetCtx operators.GadgetContext, newKAllSyms func() (*kallsyms.KAllSyms, error), stackLookup func(interface{}, interface{}) error) error {
 	var kernelSymbolResolver *kallsyms.KAllSyms = nil
 	for _, ds := range gadgetCtx.GetDataSources() {
 		for _, in := range ds.GetFieldsWithTag("type:" + ebpftypes.KernelStackTypeName) {
@@ -164,13 +171,13 @@ func (i *ebpfInstance) initStackConverter(gadgetCtx operators.GadgetContext) err
 			}
 			in.SetHidden(true, false)
 
-			//if kernelSymbolResolver == nil {
-			//	var err error
-			//	kernelSymbolResolver, err = kallsyms.NewKAllSyms()
-			//	if err != nil {
-			//		return err
-			//	}
-			//}
+			if kernelSymbolResolver == nil {
+				var err error
+				kernelSymbolResolver, err = newKAllSyms()
+				if err != nil {
+					return err
+				}
+			}
 
 			if i.collectionSpec.Maps[ebpftypes.KernelStackMapName] == nil {
 				return errors.New("kernel stack map is not initialized but used. " +
@@ -190,7 +197,7 @@ func (i *ebpfInstance) initStackConverter(gadgetCtx operators.GadgetContext) err
 			converter := func(ds datasource.DataSource, data datasource.Data) error {
 				inBytes := in.Get(data)
 				stackId := ds.ByteOrder().Uint32(inBytes)
-				outString, err := fetchAndFormatStackTrace(stackId, i.kernelStackMap.Lookup, kernelSymbolResolver.LookupByInstructionPointer)
+				outString, err := fetchAndFormatStackTrace(stackId, stackLookup, kernelSymbolResolver.LookupByInstructionPointer)
 				if err != nil {
 					i.logger.Warnf("stack with ID %d is lost: %s", stackId, err.Error())
 					out.Set(data, []byte{})

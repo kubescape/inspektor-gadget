@@ -2,7 +2,9 @@ name: Inspektor Gadget CI
 env:
   REGISTRY: ghcr.io
   CONTAINER_REPO: ${{ github.repository }}
-  GO_VERSION: 1.25.5
+  GO_VERSION: 1.27.3
+  # Pin an available scanner release instead of the action's unavailable v0.65.0 release.
+  TRIVY_VERSION: v0.76.1
   # controller-gen with go >1.21 panics, but we can't update controller-gen itself
   GO_VERSION_DOC_CHECK: 1.21.3
   AZURE_AKS_CLUSTER_PREFIX: ig-ci-aks-
@@ -107,7 +109,7 @@ jobs:
       uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
       with:
         # This version number must be kept in sync with Makefile lint one.
-        version: v2.6.0
+        version: v2.15.0
         working-directory: /home/runner/work/inspektor-gadget/inspektor-gadget
 
   semgrep:
@@ -146,6 +148,7 @@ jobs:
             exit 1
           fi
       - name: Detect changes for ebpf objects
+        id: ebpf_objects
         env:
           GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
         run: |
@@ -155,6 +158,33 @@ jobs:
             >&2 echo "$changes"
             exit 1
           fi
+      - name: Capture generated eBPF object drift
+        if: ${{ failure() && steps.ebpf_objects.outcome == 'failure' }}
+        env:
+          GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
+        run: |
+          evidence="$RUNNER_TEMP/ebpf-object-drift"
+          mkdir -p "$evidence"
+          # Only tracked generated package inputs; never archive the workspace.
+          paths=(':(glob)pkg/**/*_bpfel.go' ':(glob)pkg/**/*.o')
+          git diff --no-ext-diff --no-textconv --binary HEAD -- "${paths[@]}" > "$evidence/generated.patch"
+          git diff --no-ext-diff --no-textconv --stat HEAD -- "${paths[@]}" > "$evidence/diffstat.txt"
+          {
+            printf 'checkout_sha='; git rev-parse HEAD
+            printf 'run_id=%s\nrun_attempt=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'gadget_builder=%s\n' "$GADGET_BUILDER"
+            if ! docker image inspect --format 'image_id={{.Id}} repo_digests={{join .RepoDigests " "}}' "$GADGET_BUILDER"; then
+              echo 'gadget_builder_local_identity=unavailable'
+            fi
+          } > "$evidence/identity.txt"
+      - name: Upload generated eBPF object drift
+        if: ${{ failure() && steps.ebpf_objects.outcome == 'failure' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ebpf-object-drift-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ebpf-object-drift/
+          retention-days: 3
+          if-no-files-found: error
       - name: Check that testdata is updated
         env:
           GADGET_BUILDER: ${{ needs.build-helper-images.outputs.gadget_builder_image }}
@@ -326,7 +356,12 @@ jobs:
       run: |
         if [ "${{ matrix.platform }}" = 'arm64' ]; then
           sudo apt-get update
-          sudo apt-get install qemu-user-static
+          # qemu-user-static is virtual on Ubuntu 26.04; select the standard provider.
+          sudo apt-get install -y qemu-user-binfmt
+          test -x /usr/bin/qemu-aarch64
+          grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64
+          # F keeps the interpreter available inside the build container.
+          grep -Eq '^flags:.*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
         fi
 
         make ig-linux-${{ matrix.platform }}
@@ -813,6 +848,7 @@ jobs:
       - name: Scan gadget ${{ matrix.os }} ${{ matrix.platform }} container image
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
+          version: ${{ env.TRIVY_VERSION }}
           input: gadget-container-image-${{ matrix.os }}-${{ matrix.platform }}.tar
           format: 'table'
           exit-code: 1
@@ -1034,6 +1070,7 @@ jobs:
     - name: Scan ${{ matrix.image.name }} image for CVEs
       uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
       with:
+        version: ${{ env.TRIVY_VERSION }}
         input: /tmp/${{ matrix.image.name }}
         format: 'table'
         exit-code: 1
@@ -1149,12 +1186,42 @@ jobs:
           go build "./$dir";
         done
 
+  test-enforce-exec-go:
+    name: Exec enforcement Go regressions
+    # These unprivileged tests need neither helper images nor a published ig binary.
+    # Keep the privileged unit and kernel jobs below as separate required evidence.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GOWORK: 'off'
+    steps:
+    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4.2.2
+    - name: Setup go
+      uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+    - name: Race tests and vet
+      run: |
+        packages=(
+          ./gadgets/enforce_exec/policy
+          ./gadgets/enforce_exec/fullpolicy
+          ./gadgets/enforce_exec/runtime
+          ./gadgets/enforce_exec/fullruntime
+        )
+        go test -race -count=1 "${packages[@]}"
+        go vet "${packages[@]}"
+
   test-unit:
     needs:
       - build-ig
     name: Unit tests
     # level: 0
-    runs-on: ubuntu-latest
+    # Temporary: newer runner kernels drop syscall-enter BPF events.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4.2.2
     - name: Setup go
@@ -1172,6 +1239,37 @@ jobs:
       run: |
         tar zxvf /home/runner/work/inspektor-gadget/ig-linux-amd64.tar.gz
         sudo mv ig /usr/local/bin/ig
+    - name: Record unit-test runner kernel and exec tracepoint format
+      run: |
+        uname -srvm
+        if command -v docker >/dev/null 2>&1; then
+          if ! docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'; then
+            echo 'docker version unavailable'
+          fi
+        else
+          echo 'docker executable unavailable'
+        fi
+        if command -v runc >/dev/null 2>&1; then
+          if ! runc --version; then
+            echo 'runc version unavailable'
+          fi
+        else
+          echo 'runc executable unavailable'
+        fi
+        # Read the same existing tracepoint metadata accessible to the sudo tests.
+        # Do not mount tracefs/debugfs or change permissions to obtain it.
+        for format in \
+          /sys/kernel/tracing/events/syscalls/sys_enter_execve/format \
+          /sys/kernel/debug/tracing/events/syscalls/sys_enter_execve/format; do
+          echo "Tracepoint format: $format"
+          if sudo test -r "$format"; then
+            if ! sudo cat "$format"; then
+              echo 'tracepoint format read failed'
+            fi
+          else
+            echo 'missing or unreadable'
+          fi
+        done
     - name: Unit tests
       run: |
         sudo make test
@@ -1501,7 +1599,10 @@ jobs:
     name: Test ig w/ k8s
     # level: 3
     needs: [ test-unit, build-ig, build-helper-images ]
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -1625,7 +1726,10 @@ jobs:
       - build-and-push-gadgets
       - build-helper-images
       - check-secrets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
     steps:
@@ -1745,7 +1849,10 @@ jobs:
       - build-helper-images
       - build-and-push-gadgets
       - check-secrets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -1813,7 +1920,10 @@ jobs:
       - build-ig
       - build-helper-images
       - build-and-push-gadgets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -2184,7 +2294,10 @@ jobs:
       - build-helper-images
       - build-and-push-gadgets
       - check-secrets
-    runs-on: ubuntu-latest
+    # Temporary: host-kernel tracing needs the workaround used by test-unit.
+    # https://github.com/actions/runner-images/issues/15003
+    # Restore ubuntu-latest once its kernel fix is deployed and these tests pass.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:

@@ -60,6 +60,7 @@ func (m *mockGadgetContext) ImageName() string { return "test-image" }
 func (m *mockGadgetContext) RegisterDataSource(t datasource.Type, name string) (datasource.DataSource, error) {
 	return nil, nil
 }
+
 func (m *mockGadgetContext) GetDataSources() map[string]datasource.DataSource { return m.dataSources }
 func (m *mockGadgetContext) SetVar(name string, value any)                    {}
 func (m *mockGadgetContext) GetVar(name string) (any, bool)                   { return nil, false }

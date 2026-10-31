@@ -18,12 +18,16 @@
 package ig
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	igtesting "github.com/inspektor-gadget/inspektor-gadget/pkg/testing"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/testing/command"
@@ -38,17 +42,93 @@ type runner struct {
 
 	// command.Command contains *exec.Cmd and additional properties and methods for the same.
 	command.Command
-	flags []string
+	flags            []string
+	readinessTimeout time.Duration
+	kubernetesReady  bool
+	localReady       bool
 }
 
 func (ig *runner) createCmd() {
-	ig.flags = append(ig.flags, "-o="+ig.outputMode)
 	args := append([]string{"run", ig.image}, ig.flags...)
+	args = append(args, "-o="+ig.outputMode)
 
 	ig.Cmd = exec.Command(ig.path, args...)
 }
 
+// Start waits for gadget startup only when a readiness option is enabled.
+func (ig *runner) Start(t *testing.T) {
+	if (!ig.kubernetesReady && !ig.localReady) || ig.Running() {
+		ig.Command.Start(t)
+		return
+	}
+	require.NoError(t, ig.validateReadiness(), "invalid readiness options")
+	ctx, cancel := context.WithTimeout(t.Context(), ig.readinessTimeout)
+	defer cancel()
+	var writer io.Writer
+	var waitReady func() error
+	if ig.localReady {
+		ready := newLocalReadiness()
+		writer = ready
+		waitReady = func() error { return ready.wait(ctx, ig.Exited(), ig.ExitError) }
+	} else {
+		nodes, namespace, err := ig.kubernetesTargets(ctx)
+		require.NoError(t, err, "discovering gadget nodes")
+		ig.flags = append(ig.flags, "--node="+strings.Join(nodes, ","), "--gadget-namespace="+namespace)
+		ready := newNodeReadiness(nodes)
+		writer = ready
+		waitReady = func() error { return ready.wait(ctx, ig.Exited(), ig.ExitError) }
+	}
+	ig.flags = append(ig.flags, "--verbose")
+	ig.createCmd()
+	if ig.StdErrWriter != nil {
+		writer = io.MultiWriter(ig.StdErrWriter, writer)
+	}
+	ig.StdErrWriter = writer
+	ig.ObserveExit = true
+	ig.Command.Start(t)
+	// RunTestSteps normally stops the command first. Also cover a direct Start
+	// caller whose readiness check fails before it can arrange cleanup.
+	t.Cleanup(func() {
+		if ig.Running() {
+			ig.Stop(t)
+		}
+	})
+	require.NoError(t, waitReady(), "waiting for gadget readiness")
+}
+
+func (ig *runner) validateReadiness() error {
+	if ig.localReady && ig.kubernetesReady {
+		return fmt.Errorf("local and Kubernetes readiness options are mutually exclusive")
+	}
+	if (ig.localReady || ig.kubernetesReady) && ig.readinessTimeout <= 0 {
+		return fmt.Errorf("readiness timeout must be positive")
+	}
+	return nil
+}
+
 type Option func(*runner)
+
+// WithLocalReady gates Start on the local GadgetContext.Run debug marker after
+// operator Start, final Readiness checks and the startup callback. It does not
+// wait for later asynchronous AddContainer callbacks. Use only with local ig,
+// never a remote client, whose bare marker is emitted before remote readiness.
+// The timeout bounds startup, not capture; it cannot be combined with
+// WithKubernetesReady.
+func WithLocalReady(timeout time.Duration) Option {
+	return func(ig *runner) {
+		ig.localReady = true
+		ig.readinessTimeout = timeout
+	}
+}
+
+// WithKubernetesReady gates Start on the existing remote, node-prefixed debug
+// marker. The timeout bounds discovery and startup, not the capture interval.
+func WithKubernetesReady(timeout time.Duration) Option {
+	return func(ig *runner) {
+		ig.kubernetesReady = true
+		ig.readinessTimeout = timeout
+	}
+}
 
 // WithPath used for providing custom path to ig executable.
 func WithPath(path string) Option {
@@ -89,6 +169,13 @@ func WithValidateStderrOutput(validateOutput func(t *testing.T, output string)) 
 func WithStdOutWriter(writer io.Writer) Option {
 	return func(ig *runner) {
 		ig.StdOutWriter = writer
+	}
+}
+
+// WithStdErrWriter forwards stderr while retaining its full captured output.
+func WithStdErrWriter(writer io.Writer) Option {
+	return func(ig *runner) {
+		ig.StdErrWriter = writer
 	}
 }
 
