@@ -57,7 +57,30 @@ func (i *ebpfInstance) validateNativeResources(gc operators.GadgetContext) error
 	if !ok || validate == nil {
 		return fmt.Errorf("invalid native resource validator")
 	}
+	for name, m := range i.collectionSpec.Maps {
+		if err := validateNativeMapPinning(name, m, 0); err != nil {
+			return err
+		}
+	}
 	return validate(i.nativeResources())
+}
+
+func validateNativeMapPinning(name string, m *ebpf.MapSpec, depth int) error {
+	// Match the manifest's traversal bound, rejecting malformed templates
+	// rather than overlooking pinning beyond the admitted shape.
+	if m == nil || depth >= 8 {
+		return fmt.Errorf("native map %q has an invalid inner-map template", name)
+	}
+	// Automatic pinning can reopen unrelated global state or retain a new map
+	// beyond collection close. Native ownership admits neither lifecycle. This
+	// does not restrict ordinary gadgets or explicit verified recovery links.
+	if m.Pinning != ebpf.PinNone {
+		return fmt.Errorf("native map %q requests unsupported automatic pinning %d", name, m.Pinning)
+	}
+	if m.InnerMap != nil {
+		return validateNativeMapPinning(name+".inner", m.InnerMap, depth+1)
+	}
+	return nil
 }
 
 func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name string, p *ebpf.ProgramSpec, l link.Link) error {

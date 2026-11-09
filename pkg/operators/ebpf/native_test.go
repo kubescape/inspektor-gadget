@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -228,6 +229,90 @@ func TestNativeManifestBoundsInnerMapTemplates(t *testing.T) {
 			}
 			if depth != 8 || r.Type != uint32(ebpf.UnspecifiedMap) {
 				t.Fatalf("invalid template truncated without rejection marker: depth=%d type=%d", depth, r.Type)
+			}
+		})
+	}
+}
+
+func TestNativeMapPinningRejectedBeforeAllocation(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		for _, afterPreflight := range []bool{false, true} {
+			t.Run(fmt.Sprintf("nested=%v/after-preflight=%v", nested, afterPreflight), func(t *testing.T) {
+				gc := newResolverGadgetCtx(t, nil)
+				state := &ebpf.MapSpec{Name: "state", Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}
+				root := state
+				if nested {
+					root = &ebpf.MapSpec{Name: "state", Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: state}
+				}
+				i := &ebpfInstance{
+					logger:         gc.Logger(),
+					params:         map[string]*param{ParamTraceKernel: {Param: &api.Param{Key: ParamTraceKernel, TypeHint: api.TypeBool, DefaultValue: "false"}}},
+					collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"state": root}},
+				}
+				called := false
+				gc.SetVar(operators.NativeResourceValidatorKey, func(*operators.NativeResources) error {
+					called = true
+					return nil
+				})
+				if afterPreflight {
+					i.publishNativeResources(gc)
+					if err := i.validateNativeResources(gc); err != nil || !called {
+						t.Fatalf("unpinned preflight rejected: called=%v err=%v", called, err)
+					}
+					called = false
+				}
+				state.Pinning = ebpf.PinByName
+				if !afterPreflight {
+					if err := i.validateNativeResources(gc); err == nil || !strings.Contains(err.Error(), "automatic pinning") {
+						t.Fatalf("automatic pinning passed native admission: %v", err)
+					}
+				}
+				err := i.Start(gc)
+				if err == nil || !strings.Contains(err.Error(), "state") || !strings.Contains(err.Error(), "automatic pinning") {
+					t.Fatalf("expected named pinning rejection before allocation, got %v", err)
+				}
+				if called || i.collection != nil {
+					t.Fatal("pinned map reached owner admission or collection allocation")
+				}
+			})
+		}
+	}
+}
+
+func TestNativeMapPinningGuardPreservesOrdinaryGadgets(t *testing.T) {
+	gc := newResolverGadgetCtx(t, nil)
+	m := &ebpf.MapSpec{Type: ebpf.Array, Pinning: ebpf.PinByName}
+	i := &ebpfInstance{collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"ordinary": m}}}
+	if err := i.validateNativeResources(gc); err != nil {
+		t.Fatalf("ordinary gadget pinning rejected: %v", err)
+	}
+	if m.Pinning != ebpf.PinByName {
+		t.Fatal("ordinary gadget pinning was silently stripped")
+	}
+}
+
+func TestNativeMapPinningGuardBoundsMalformedTemplates(t *testing.T) {
+	for _, malformed := range []string{"nil", "cycle", "deep"} {
+		t.Run(malformed, func(t *testing.T) {
+			var m *ebpf.MapSpec
+			switch malformed {
+			case "cycle":
+				m = &ebpf.MapSpec{Type: ebpf.ArrayOfMaps}
+				m.InnerMap = m
+			case "deep":
+				m = &ebpf.MapSpec{Type: ebpf.Array, Pinning: ebpf.PinByName}
+				for range 32 {
+					m = &ebpf.MapSpec{Type: ebpf.ArrayOfMaps, InnerMap: m}
+				}
+			}
+			gc := newResolverGadgetCtx(t, nil)
+			gc.SetVar(operators.NativeResourceValidatorKey, func(*operators.NativeResources) error {
+				t.Fatal("malformed template reached owner admission")
+				return nil
+			})
+			i := &ebpfInstance{collectionSpec: &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"state": m}}}
+			if err := i.validateNativeResources(gc); err == nil || !strings.Contains(err.Error(), "state") {
+				t.Fatalf("malformed template not rejected: %v", err)
 			}
 		})
 	}
