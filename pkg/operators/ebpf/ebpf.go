@@ -184,6 +184,10 @@ type ebpfInstance struct {
 	collectionSpec *ebpf.CollectionSpec
 	collection     *ebpf.Collection
 	policy         *policy
+	// Snapshotted during setup: TC setup, publication and attachment must
+	// never observe different recovery selections for one collection.
+	recoveryTestRunFrozen, recoveryTestRunSelected, recoveryTestRunFault bool
+	recoveryTestRunAdmitted                                              bool
 
 	tracers     map[string]*Tracer
 	structs     map[string]*Struct
@@ -442,6 +446,13 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 	// Create network tracers, one for each socket filter program
 	// The same applies to uprobe / uretprobe as well.
 	for _, p := range i.collectionSpec.Programs {
+		recovery, err := i.nativeRecoveryTestRunProgram(gadgetCtx, p)
+		if err != nil {
+			return err
+		}
+		if recovery {
+			continue
+		}
 		switch p.Type {
 		case ebpf.Kprobe:
 			if strings.HasPrefix(p.SectionName, "uprobe/") ||
@@ -940,6 +951,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		return fmt.Errorf("creating eBPF collection: %w", err)
 	}
 	i.collection = collection
+	if err := i.installNativePoolReaperChain(gadgetCtx); err != nil {
+		return fmt.Errorf("installing native pool reaper chain: %w", err)
+	}
 
 	// collect program IDs and map IDs for this gadget
 	gadgetObjs := gadgetObjects{}
@@ -991,7 +1005,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		}
 	}
 
-	i.publishCommandPrograms(gadgetCtx)
+	if err := i.publishCommandPrograms(gadgetCtx); err != nil {
+		return err
+	}
 
 	// Attach programs
 	for progName, p := range i.collectionSpec.Programs {

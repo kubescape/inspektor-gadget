@@ -15,7 +15,15 @@ const (
 	// Native owners install it before Start; the eBPF operator invokes it on the
 	// final transformed collection immediately before allocating kernel resources.
 	NativeResourceValidatorKey = "ebpf/native-resource-validator"
-	NativeAttachmentPrefix     = "attachment/"
+	// NativeRecoveryTestRunKey is a trusted local opt-in for the two recovery
+	// SchedCLS programs that must be loaded for TEST_RUN, never attached to TC.
+	// The native resource validator must still admit the exact recovered image.
+	NativeRecoveryTestRunKey = "ebpf/native-recovery-test-run"
+	NativeAttachmentPrefix   = "attachment/"
+	// NativeLoadedProgramPrefix borrows every program in the exact admitted
+	// recovered collection for H's pin/FD ledger. It is not an invocation
+	// permission and is absent for ordinary or protocol-only images.
+	NativeLoadedProgramPrefix = "ebpf/native-loaded-program/"
 )
 
 type NativeMapResource struct {
@@ -35,10 +43,25 @@ type NativeResources struct {
 }
 
 // NativeAttachment is a borrowed, live receipt, not an owned link. Check fails
-// when the linked program is gone/changed. Callers must join checks before Stop;
-// they must not infer hook presence from image metadata or a loaded program FD.
+// when the exact link identity, type or linked program changes. IDs are
+// diagnostic evidence, not authority to reopen or pin a link. Callers must
+// join checks before Stop; image metadata or a loaded program FD is not proof
+// of hook presence.
 type NativeAttachment struct {
-	Type   uint32
-	Target string
-	Check  func() error
+	Type, LinkID, ProgramID uint32
+	Target                  string
+	Check                   func() error
+	// PinAt is present only on admitted recovery task LSM links. dirFD must
+	// reference a private, host-visible bpffs directory. A successful pin is
+	// retained on later errors; the future S pin ledger owns unlinking.
+	PinAt func(dirFD int) (NativePinnedLink, error)
+}
+
+// NativePinnedLink owns a reopened link FD, not the pin itself. Close releases
+// that FD but leaves the bpffs pin intact. PinName is a fixed basename for S.
+type NativePinnedLink interface {
+	FD() int
+	PinName() string
+	Check() error
+	Close() error
 }

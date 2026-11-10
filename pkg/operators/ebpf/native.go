@@ -51,13 +51,25 @@ func nativeMapResource(m *ebpf.MapSpec, depth int) operators.NativeMapResource {
 func (i *ebpfInstance) validateNativeResources(gc operators.GadgetContext) error {
 	value, exists := gc.GetVar(operators.NativeResourceValidatorKey)
 	if !exists {
+		if i.recoveryTestRunSelected {
+			return fmt.Errorf("recovery TEST_RUN requires final native admission")
+		}
 		return nil
 	}
 	validate, ok := value.(func(*operators.NativeResources) error)
 	if !ok || validate == nil {
 		return fmt.Errorf("invalid native resource validator")
 	}
-	return validate(i.nativeResources())
+	if err := validate(i.nativeResources()); err != nil {
+		return err
+	}
+	if i.recoveryTestRunSelected {
+		if i.recoveryTestRunFault || !i.recoveryTestRunFrozen {
+			return fmt.Errorf("recovery TEST_RUN selection changed before admission")
+		}
+		i.recoveryTestRunAdmitted = true
+	}
+	return nil
 }
 
 func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name string, p *ebpf.ProgramSpec, l link.Link) error {
@@ -67,10 +79,20 @@ func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name 
 		return nil
 	}
 	info, err := l.Info()
-	if err != nil || info.Program == 0 {
+	if err != nil || info == nil || info.ID == 0 || info.Program == 0 {
 		return nil
 	}
-	receipt := &operators.NativeAttachment{Type: uint32(p.Type), Target: i.programAttachTarget(p), Check: nativeAttachmentCheck(name, info.Program, l.Info)}
+	receipt := &operators.NativeAttachment{
+		Type: uint32(p.Type), LinkID: uint32(info.ID), ProgramID: uint32(info.Program),
+		Target: i.programAttachTarget(p),
+		Check:  nativeAttachmentCheck(name, info.ID, info.Type, info.Program, l.Info),
+	}
+	if i.recoveryTestRunSelected && i.recoveryTestRunAdmitted &&
+		p.Type == ebpf.LSM && info.Type == link.TracingType &&
+		((name == "se_task_alloc" && p.SectionName == "lsm/task_alloc" && p.AttachTo == "task_alloc") ||
+			(name == "se_task_free" && p.SectionName == "lsm/task_free" && p.AttachTo == "task_free")) {
+		receipt.PinAt = newNativeRecoveryPin(l, name, info)
+	}
 	if i.nativeAttachments == nil {
 		i.nativeAttachments = map[string]*operators.NativeAttachment{}
 	}
@@ -88,14 +110,14 @@ func (i *ebpfInstance) unpublishNativeAttachments(gc operators.GadgetContext) {
 	i.nativeAttachments = nil
 }
 
-func nativeAttachmentCheck(name string, expected ebpf.ProgramID, read func() (*link.Info, error)) func() error {
+func nativeAttachmentCheck(name string, expectedLink link.ID, expectedType link.Type, expectedProgram ebpf.ProgramID, read func() (*link.Info, error)) func() error {
 	return func() error {
 		current, err := read()
 		if err != nil {
 			return err
 		}
-		if current == nil || current.Program != expected {
-			return fmt.Errorf("attachment %s program changed", name)
+		if current == nil || current.ID != expectedLink || current.Type != expectedType || current.Program != expectedProgram {
+			return fmt.Errorf("attachment %s identity changed", name)
 		}
 		return nil
 	}

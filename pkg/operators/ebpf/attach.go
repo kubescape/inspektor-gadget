@@ -47,6 +47,16 @@ const (
 )
 
 func (i *ebpfInstance) attachProgram(gadgetCtx operators.GadgetContext, p *ebpf.ProgramSpec, prog *ebpf.Program) (link.Link, error) {
+	recovery, err := i.nativeRecoveryTestRunProgram(gadgetCtx, p)
+	if err != nil {
+		return nil, err
+	}
+	if recovery {
+		if !i.recoveryTestRunAdmitted {
+			return nil, fmt.Errorf("recovery TEST_RUN program not admitted")
+		}
+		return nil, nil
+	}
 	attachTo := i.programAttachTarget(p)
 	if attachTo != p.AttachTo {
 		i.logger.Debugf("Overriding attachTo with %q for program %q", attachTo, p.Name)

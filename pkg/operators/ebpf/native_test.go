@@ -6,6 +6,7 @@ package ebpfoperator
 import (
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"testing"
 
@@ -36,11 +37,21 @@ func TestNativeManifestDoesNotRetainMutableSpecs(t *testing.T) {
 
 func TestNativeAttachmentGuard(t *testing.T) {
 	var err error
-	info := &link.Info{Program: 7}
-	check := nativeAttachmentCheck("hook", 7, func() (*link.Info, error) { return info, err })
+	info := &link.Info{ID: 9, Program: 7}
+	check := nativeAttachmentCheck("hook", 9, info.Type, 7, func() (*link.Info, error) { return info, err })
 	if got := check(); got != nil {
 		t.Fatal(got)
 	}
+	info.ID = 10
+	if check() == nil {
+		t.Fatal("different link to the same program accepted")
+	}
+	info.ID = 9
+	info.Type++
+	if check() == nil {
+		t.Fatal("different link type accepted")
+	}
+	info.Type--
 	info.Program = 8
 	if check() == nil {
 		t.Fatal("replacement not detected")
@@ -52,6 +63,97 @@ func TestNativeAttachmentGuard(t *testing.T) {
 	err = errors.New("closed")
 	if !errors.Is(check(), err) {
 		t.Fatal("closed link not detected")
+	}
+}
+
+type nativePinTestLink struct {
+	link.Link
+	info           *link.Info
+	fd             int
+	pinPath        string
+	pinCalls       int
+	pinned, closed bool
+}
+
+func (l *nativePinTestLink) Info() (*link.Info, error) { return l.info, nil }
+func (l *nativePinTestLink) IsPinned() bool            { return l.pinned }
+func (l *nativePinTestLink) Pin(path string) error {
+	l.pinCalls++
+	l.pinPath = path
+	l.pinned = true
+	return nil
+}
+func (l *nativePinTestLink) FD() int { return l.fd }
+func (l *nativePinTestLink) Close() error {
+	l.closed = true
+	return nil
+}
+
+func TestNativeRecoveryPinReopensExactLink(t *testing.T) {
+	want := &link.Info{ID: 11, Type: link.TracingType, Program: 7}
+	original := &nativePinTestLink{info: want, fd: 41}
+	reopened := &nativePinTestLink{info: &link.Info{ID: 11, Type: link.TracingType, Program: 7}, fd: 42}
+	lease, err := nativePinAndVerifyLink(original, "se_task_alloc.link", "/test/pin", want,
+		func(path string, opts *ebpf.LoadPinOptions) (link.Link, error) {
+			if path != "/test/pin" || opts != nil || original.pinCalls != 1 {
+				t.Fatal("reopen did not follow pin")
+			}
+			return reopened, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original.pinPath != "/test/pin" || lease.PinName() != "se_task_alloc.link" || lease.FD() != 42 || lease.Check() != nil {
+		t.Fatal("verified reopened lease missing exact identity")
+	}
+	if err := lease.Close(); err != nil || !reopened.closed || !original.pinned {
+		t.Fatal("closing reopened FD lost pin or failed")
+	}
+	wrong := &nativePinTestLink{info: &link.Info{ID: 12, Type: link.TracingType, Program: 7}, fd: 43}
+	original = &nativePinTestLink{info: want, fd: 41}
+	if lease, err := nativePinAndVerifyLink(original, "se_task_alloc.link", "/test/pin", want,
+		func(string, *ebpf.LoadPinOptions) (link.Link, error) { return wrong, nil }); err == nil || lease != nil || !wrong.closed || !original.pinned {
+		t.Fatal("different pinned link to same program accepted or pin removed")
+	}
+	original = &nativePinTestLink{info: want, fd: 41}
+	if lease, err := nativePinAndVerifyLink(original, "se_task_alloc.link", "/test/pin", want,
+		func(string, *ebpf.LoadPinOptions) (link.Link, error) { return nil, errors.New("reopen failed") }); err == nil || lease != nil || !original.pinned {
+		t.Fatal("ambiguous reopen error removed pin or returned lease")
+	}
+}
+
+func TestNativeRecoveryPinRequiresPrivateBPFFSAndExactSelection(t *testing.T) {
+	gc := newResolverGadgetCtx(t, nil)
+	config := viper.New()
+	config.Set("annotations.enforce-exec-shared-recovery", "1")
+	want := &link.Info{ID: 11, Type: link.TracingType, Program: 7}
+	for _, admitted := range []bool{false, true} {
+		for _, name := range []string{"se_task_alloc", "se_task_free", "other"} {
+			l := &nativePinTestLink{info: want, fd: 41}
+			target := "task_alloc"
+			if name == "se_task_free" {
+				target = "task_free"
+			}
+			spec := &ebpf.ProgramSpec{Name: name, Type: ebpf.LSM, SectionName: "lsm/" + target, AttachTo: target}
+			i := &ebpfInstance{config: config, recoveryTestRunSelected: true, recoveryTestRunAdmitted: admitted}
+			if err := i.publishNativeAttachment(gc, name, spec, l); err != nil {
+				t.Fatal(err)
+			}
+			receipt := i.nativeAttachments[name]
+			if (receipt.PinAt != nil) != (admitted && name != "other") {
+				t.Fatalf("unexpected pin capability: admitted=%v name=%s", admitted, name)
+			}
+			if receipt.PinAt != nil {
+				dir, err := os.Open(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if lease, err := receipt.PinAt(int(dir.Fd())); err == nil || lease != nil || l.pinCalls != 0 {
+					t.Fatal("non-bpffs directory reached pin syscall")
+				}
+				_ = dir.Close()
+			}
+		}
 	}
 }
 
@@ -75,7 +177,7 @@ type nativeTargetTestLink struct {
 }
 
 func (nativeTargetTestLink) Info() (*link.Info, error) {
-	return &link.Info{Program: 7}, nil
+	return &link.Info{ID: 9, Program: 7}, nil
 }
 
 func TestNativeTargetsCannotBeOverriddenForLoadedBTFPrograms(t *testing.T) {
@@ -98,6 +200,9 @@ func TestNativeTargetsCannotBeOverriddenForLoadedBTFPrograms(t *testing.T) {
 			receipt := value.(*operators.NativeAttachment)
 			if receipt.Target != spec.AttachTo {
 				t.Fatalf("receipt reports overridden target %q", receipt.Target)
+			}
+			if receipt.LinkID != 9 || receipt.ProgramID != 7 {
+				t.Fatalf("receipt lost exact link/program IDs: %+v", receipt)
 			}
 			if err := receipt.Check(); err != nil {
 				t.Fatal(err)
