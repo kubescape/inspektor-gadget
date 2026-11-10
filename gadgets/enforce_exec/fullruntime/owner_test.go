@@ -78,6 +78,57 @@ func TestOwnerReservationsAndImmutableInput(t *testing.T) {
 	}
 }
 
+// G009 step 6: the legacy per-cgroup Owner is hard-capped per node,
+// fail-closed, before anything of a refused owner is loaded or attached.
+func TestLegacyOwnerHardCap(t *testing.T) {
+	n := uint64(LegacyOwnerHardCap + 1)
+	if _, err := NewBudget(BudgetLimits{n, n * OwnerMapPayloadLimit, n * OwnerInstructionLimit, n * OwnerHistoryLimit}); !errors.Is(err, ErrLegacyOwnerCap) {
+		t.Fatalf("budget above the hard cap: %v", err)
+	}
+	budget := testBudget(t, LegacyOwnerHardCap)
+	var owners []*Owner
+	for cgroup := uint64(1); cgroup <= LegacyOwnerHardCap; cgroup++ {
+		config := ownerTestConfig(t)
+		config.CgroupID = cgroup
+		owner, err := NewOwner(config, budget)
+		if err != nil {
+			t.Fatalf("owner %d: %v", cgroup, err)
+		}
+		owners = append(owners, owner)
+	}
+	third := ownerTestConfig(t)
+	third.CgroupID = LegacyOwnerHardCap + 1
+	owner, err := NewOwner(third, budget)
+	if !errors.Is(err, ErrLegacyOwnerCap) || owner != nil {
+		t.Fatalf("owner 3 admitted: %v", err)
+	}
+	// Owner 3 got no handle (so no WithOwner, image load or attach) and holds
+	// no reservation; owners 1-2 keep theirs.
+	if budget.Usage().Owners != LegacyOwnerHardCap || budget.scopes[third.CgroupID] != nil {
+		t.Fatal("refused owner left a reservation")
+	}
+	for k, o := range owners {
+		if o.reservation == nil || budget.scopes[uint64(k+1)] != o.reservation.state {
+			t.Fatalf("owner %d reservation disturbed", k+1)
+		}
+	}
+	if err := owners[0].ReleaseAfterDetach(); err != nil {
+		t.Fatal(err)
+	}
+	owner, err = NewOwner(third, budget)
+	if err != nil {
+		t.Fatalf("freed capacity not reusable: %v", err)
+	}
+	for _, o := range []*Owner{owners[1], owner} {
+		if err := o.ReleaseAfterDetach(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if budget.Usage() != (BudgetLimits{}) {
+		t.Fatal("budget leaked")
+	}
+}
+
 func TestFreshOwnerRejectsPastEpochAndMissingBudget(t *testing.T) {
 	config := ownerTestConfig(t)
 	if _, err := NewOwner(config, nil); err == nil {
@@ -108,6 +159,11 @@ func TestOwnerAdmissionBeforeAnyAcquire(t *testing.T) {
 	defer gc.Cancel()
 	if required, _ := gc.GetVar(operators.NativeOwnerRequiredKey); required != true {
 		t.Fatal("native-owner image admission requirement missing before OCI initialization")
+	}
+	// The legacy Owner opts out of the native default attach retry and keeps
+	// refusing attach capacity at once.
+	if retry, ok := gc.GetVar(operators.NativeAttachRetryKey); !ok || retry != false {
+		t.Fatalf("legacy Owner attach retry %v, want explicit opt-out", retry)
 	}
 	cfg := viper.New()
 	cfg.Set("annotations.enforce-exec-owner-abi", "2")

@@ -473,6 +473,93 @@ program slots are accounted. This is bounded capacity accounting, **not** a
 measurement or guarantee of kernel/Go RSS, allocator overhead or JIT expansion.
 Reservations remain held until confirmed teardown, including failed startup.
 
+### Attach capacity, readiness and the owner cap (G009)
+
+There is no source-derived owner ceiling. The capacity is the measured
+per-trampoline link limit, probed with no-op fillers on both exact AL2023
+kernels (`test/al2023-trampoline-cap`):
+
+| hook (trampoline) | kind | 6.12.113-138.209 | 6.18.56-125.164 | preexisting |
+|---|---|---|---|---|
+| bprm_check_security, task_alloc, task_free, socket_connect, inode_init_security_anon | LSM | 38 | 38 | 0 |
+| file_open | LSM | 37 | 37 | 1 (stock VM) |
+| bprm_execve, cgroup_migrate, copy_process | fentry, fexit | 38 | 38 | 0 |
+| bprm_execve, bprm_check_security | mixed fentry/fexit(/LSM) | 38 | 38 | 0 |
+
+That is **38 links per hook on both kernels** (`BPF_MAX_TRAMP_LINKS`; the
+limit hit is `E2BIG` from the link count, not the trampoline image size),
+shared by fentry, fexit, fmod_ret and LSM programs on the same trampoline (an
+LSM hook `X` uses the trampoline of `bpf_lsm_X`). The 38 is shared with every
+other BPF consumer on the node, as the preexisting `file_open` link shows.
+
+* **K/R policy.** Each enforcement family may use at most `K` links per hook
+  and must leave `R` free for third parties. `R` defaults to **8**
+  (`nativeattach.DefaultReservePerHook`; `operators.NativeAttachReserveKey`
+  overrides it), so at most 30 per hook are usable by enforcement families
+  together. `K` is the family's own need per hook, derived from its packaged
+  attach set, and must be **at most 8** (`nativeattach.MaxFamilyLinksPerHook`).
+  The exec candidate needs at most **3** on any hook: bprm_execve 3, and 1
+  each on task_free, task_alloc, security_bprm_creds_for_exec and
+  bprm_check_security.
+* **Packaged attach set.** The candidate's ELF has 13 programs on
+  bprm_check_security; 11 are tail-call targets and must never be attached.
+  `bpf/opaque_real_owner_child_candidate.programs.yaml` is the gadget.yaml
+  `programs:` block that marks every trampoline program outside the steady
+  state `attach_to: gadget_program_disabled` (tail-call targets, the two
+  bootstrap programs, two diagnostics). The eBPF operator skips those programs
+  and leaves them out of `K`. `TestCandidateAttachSetDeclaration` and
+  `TestCandidateAttachSetObjects` (with `IG_ENFORCE_EXEC_CANDIDATE_OBJECTS`)
+  derive the attach set from that block plus the object and pin it.
+* **Legacy Owner cap.** `NewBudget` refuses more than `LegacyOwnerHardCap`
+  (**2**) owners and `NewOwner` refuses a third owner, both with
+  `ErrLegacyOwnerCap`, before anything of it is loaded or attached. Each
+  owner attaches 10 trampoline links of its own. One Budget must be shared
+  per node.
+* **No support claim for owner concurrency.** Neither the legacy Owner cap nor
+  the 38-link measurement is a supported concurrency figure. Running more
+  than one owner per node, or any number of owners next to other BPF
+  consumers, is not claimed to be supported; per-owner concurrency is G019.
+* **Transactional attach.** Every collection admitted by a native resource
+  validator (and only those; ordinary gadgets are unchanged) is attached by
+  `pkg/operators/ebpf/nativeattach`: in a fixed order (task_free, task_alloc,
+  movement/cgroup/other hooks, then decision hooks: bprm_execve fexit, fentry,
+  creds_for_exec, bprm_check_security), all-or-nothing. Any attach error
+  closes this collection's links in reverse order before Start returns, and
+  `E2BIG` is a typed `*nativeattach.ErrAttachCapacity{Target, Attached, Err}`
+  naming the trampoline. Receipts are published only after every link is
+  attached, and a missing receipt fails the transaction.
+* **Reserve (hint).** Before attaching, the live links per trampoline are
+  counted (`BPF_LINK_GET_NEXT_ID` plus link info). The family refuses with
+  `ErrAttachCapacity` unless `K + R` links are free. The hint is not the
+  authority; the attach and rollback are.
+* **Automatic retry (default).** Every native family retries by default
+  (`nativeattach.DefaultRetry`: 500ms doubling to a 30s cap, no attempt
+  bound). A capacity refusal does not fail Start: Start blocks, retrying,
+  until the family attaches or the gadget context is canceled. While it
+  waits the family is NotReady, and each refusal is logged as a typed
+  `ErrAttachCapacity` that names the target trampoline. Each attempt re-runs
+  the hint and the whole transaction, and a refused attempt leaves no link or
+  receipt, so there is never a partial hook set. Errors other than capacity
+  (for example a failed link count) are returned at once. A family may
+  install its own `nativeattach.Retry` under `operators.NativeAttachRetryKey`
+  (`State` then receives every NotReady, Ready and a final non-capacity
+  error), or `false` to opt out.
+* **Legacy Owner refuses at once.** `WithOwner` sets
+  `operators.NativeAttachRetryKey` to `false`: the legacy per-cgroup Owner
+  does not retry and its Start returns the capacity refusal immediately.
+* **Link-based programs only.** Rollback closes bpf links only. A native
+  family is therefore refused, before anything is attached and without
+  retry, if an enabled program would attach without a bpf link or with side
+  effects rollback cannot undo (kprobes/uprobes, tracepoints, perf events,
+  socket filters, TC, sockmap programs, iterators). Admitted are LSM and
+  fentry/fexit/tp_btf links, syscall commands and admitted recovery TEST_RUN
+  programs, which covers the exec candidate and owner families.
+* **Readiness component.** In the native path each receipt's `Check` also
+  verifies, by link ID, that the link still exists and references the same
+  program. A missing or replaced link returns `*nativeattach.ErrNotReady`
+  naming the target; a stale Ready is never reported. This is a component
+  check for a future Ready gate: `NodeEnforcer.Ready` stays unavailable.
+
 The native data operator verifies live, operator-owned attachment receipts for
 all required hooks, not just image annotations/program FDs. It validates the
 trusted transferred lease's proc/cgroup/namespace pins, independently refuses a

@@ -1,0 +1,54 @@
+# Attach-set packaging of the exec verdict candidate
+# (opaque_real_owner_child_candidate.bpf.c, qualified as g25final128).
+#
+# This is the gadget.yaml `programs:` block the future product image merges
+# into its gadget.yaml. The eBPF operator reads `programs.<name>.attach_to`
+# from the gadget metadata, and `gadget_program_disabled` makes it never attach
+# that program (the native transaction also leaves it out of the family need
+# K). The candidate has no product image yet; the qualified loader is
+# TestOpaqueRealPolicyVerdictAttached.
+#
+# Every trampoline program outside the qualified steady-state attach set is
+# listed here. The resulting attach set (G009, pinned by
+# TestCandidateAttachSetObjects in attach_inventory_test.go) is:
+#   bpf_lsm_task_free 1, bpf_lsm_task_alloc 1, bprm_execve 3,
+#   security_bprm_creds_for_exec 1, bpf_lsm_bprm_check_security 1.
+# A new trampoline program fails that test until it is either listed here or
+# deliberately added to the pinned attach set.
+programs:
+  # Tail-call targets: installed in PROG_ARRAYs, never attached.
+  opaque_real_owner_policy_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_policy_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_prepare_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_prepare_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_stage_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_stage_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_rule_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_rule_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_finish_audit:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_finish_strict:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_terminal_retain_target:
+    attach_to: gadget_program_disabled
+  opaque_real_owner_child_target_candidate:
+    attach_to: gadget_program_disabled
+  # Bootstrap only: the owner attaches these transiently and closes them
+  # before steady state; the generic attach must never keep them.
+  opaque_real_live_bootstrap_qualify:
+    attach_to: gadget_program_disabled
+  opaque_real_live_bootstrap_birth:
+    attach_to: gadget_program_disabled
+  # Diagnostics the qualified loader never loads.
+  opaque_real_owner_birth_signal0_diagnostic:
+    attach_to: gadget_program_disabled
+  se_publication_arm:
+    attach_to: gadget_program_disabled

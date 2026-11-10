@@ -143,6 +143,9 @@ func WithOwner(owner *Owner) gadgetcontext.Option {
 	return func(gc *gadgetcontext.GadgetContext) {
 		gc.SetVar(ownerKey, owner)
 		gc.SetVar(operators.NativeOwnerRequiredKey, true)
+		// The legacy Owner refuses attach capacity at once; it does not use
+		// the native default retry.
+		gc.SetVar(operators.NativeAttachRetryKey, false)
 	}
 }
 

@@ -38,7 +38,22 @@ type budgetAllocation struct {
 }
 type budgetReservation struct{ state *budgetAllocation }
 
+// LegacyOwnerHardCap is the most legacy per-cgroup Owners one node may run
+// (G009). Each Owner attaches its own 10 trampoline links, so the cap keeps
+// their total far below the 38-link trampoline limit. There is no support
+// claim beyond it. An embedding must share one Budget per node.
+const LegacyOwnerHardCap = 2
+
+// ErrLegacyOwnerCap is returned, fail-closed, when a Budget would exceed
+// LegacyOwnerHardCap: by NewBudget for larger limits and by owner admission
+// (NewOwner) for an owner beyond the cap. Nothing of the refused owner is
+// reserved, loaded or attached.
+var ErrLegacyOwnerCap = fmt.Errorf("legacy per-cgroup Owner hard cap of %d per node reached", LegacyOwnerHardCap)
+
 func NewBudget(limits BudgetLimits) (*Budget, error) {
+	if limits.Owners > LegacyOwnerHardCap {
+		return nil, fmt.Errorf("budget for %d owners: %w", limits.Owners, ErrLegacyOwnerCap)
+	}
 	if limits.Owners == 0 || limits.MapPayloadBytes < OwnerMapPayloadLimit || limits.ProgramInstructions < OwnerInstructionLimit || limits.HistoryEntries < OwnerHistoryLimit {
 		return nil, fmt.Errorf("budget must admit at least one fully bounded owner")
 	}
@@ -53,6 +68,9 @@ func (b *Budget) reserve(scope uint64) (*budgetReservation, error) {
 	defer b.mu.Unlock()
 	if b.scopes[scope] != nil {
 		return nil, fmt.Errorf("cgroup already has a persistent owner")
+	}
+	if b.used.Owners >= LegacyOwnerHardCap {
+		return nil, ErrLegacyOwnerCap
 	}
 	if b.used.Owners >= b.limits.Owners || b.used.MapPayloadBytes > b.limits.MapPayloadBytes-OwnerMapPayloadLimit || b.used.ProgramInstructions > b.limits.ProgramInstructions-OwnerInstructionLimit || b.used.HistoryEntries > b.limits.HistoryEntries-OwnerHistoryLimit {
 		return nil, fmt.Errorf("aggregate persistent-owner budget exhausted")

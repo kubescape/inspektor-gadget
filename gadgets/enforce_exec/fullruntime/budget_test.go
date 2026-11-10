@@ -51,9 +51,9 @@ func TestBudgetScopeCapacityAndSharedHandles(t *testing.T) {
 }
 
 func TestBudgetConcurrentCopies(t *testing.T) {
-	b := testBudget(t, 8)
+	b := testBudget(t, LegacyOwnerHardCap)
 	var wg sync.WaitGroup
-	for scope := uint64(1); scope <= 8; scope++ {
+	for scope := uint64(1); scope <= LegacyOwnerHardCap; scope++ {
 		r, err := b.reserve(scope)
 		if err != nil {
 			t.Fatal(err)

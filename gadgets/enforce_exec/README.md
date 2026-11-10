@@ -297,6 +297,16 @@ second; saturation loses reports while enforcement continues. Overlap temporaril
 loads both instances and their resources. These are explicit map/rule limits,
 not a total memory budget.
 
+Every BPF trampoline accepts at most 38 links on both exact AL2023 kernels,
+shared by fentry, fexit and LSM programs and by every BPF consumer on the node
+(one stock link already sits on `file_open`). Enforcement families attach
+all-or-nothing, may use at most 8 links per hook (the exec family needs at
+most 3) and leave 8 free for third parties. On exhaustion the whole family
+refuses with an error naming the hook, stays NotReady and retries
+automatically (by default) once capacity frees. The legacy per-cgroup owner
+does not retry, refuses at once and is capped at 2 per node. There is no support claim for owner
+concurrency. See [attach capacity](fullruntime/README.md#attach-capacity-readiness-and-the-owner-cap-g009).
+
 No programs or maps are pinned. Stopping or killing the owning IG/node-agent
 releases enforcement; workloads continue. Removing a binding intentionally
 removes protection for that cgroup. Container scope is exact, excluding descendant
