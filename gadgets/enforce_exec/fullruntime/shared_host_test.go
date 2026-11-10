@@ -271,7 +271,7 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 			"\t\t\t(void)se_of_withdraw_directory(&lease, physical);\n" +
 			"\t\t(void)se_of_release(&lease, physical);\n",
 	} {
-		if strings.Count(source, guard) != 1 {
+		if strings.Count(squashSpace(source), squashSpace(guard)) != 1 {
 			t.Errorf("verdict candidate compile guard missing or changed:\n%s", guard)
 		}
 	}
@@ -284,7 +284,7 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 	header := string(raw)
 	marker := "#include \"shared_pool_opaque_writer_candidate.h\"\n/* Physical-reuse fix (G025 batch F)."
 	withdraw := "#define SE_OF_WITHDRAW_DIRECTORY 1\nstatic inline int se_of_withdraw_directory(struct se_of_lease *lease,\n"
-	if strings.Count(header, marker) != 1 || strings.Count(header, withdraw) != 1 {
+	if strings.Count(squashSpace(header), squashSpace(marker)) != 1 || strings.Count(squashSpace(header), squashSpace(withdraw)) != 1 {
 		t.Error("final-free header lost the unconditional physical-reuse directory withdrawal")
 	}
 	// The single insert retry (and its non-aborting STALE return) is
@@ -299,7 +299,7 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 		"\t\tif (status == SE_OL_STALE)\n\t\t\treturn -1;\n",
 		"\tif (status == SE_OL_CONTENDED) {\n\t\tstatus = se_op_replace_charged_child(reservation, opaque_key,\n\t\t\tarchive);\n\t\tif (status != -1)\n\t\t\treturn status;\n\t\tstatus = se_ow_insert_zero(reservation->meta,\n",
 	} {
-		if strings.Count(birth, pin) != 1 {
+		if strings.Count(squashSpace(birth), squashSpace(pin)) != 1 {
 			t.Errorf("birth header lost the unconditional physical-reuse insert retry:\n%s", pin)
 		}
 	}
@@ -325,7 +325,14 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	precondition := "/* Bitmap word of a slot-local TASK index.\n * Precondition: local < SE_OC_QUOTA."
-	if strings.Count(string(raw), precondition) != 1 {
+	if strings.Count(squashSpace(string(raw)), squashSpace(precondition)) != 1 {
 		t.Error("charge header lost the SE_OC_WORD precondition (local < SE_OC_QUOTA)")
 	}
+}
+
+// squashSpace removes all whitespace, so the compile guard pins survive
+// clang-format re-wrapping and re-indentation while still failing when a
+// guard, call or condition is removed or changed.
+func squashSpace(s string) string {
+	return strings.Join(strings.Fields(s), "")
 }
