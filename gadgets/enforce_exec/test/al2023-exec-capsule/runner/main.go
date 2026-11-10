@@ -48,10 +48,12 @@ const (
 	statCount
 )
 
-var statNames = [statCount]string{"begin", "uncovered_begin", "stale_retired",
+var statNames = [statCount]string{
+	"begin", "uncovered_begin", "stale_retired",
 	"frozen", "frozen_uncovered", "pinned", "pin_failed", "original_claim",
 	"terminal", "foreign_terminal", "success", "check_only",
-	"release_fault", "fault"}
+	"release_fault", "fault",
+}
 
 const (
 	routeOwned      = 1
@@ -306,7 +308,7 @@ func (f *fixture) load(spec *ebpf.CollectionSpec, pidMax uint32) error {
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			return fmt.Errorf("load: %+v", ve)
+			return fmt.Errorf("load: %+w", ve)
 		}
 		return fmt.Errorf("load: %w", err)
 	}
@@ -586,9 +588,11 @@ func migrate(newPID bool) func(*fixture, uint32) error {
 		}
 		d = d.delta(before)
 		// launcher, script(+interpreter), fresh /bin/true.
-		if err = exactly(d, map[int]uint64{statBegin: 3, statTerminal: 3,
+		if err = exactly(d, map[int]uint64{
+			statBegin: 3, statTerminal: 3,
 			statSuccess: 3, statForeignTerminal: 0, statFrozen: 3,
-			statPinned: 3, statOriginalClaim: 1, statStaleRetired: 0}); err != nil {
+			statPinned: 3, statOriginalClaim: 1, statStaleRetired: 0,
+		}); err != nil {
 			return err
 		}
 		return f.quiescent(cmd.Process.Pid)
@@ -658,9 +662,11 @@ func waiterScenario(f *fixture, original uint32) error {
 	d = d.delta(before)
 	// waiter, winner script(+interpreter), fresh /bin/true; the loser never
 	// begins and its terminal is the only FOREIGN one.
-	if err = exactly(d, map[int]uint64{statBegin: 3, statTerminal: 3,
+	if err = exactly(d, map[int]uint64{
+		statBegin: 3, statTerminal: 3,
 		statSuccess: 3, statForeignTerminal: 1, statFrozen: 3,
-		statPinned: 3, statOriginalClaim: 1, statStaleRetired: 0}); err != nil {
+		statPinned: 3, statOriginalClaim: 1, statStaleRetired: 0,
+	}); err != nil {
 		return err
 	}
 	return f.quiescent(cmd.Process.Pid)
@@ -676,7 +682,7 @@ func failureScenario(f *fixture, original uint32) error {
 	err = cmd.Run()
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 104 {
-		return fmt.Errorf("want launcher exit 104 after ENOEXEC, got %v", err)
+		return fmt.Errorf("want launcher exit 104 after ENOEXEC, got %w", err)
 	}
 	o, err := f.observation(cmd.Process.Pid)
 	if err != nil {
@@ -695,8 +701,10 @@ func failureScenario(f *fixture, original uint32) error {
 		return err
 	}
 	d = d.delta(before)
-	if err = exactly(d, map[int]uint64{statBegin: 2, statTerminal: 2,
-		statSuccess: 1, statFrozen: 2, statPinned: 2, statOriginalClaim: 0}); err != nil {
+	if err = exactly(d, map[int]uint64{
+		statBegin: 2, statTerminal: 2,
+		statSuccess: 1, statFrozen: 2, statPinned: 2, statOriginalClaim: 0,
+	}); err != nil {
 		return err
 	}
 	return f.quiescent(cmd.Process.Pid)
@@ -729,19 +737,23 @@ func checkScenario(f *fixture, release string) error {
 	d = d.delta(before)
 	if strings.HasPrefix(release, "6.18.") {
 		if errno != 0 {
-			return fmt.Errorf("6.18 AT_EXECVE_CHECK failed: %v", errno)
+			return fmt.Errorf("6.18 AT_EXECVE_CHECK failed: %w", errno)
 		}
-		if err = exactly(d, map[int]uint64{statBegin: 1, statTerminal: 1,
-			statCheckOnly: 1, statSuccess: 0, statFrozen: 0}); err != nil {
+		if err = exactly(d, map[int]uint64{
+			statBegin: 1, statTerminal: 1,
+			statCheckOnly: 1, statSuccess: 0, statFrozen: 0,
+		}); err != nil {
 			return err
 		}
 	} else {
 		// Rejected inside alloc_bprm, before any bprm or hook.
 		if errno != unix.EINVAL {
-			return fmt.Errorf("6.12 AT_EXECVE_CHECK: want EINVAL, got %v", errno)
+			return fmt.Errorf("6.12 AT_EXECVE_CHECK: want EINVAL, got %w", errno)
 		}
-		if err = exactly(d, map[int]uint64{statBegin: 0, statTerminal: 0,
-			statCheckOnly: 0}); err != nil {
+		if err = exactly(d, map[int]uint64{
+			statBegin: 0, statTerminal: 0,
+			statCheckOnly: 0,
+		}); err != nil {
 			return err
 		}
 	}
@@ -799,9 +811,11 @@ func lateAttach(spec *ebpf.CollectionSpec, pidMax uint32, f *fixture, original u
 	}
 	// The in-flight script exec has no begin and no terminal; only the
 	// fresh /bin/true is covered and retires the uncovered capsule.
-	if err = exactly(s, map[int]uint64{statBegin: 1, statTerminal: 1,
+	if err = exactly(s, map[int]uint64{
+		statBegin: 1, statTerminal: 1,
 		statSuccess: 1, statFrozen: 2, statFrozenUncovered: 1,
-		statPinned: 1, statStaleRetired: 1, statUncoveredBegin: 0}); err != nil {
+		statPinned: 1, statStaleRetired: 1, statUncoveredBegin: 0,
+	}); err != nil {
 		return err
 	}
 	return f.quiescent(cmd.Process.Pid)
@@ -925,7 +939,7 @@ func live(spec *ebpf.CollectionSpec, waiter string) (retErr error) {
 		markers = n
 		return n == 0, err
 	}); err != nil {
-		report("markers-drained", fmt.Errorf("%d nonzero markers: %v", markers, err))
+		report("markers-drained", fmt.Errorf("%d nonzero markers: %w", markers, err))
 	} else {
 		report("markers-drained", nil)
 	}

@@ -309,8 +309,10 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 		if spec.Maps["opaque_real_deferred_storage_refusals"] == nil || tasks == nil {
 			t.Fatal("small storage needs an object built with ENFORCE_EXEC_POOL_OPAQUE_DEFERRED_STORAGE_WITNESS_DIAGNOSTIC")
 		}
-		for _, name := range []string{"se_exec_terminal_receipts", "se_failure_outer_frames",
-			"se_failure_handler_frames", "opaque_birth_receipts"} {
+		for _, name := range []string{
+			"se_exec_terminal_receipts", "se_failure_outer_frames",
+			"se_failure_handler_frames", "opaque_birth_receipts",
+		} {
 			m := spec.Maps[name]
 			if m == nil {
 				t.Fatalf("verdict object lacks %s", name)
@@ -329,8 +331,10 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 		need = append(need, "opaque_real_live_bootstrap_second_route", "opaque_real_owner_second_policy_seed")
 	}
 	if reuseRace {
-		for _, name := range []string{"opaque_real_fail_closed_rates", "opaque_real_replace_failures",
-			"opaque_real_reuse_hold_request"} {
+		for _, name := range []string{
+			"opaque_real_fail_closed_rates", "opaque_real_replace_failures",
+			"opaque_real_reuse_hold_request",
+		} {
 			if spec.Maps[name] == nil {
 				t.Fatalf("reuse race needs an object built with ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE and ENFORCE_EXEC_POOL_OPAQUE_ABORT_INJECTOR_DIAGNOSTIC (missing %s)", name)
 			}
@@ -395,8 +399,10 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 	mustUpdate("opaque_real_owner_child_gate", uint32(0), uint32(1))
 	// Node config must equal the compiled profile: 2x256 cells, optionally
 	// one 1024-cell object (needed for more than 245 seeded rules).
-	wire := sharedNodeWire{NodeCookie: 11, Nonce: 22, ABI: 3, ProfileVersion: 1,
-		Bindings: 2, Objects: 2, Cells: 512, Slots: [4]uint32{2}}
+	wire := sharedNodeWire{
+		NodeCookie: 11, Nonce: 22, ABI: 3, ProfileVersion: 1,
+		Bindings: 2, Objects: 2, Cells: 512, Slots: [4]uint32{2},
+	}
 	if c.Maps["se_arena"] != nil {
 		if info, err := c.Maps["se_arena"].Info(); err == nil && info.MaxEntries == 1536 {
 			wire.Objects, wire.Cells, wire.Slots = 3, 1536, [4]uint32{2, 1}
@@ -410,10 +416,12 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 	mustUpdate("opaque_real_owner_rule_uid_expect", uint32(0), uint32(0))
 	mustUpdate("opaque_real_policy_verdict_rules", uint32(0), uint32(rules))
 	mustUpdate("opaque_real_policy_verdict_set_role", uint32(0), uint32(setRole))
-	frozen := []string{"se_configuration", "opaque_real_live_bootstrap_gate",
+	frozen := []string{
+		"se_configuration", "opaque_real_live_bootstrap_gate",
 		"opaque_real_owner_child_gate", "se_opaque_payload_zero", "se_opaque_work_zero",
 		"opaque_real_policy_verdict_fallback", "opaque_real_owner_rule_uid_expect",
-		"opaque_real_policy_verdict_rules", "opaque_real_policy_verdict_set_role"}
+		"opaque_real_policy_verdict_rules", "opaque_real_policy_verdict_set_role",
+	}
 	// Second policy (object 1): the migration route's opposite-class policy
 	// (binding 1), or the reload policy of the same class whose fallback
 	// is flipped (binding 0, unpinned until the generation advance).
@@ -485,7 +493,7 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 		"echo $$ > \"$1/cgroup.procs\" || exit 97; \"$2\" <&0 & child=$!; wait \"$child\"",
 		"ig15-real-verdict-launcher", cgroup, helper)
 	invalid := filepath.Join(t.TempDir(), "invalid-executable")
-	if err := os.WriteFile(invalid, []byte("invalid executable image\n"), 0755); err != nil {
+	if err := os.WriteFile(invalid, []byte("invalid executable image\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cmd.Env = append(os.Environ(), "IG_OPAQUE_FAIL_EXEC_PATH="+invalid, "IG_OPAQUE_PIDS_CGROUP="+cgroup)
@@ -563,8 +571,10 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 	attachKprobe(handler, "opaque_real_owner_failure_handler_exit", true)
 	attachKprobe(handler, "opaque_real_owner_failure_handler_enter", false)
 	attachKprobe(outer, "opaque_real_owner_failure_outer_enter", false)
-	for _, name := range append([]string{"opaque_real_owner_reader_success_probe",
-		"opaque_real_owner_failure_fexit_probe"}, opaqueVerdictCapsuleOrder...) {
+	for _, name := range append([]string{
+		"opaque_real_owner_reader_success_probe",
+		"opaque_real_owner_failure_fexit_probe",
+	}, opaqueVerdictCapsuleOrder...) {
 		l, err := link.AttachTracing(link.TracingOptions{Program: c.Programs[name]})
 		if err != nil {
 			t.Fatalf("attach %s: %v", name, err)
@@ -573,9 +583,11 @@ func TestOpaqueRealPolicyVerdictAttached(t *testing.T) {
 	}
 	attachLSM("opaque_real_owner_reader_begin_probe")
 
-	v := &opaqueVerdictRun{t: t, c: c, spec: spec, stdin: stdin, stdout: reader,
+	v := &opaqueVerdictRun{
+		t: t, c: c, spec: spec, stdin: stdin, stdout: reader,
 		stderr: &stderr, parent: physical, parentLocator: taskLocator, class: class,
-		fallback: fallback, cgroup: st.Ino, rules: rules, setRole: setRole}
+		fallback: fallback, cgroup: st.Ino, rules: rules, setRole: setRole,
+	}
 	v.init()
 	if _, err := stdin.Write([]byte("EXEC\n")); err != nil {
 		t.Fatal(err)
@@ -731,8 +743,10 @@ func (v *opaqueVerdictRun) init() {
 	for _, q := range []struct {
 		charges, accounts string
 		quota             *uint32
-	}{{"se_opaque_charges", "se_opaque_accounts", &v.taskQuota},
-		{"se_opaque_work_charges", "se_opaque_work_accounts", &v.workQuota}} {
+	}{
+		{"se_opaque_charges", "se_opaque_accounts", &v.taskQuota},
+		{"se_opaque_work_charges", "se_opaque_work_accounts", &v.workQuota},
+	} {
 		charges, accounts := v.spec.Maps[q.charges], v.spec.Maps[q.accounts]
 		if charges == nil || accounts == nil || accounts.MaxEntries == 0 ||
 			charges.MaxEntries%accounts.MaxEntries != 0 {
@@ -1223,7 +1237,7 @@ func (v *opaqueVerdictRun) usedAccounts() (tasks, works uint32, err error) {
 	for i, name := range []string{"se_opaque_accounts", "se_opaque_work_accounts"} {
 		raw, err := v.c.Maps[name].LookupBytes(account)
 		if err != nil || len(raw) < 12 {
-			return 0, 0, fmt.Errorf("%s[%d]: %v", name, account, err)
+			return 0, 0, fmt.Errorf("%s[%d]: %w", name, account, err)
 		}
 		// Layout: lock, used, fault, incarnation (static-asserted wires).
 		if fault := binary.LittleEndian.Uint32(raw[8:12]); fault != 0 {
@@ -1485,7 +1499,7 @@ func (v *opaqueVerdictRun) contend(stop <-chan struct{}, s *opaqueContenderStats
 				return
 			}
 			if code, _, err := program.Test(make([]byte, 64)); err != nil || code != 0 {
-				s.err = fmt.Errorf("contender test-run: code=%d err=%v", code, err)
+				s.err = fmt.Errorf("contender test-run: code=%d err=%w", code, err)
 				return
 			}
 			s.calls++
@@ -1519,7 +1533,7 @@ func (v *opaqueVerdictRun) reapPass(s *opaqueReaperStats, flagsOffset, flagsSize
 	for slot := account * v.workQuota; slot < (account+1)*v.workQuota; slot++ {
 		raw, err := v.c.Maps["se_opaque_work_charges"].LookupBytes(slot)
 		if err != nil || len(raw) < 8 {
-			return fmt.Errorf("WORK charge %d: %v", slot, err)
+			return fmt.Errorf("WORK charge %d: %w", slot, err)
 		}
 		cookie := binary.LittleEndian.Uint64(raw[:8])
 		if cookie == 0 || v.parentWorks[slot] == cookie {
@@ -1529,7 +1543,7 @@ func (v *opaqueVerdictRun) reapPass(s *opaqueReaperStats, flagsOffset, flagsSize
 		if s.workStarted[slot] != cookie {
 			meta, err := v.c.Maps["se_opaque_work_meta"].LookupBytes(slot)
 			if err != nil || len(meta) < 16 {
-				return fmt.Errorf("WORK meta %d: %v", slot, err)
+				return fmt.Errorf("WORK meta %d: %w", slot, err)
 			}
 			// se_owk_meta: lock, phase, cookie. 4 = DONE, 5 = ABORTED.
 			phase := binary.LittleEndian.Uint32(meta[4:8])
@@ -1568,7 +1582,7 @@ func (v *opaqueVerdictRun) reapPass(s *opaqueReaperStats, flagsOffset, flagsSize
 		}
 		raw, err := v.c.Maps["se_opaque_charges"].LookupBytes(slot)
 		if err != nil || len(raw) < 40 {
-			return fmt.Errorf("TASK charge %d: %v", slot, err)
+			return fmt.Errorf("TASK charge %d: %w", slot, err)
 		}
 		cookie := binary.LittleEndian.Uint64(raw[:8])
 		if cookie == 0 {
@@ -1577,7 +1591,7 @@ func (v *opaqueVerdictRun) reapPass(s *opaqueReaperStats, flagsOffset, flagsSize
 		if s.taskStarted[slot] != cookie {
 			meta, err := v.c.Maps["se_opaque_meta"].LookupBytes(slot)
 			if err != nil || len(meta) < 24 {
-				return fmt.Errorf("TASK meta %d: %v", slot, err)
+				return fmt.Errorf("TASK meta %d: %w", slot, err)
 			}
 			// se_ol_meta: lock, phase, locator, cookie.
 			phase := binary.LittleEndian.Uint32(meta[4:8])
@@ -1594,7 +1608,7 @@ func (v *opaqueVerdictRun) reapPass(s *opaqueReaperStats, flagsOffset, flagsSize
 			}
 			payload, err := v.c.Maps["se_opaque_payload"].LookupBytes(slot)
 			if err != nil || len(payload) < flagsOffset+flagsSize {
-				return fmt.Errorf("TASK payload %d: %v", slot, err)
+				return fmt.Errorf("TASK payload %d: %w", slot, err)
 			}
 			flags := uint64(binary.LittleEndian.Uint32(payload[flagsOffset:]))
 			if flagsSize == 8 {
@@ -1721,8 +1735,10 @@ func (v *opaqueVerdictRun) concurrent(births int, opts opaqueConcurrentOptions) 
 	setAbortEvery(opts.abortEvery)
 	defer setAbortEvery(0)
 	flagsOffset, flagsSize := opaqueSourceField(v.t, v.taskType, []string{"flags"})
-	stats := &opaqueReaperStats{workStarted: map[uint32]uint64{}, taskStarted: map[uint32]uint64{},
-		taskAborted: map[uint32]bool{}, deadSeen: map[uint32][2]time.Time{}}
+	stats := &opaqueReaperStats{
+		workStarted: map[uint32]uint64{}, taskStarted: map[uint32]uint64{},
+		taskAborted: map[uint32]bool{}, deadSeen: map[uint32][2]time.Time{},
+	}
 	var reaperErr error
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -2074,7 +2090,7 @@ func (v *opaqueVerdictRun) concurrent(births int, opts opaqueConcurrentOptions) 
 		v.leaks(label)
 	}
 	for code, n := range exits {
-		if code != 0 && !(strict && code == 77) {
+		if code != 0 && (!strict || code != 77) {
 			fail("%s: %d children exited %d", label, n, code)
 		}
 	}
@@ -2163,7 +2179,7 @@ func (v *opaqueVerdictRun) concurrent(births int, opts opaqueConcurrentOptions) 
 	// refusal before cgroup_can_fork; none may be born. Every receipt the
 	// task_free path retired unobserved is a failed birth, never free_task.
 	for errno, n := range failedErrno {
-		if errno != int(unix.EAGAIN) && !(strict && errno == int(unix.EPERM)) {
+		if errno != int(unix.EAGAIN) && (!strict || errno != int(unix.EPERM)) {
 			fail("%s: %d failed births refused with errno %d", label, n, errno)
 		}
 	}
@@ -2305,10 +2321,14 @@ func (v *opaqueVerdictRun) concurrent(births int, opts opaqueConcurrentOptions) 
 		// value only with their test-only witness; without it the slot
 		// prints "na" and is skipped, never derived from the value under
 		// test.
-		want := [FailClosedRateClasses]uint64{out[4], sourceRefusals, missingTarget,
-			evalRefused + evalChargedFailed, storageQuarantined, out[2] + out[3] + out[5] + out[6]}
-		known := [FailClosedRateClasses]bool{true, true, true,
-			evalWitness != nil, storageWitness != nil, true}
+		want := [FailClosedRateClasses]uint64{
+			out[4], sourceRefusals, missingTarget,
+			evalRefused + evalChargedFailed, storageQuarantined, out[2] + out[3] + out[5] + out[6],
+		}
+		known := [FailClosedRateClasses]bool{
+			true, true, true,
+			evalWitness != nil, storageWitness != nil, true,
+		}
 		wantText := make([]string, FailClosedRateClasses)
 		match := true
 		for i := range want {

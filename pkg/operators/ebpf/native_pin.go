@@ -52,7 +52,8 @@ func (p *nativePinnedLink) Check() error {
 func (p *nativePinnedLink) Close() error { return p.link.Close() }
 
 func nativePinAndVerifyLink(original link.Link, name, path string, want *link.Info,
-	load func(string, *ebpf.LoadPinOptions) (link.Link, error)) (operators.NativePinnedLink, error) {
+	load func(string, *ebpf.LoadPinOptions) (link.Link, error),
+) (operators.NativePinnedLink, error) {
 	if original == nil || want == nil || want.ID == 0 || want.Program == 0 ||
 		want.Type != link.TracingType {
 		return nil, fmt.Errorf("invalid recovery link identity")

@@ -79,8 +79,10 @@ func TestStageCandidateKernel(t *testing.T) {
 				if scenario.lastMatch && i == count-1 {
 					path = "/safe"
 				}
-				rules[i] = Rule{Name: fmt.Sprintf("rule-%03d", i), Action: Deny,
-					Target: Target{Path: []string{path}}}
+				rules[i] = Rule{
+					Name: fmt.Sprintf("rule-%03d", i), Action: Deny,
+					Target: Target{Path: []string{path}},
+				}
 			}
 			policies := []Policy{{ID: "stage", Revision: "1", Mode: Enforce, Rules: rules}}
 			compiled, err := CompileKernel(policies, 1, "stage-container")

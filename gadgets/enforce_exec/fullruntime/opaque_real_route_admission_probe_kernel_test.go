@@ -70,10 +70,12 @@ func TestOpaqueRealRouteAdmissionProbeKernelLoad(t *testing.T) {
 			t.Fatalf("opaque owner map %s differs from shared profile: %+v", name, m)
 		}
 	}
-	for _, name := range []string{"se_tasks", "se_invocations",
+	for _, name := range []string{
+		"se_tasks", "se_invocations",
 		"se_pool_task_meta", "se_pool_task_payload",
 		"writer_probe_route", "writer_probe_snapshots",
-		"opaque_lifecycle_gate", "opaque_lifecycle_policy_object"} {
+		"opaque_lifecycle_gate", "opaque_lifecycle_policy_object",
+	} {
 		if spec.Maps[name] != nil {
 			t.Fatalf("real-route diagnostic includes legacy or synthetic map %s", name)
 		}

@@ -28,7 +28,8 @@ func runOpaqueRealConcurrentBoundary(t *testing.T, c *ebpf.Collection,
 	attachLSM func(string) link.Link, birth, qualify link.Link,
 	ctx context.Context, cgroup, helper string,
 	postPublishFault, postPublishTaskCloseFault, untrackedStrict bool,
-	untrackedHelper string, initialTask bool, initialHelper string) {
+	untrackedHelper string, initialTask bool, initialHelper string,
+) {
 	t.Helper()
 	type parent struct {
 		cmd    *exec.Cmd

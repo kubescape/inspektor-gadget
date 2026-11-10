@@ -103,7 +103,7 @@ func (i *ebpfInstance) installNativePoolReaperChain(gc operators.GadgetContext) 
 		previous.Close()
 	}
 	if err == nil || !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return fmt.Errorf("pool reaper chain is not initially empty: %v", err)
+		return fmt.Errorf("pool reaper chain is not initially empty: %w", err)
 	}
 	if err := chain.Update(uint32(0), loadedChunk, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("installing pool reaper chunk: %w", err)

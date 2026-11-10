@@ -18,7 +18,8 @@ import (
 // before the real source runs. This is pending-terminal refusal, not yet a
 // physically reused TASK/ABA or simultaneous-terminal-race proof.
 func runOpaqueRealPendingReceiptAttached(t *testing.T, collection *ebpf.Collection,
-	stdin io.Writer, cmd *exec.Cmd, physical, locator uint64, stderr *bytes.Buffer) {
+	stdin io.Writer, cmd *exec.Cmd, physical, locator uint64, stderr *bytes.Buffer,
+) {
 	t.Helper()
 	var receipt [64]byte
 	charge, err := collection.Maps["se_opaque_charges"].LookupBytes(uint32(0))

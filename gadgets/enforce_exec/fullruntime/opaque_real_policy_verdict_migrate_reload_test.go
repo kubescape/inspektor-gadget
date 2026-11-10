@@ -313,8 +313,10 @@ func (v *opaqueVerdictRun) migratedChild(label, command string, freshExit int) {
 		if scriptErrno != wantErrno || exit != wantExit {
 			v.t.Fatalf("%s: script errno %d exit %d, want errno %d exit %d for original class %d", label, scriptErrno, exit, wantErrno, wantExit, v.class)
 		}
-		want := map[int]uint64{opaqueCapBegin: 2, opaqueCapFrozen: 2, opaqueCapPinned: 2,
-			opaqueCapOriginalClaim: 1, opaqueCapTerminal: 2, opaqueCapSuccess: 1}
+		want := map[int]uint64{
+			opaqueCapBegin: 2, opaqueCapFrozen: 2, opaqueCapPinned: 2,
+			opaqueCapOriginalClaim: 1, opaqueCapTerminal: 2, opaqueCapSuccess: 1,
+		}
 		for i, n := range want {
 			if capDelta[i] != n {
 				v.t.Fatalf("%s: capsule stat %d delta %d, want %d (%v)", label, i, capDelta[i], n, capDelta)
@@ -341,8 +343,10 @@ func (v *opaqueVerdictRun) migratedChild(label, command string, freshExit int) {
 		if exit != freshExit {
 			v.t.Fatalf("%s: exit %d, want %d (fresh exec on the class-%d route)", label, exit, freshExit, 3-v.class)
 		}
-		want := map[int]uint64{opaqueCapBegin: 1, opaqueCapFrozen: 1, opaqueCapPinned: 1,
-			opaqueCapOriginalClaim: 0, opaqueCapTerminal: 1, opaqueCapSuccess: uint64(map[bool]int{true: 1}[exit == 0])}
+		want := map[int]uint64{
+			opaqueCapBegin: 1, opaqueCapFrozen: 1, opaqueCapPinned: 1,
+			opaqueCapOriginalClaim: 0, opaqueCapTerminal: 1, opaqueCapSuccess: uint64(map[bool]int{true: 1}[exit == 0]),
+		}
 		for i, n := range want {
 			if capDelta[i] != n {
 				v.t.Fatalf("%s: capsule stat %d delta %d, want %d (%v)", label, i, capDelta[i], n, capDelta)

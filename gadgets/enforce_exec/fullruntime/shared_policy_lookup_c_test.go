@@ -26,9 +26,11 @@ func TestSharedPolicyPrepareFailureInvalidatesView(t *testing.T) {
 	for _, optimization := range []string{"-O0", "-O2"} {
 		t.Run(optimization, func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "policy-prepare")
-			args := []string{"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
+			args := []string{
+				"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
 				"-iquote", root, "-iquote", filepath.Join(root, "../fullpolicy/bpf"),
-				"testdata/shared_policy_prepare.c", "-o", binary}
+				"testdata/shared_policy_prepare.c", "-o", binary,
+			}
 			if out, err := exec.CommandContext(t.Context(), cc, args...).CombinedOutput(); err != nil {
 				t.Fatalf("compile policy prepare: %v\n%s", err, out)
 			}

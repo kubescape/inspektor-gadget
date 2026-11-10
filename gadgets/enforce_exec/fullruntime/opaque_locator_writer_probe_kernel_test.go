@@ -59,8 +59,10 @@ func TestOpaqueLocatorWriterProbeKernel(t *testing.T) {
 	}
 	// This ABI is a replacement TASK owner, not a bridge beside the legacy
 	// address-keyed TASK or the abandoned address-mixer pool maps.
-	for _, old := range []string{"se_tasks", "se_pool_task_meta",
-		"se_pool_task_payload", "se_pool_directory"} {
+	for _, old := range []string{
+		"se_tasks", "se_pool_task_meta",
+		"se_pool_task_payload", "se_pool_directory",
+	} {
 		if spec.Maps[old] != nil {
 			t.Fatalf("opaque TASK candidate unexpectedly contains %s", old)
 		}

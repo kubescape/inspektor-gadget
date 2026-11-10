@@ -84,7 +84,8 @@ func (l *recoveredLiveTestLease) Close() error {
 }
 
 func runRecoveredReaperStep(t *testing.T, collection *ebpf.Collection,
-	input io.Writer, output *bufio.Reader, step uint64) uint32 {
+	input io.Writer, output *bufio.Reader, step uint64,
+) uint32 {
 	t.Helper()
 	wire := recoveredReapRequestWire{1, 1, 11, 1, step, 32, 16, step - 1, 0, 0}
 	if err := collection.Maps["se_pool_reap_request"].Update(uint32(0), wire, ebpf.UpdateAny); err != nil {
@@ -130,7 +131,8 @@ func runRecoveredReaperStep(t *testing.T, collection *ebpf.Collection,
 
 func runRecoveredTaskQuotaExhaustion(t *testing.T, collection *ebpf.Collection,
 	targetInput io.Writer, targetOutput *bufio.Reader, adminInput io.Writer,
-	adminOutput *bufio.Reader, nextStep *uint64, rootCookie uint64) {
+	adminOutput *bufio.Reader, nextStep *uint64, rootCookie uint64,
+) {
 	t.Helper()
 	accountUsed := func(name string) uint32 {
 		t.Helper()
@@ -448,7 +450,8 @@ func runRecoveredTaskQuotaExhaustion(t *testing.T, collection *ebpf.Collection,
 
 func runRecoveredFirstFork(t *testing.T, collection *ebpf.Collection,
 	targetInput io.Writer, targetOutput *bufio.Reader, adminInput io.Writer,
-	adminOutput *bufio.Reader, nextStep *uint64, rootCookie uint64, parentCount int) {
+	adminOutput *bufio.Reader, nextStep *uint64, rootCookie uint64, parentCount int,
+) {
 	t.Helper()
 	if parentCount < 1 || parentCount > 8 {
 		t.Fatalf("invalid first-fork parent count %d", parentCount)
@@ -636,7 +639,8 @@ func runRecoveredFirstFork(t *testing.T, collection *ebpf.Collection,
 // must return the exact unpublished charge instead.
 func runRecoveredAbortedBirths(t *testing.T, collection *ebpf.Collection,
 	targetInput io.Writer, targetOutput *bufio.Reader, adminInput io.Writer,
-	adminOutput *bufio.Reader, nextStep *uint64, rootCookie uint64, count int) {
+	adminOutput *bufio.Reader, nextStep *uint64, rootCookie uint64, count int,
+) {
 	t.Helper()
 	request := func(command byte) string {
 		t.Helper()
@@ -835,9 +839,11 @@ func TestOpaqueRecoveredInitialTaskLive(t *testing.T) {
 			t.Fatalf("borrow recovered live pin %s: %v", path, err)
 		}
 	}
-	lease := &recoveredLiveTestLease{proc: borrowed[0], cgroup: borrowed[1],
+	lease := &recoveredLiveTestLease{
+		proc: borrowed[0], cgroup: borrowed[1],
 		mount: borrowed[2], hostMount: borrowed[3], pid: uint32(target.Process.Pid),
-		cgroupID: cgstat.Ino}
+		cgroupID: cgstat.Ino,
+	}
 	lease.start, err = readPinnedInitStart(lease.proc, lease.pid)
 	if err != nil {
 		_ = lease.Close()
@@ -892,9 +898,11 @@ func TestOpaqueRecoveredInitialTaskLive(t *testing.T) {
 		selected[name] = spec.Programs[name]
 	}
 	if spec.Maps["opaque_birth_receipts"] != nil {
-		for _, name := range []string{"opaque_real_owner_successful_birth_candidate",
+		for _, name := range []string{
+			"opaque_real_owner_successful_birth_candidate",
 			"opaque_real_owner_birth_free_task_candidate",
-			"opaque_real_owner_birth_signal0_diagnostic"} {
+			"opaque_real_owner_birth_signal0_diagnostic",
+		} {
 			if spec.Programs[name] == nil {
 				t.Fatalf("birth receipt map lacks source %s", name)
 			}
@@ -945,8 +953,10 @@ func TestOpaqueRecoveredInitialTaskLive(t *testing.T) {
 	if err := collection.Maps["opaque_recovered_initial_request"].Update(uint32(0), request, ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"opaque_real_live_bootstrap_gate", "opaque_real_owner_child_gate",
-		"opaque_recovered_initial_request", "se_opaque_payload_zero", "se_opaque_work_zero"} {
+	for _, name := range []string{
+		"opaque_real_live_bootstrap_gate", "opaque_real_owner_child_gate",
+		"opaque_recovered_initial_request", "se_opaque_payload_zero", "se_opaque_work_zero",
+	} {
 		if err := collection.Maps[name].Freeze(); err != nil {
 			t.Fatalf("freeze %s: %v", name, err)
 		}
@@ -1009,8 +1019,10 @@ func TestOpaqueRecoveredInitialTaskLive(t *testing.T) {
 			_ = links[i].Close()
 		}
 	}()
-	for _, name := range []string{"opaque_real_owner_child_source_candidate",
-		"opaque_real_owner_child_final_free_candidate", "opaque_real_owner_recovered_initial_task_diagnostic"} {
+	for _, name := range []string{
+		"opaque_real_owner_child_source_candidate",
+		"opaque_real_owner_child_final_free_candidate", "opaque_real_owner_recovered_initial_task_diagnostic",
+	} {
 		attached, err := link.AttachLSM(link.LSMOptions{Program: collection.Programs[name]})
 		if err != nil {
 			t.Fatalf("attach %s: %v", name, err)

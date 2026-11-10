@@ -227,7 +227,8 @@ func testOpaqueStage2AttachedCase(t *testing.T, sourceObject, evaluatorObject, c
 	productObjectShape := os.Getenv("IG_OPAQUE_STAGE2_PRODUCT_OBJECT_TRUST_DIAG") == "1"
 	sourceNames := []string{
 		"opaque_lifecycle_task_alloc", "opaque_lifecycle_task_free",
-		"opaque_lifecycle_exec", "opaque_lifecycle_work_reap", "opaque_lifecycle_reap"}
+		"opaque_lifecycle_exec", "opaque_lifecycle_work_reap", "opaque_lifecycle_reap",
+	}
 	if productObjectShape {
 		sourceNames = append(sourceNames, "opaque_lifecycle_seed_policy_object")
 	}
@@ -313,9 +314,11 @@ func testOpaqueStage2AttachedCase(t *testing.T, sourceObject, evaluatorObject, c
 			t.Fatalf("missing-target case unexpectedly has target ID %d", absent)
 		}
 	}
-	for _, name := range []string{"opaque_lifecycle_gate", "opaque_lifecycle_tail_targets",
+	for _, name := range []string{
+		"opaque_lifecycle_gate", "opaque_lifecycle_tail_targets",
 		"opaque_lifecycle_suspended_diag_target", "writer_probe_gate",
-		"se_opaque_payload_zero", "se_opaque_work_zero"} {
+		"se_opaque_payload_zero", "se_opaque_work_zero",
+	} {
 		if err := source.Maps[name].Freeze(); err != nil {
 			t.Fatalf("freeze %s: %v", name, err)
 		}

@@ -24,13 +24,26 @@ var fields = []struct {
 	name         string
 	offset, size uint32
 }{
-	{"lock", 0, 4}, {"incarnation", 4, 4}, {"cgroup_identity", 8, 8},
-	{"scope", 16, 8}, {"payload_generation", 24, 8}, {"active_serial", 32, 8},
-	{"admission_serial", 40, 8}, {"payload_slot", 48, 4}, {"active_record", 52, 4},
-	{"execution_class", 56, 4}, {"phase", 60, 4}, {"early_claims", 64, 4},
-	{"reserved", 68, 4}, {"tasks_used", 72, 4}, {"scratch_used", 76, 4},
-	{"inode_refs", 80, 4}, {"inode_reserved", 84, 4}, {"next_source_pin", 88, 8},
-	{"source_pins", 96, 4}, {"unresolved_sources", 100, 4},
+	{"lock", 0, 4},
+	{"incarnation", 4, 4},
+	{"cgroup_identity", 8, 8},
+	{"scope", 16, 8},
+	{"payload_generation", 24, 8},
+	{"active_serial", 32, 8},
+	{"admission_serial", 40, 8},
+	{"payload_slot", 48, 4},
+	{"active_record", 52, 4},
+	{"execution_class", 56, 4},
+	{"phase", 60, 4},
+	{"early_claims", 64, 4},
+	{"reserved", 68, 4},
+	{"tasks_used", 72, 4},
+	{"scratch_used", 76, 4},
+	{"inode_refs", 80, 4},
+	{"inode_reserved", 84, 4},
+	{"next_source_pin", 88, 8},
+	{"source_pins", 96, 4},
+	{"unresolved_sources", 100, 4},
 }
 
 func checkLayout(t btf.Type) error {
@@ -55,6 +68,7 @@ func checkLayout(t btf.Type) error {
 	}
 	return nil
 }
+
 func inspect(s *ebpf.CollectionSpec) error {
 	if s.ByteOrder != binary.LittleEndian || len(s.Programs) != 2 || len(s.Maps) != 3 {
 		return fmt.Errorf("unexpected collection shape")
@@ -86,6 +100,7 @@ func targets(s *ebpf.CollectionSpec) map[string]string {
 	}
 	return map[string]string{"probe_entry": "__x64_sys_getpgid", "probe_exit": "__x64_sys_getpgid"}
 }
+
 func checkPrototype(f *btf.Func, exec bool) error {
 	p, ok := f.Type.(*btf.FuncProto)
 	if !ok || len(p.Params) != 1 {
@@ -112,6 +127,7 @@ func checkPrototype(f *btf.Func, exec bool) error {
 	}
 	return nil
 }
+
 func checkPublicationPrototype(f *btf.Func) error {
 	p, ok := f.Type.(*btf.FuncProto)
 	if !ok || len(p.Params) != 2 {
@@ -136,6 +152,7 @@ func checkPublicationPrototype(f *btf.Func) error {
 	}
 	return nil
 }
+
 func kernelPrototypes(s *ebpf.CollectionSpec) error {
 	k, err := btf.LoadKernelSpec()
 	if err != nil {
@@ -157,6 +174,7 @@ func kernelPrototypes(s *ebpf.CollectionSpec) error {
 	}
 	return nil
 }
+
 func kernelCheck() error {
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("amd64 only")
@@ -307,7 +325,7 @@ func live(s *ebpf.CollectionSpec) (retErr error) {
 		if closeErr != nil {
 			return closeErr
 		}
-		if e = os.Chmod(invalid, 0700); e != nil {
+		if e = os.Chmod(invalid, 0o700); e != nil {
 			return e
 		}
 	} else if targets(s)["probe_exit"] == "cgroup_kn_lock_live" {
@@ -329,7 +347,7 @@ func live(s *ebpf.CollectionSpec) (retErr error) {
 		if errors.Is(triggerErr, unix.ENOEXEC) {
 			triggerErr = nil
 		} else {
-			triggerErr = fmt.Errorf("expected ENOEXEC: %v", triggerErr)
+			triggerErr = fmt.Errorf("expected ENOEXEC: %w", triggerErr)
 		}
 	} else if publication != nil {
 		var n int
@@ -372,6 +390,7 @@ func live(s *ebpf.CollectionSpec) (retErr error) {
 	fmt.Println("PASS: two synchronous synthetic acquire/release pairs; NOT physical-exec/product proof")
 	return nil
 }
+
 func run() error {
 	object := flag.String("object", "", "explicit object path")
 	enabled := flag.Bool("run-isolated", false, "load/attach on reviewed isolated exact AL2023 kernel; default is inspect only")
@@ -392,6 +411,7 @@ func run() error {
 	}
 	return live(s)
 }
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

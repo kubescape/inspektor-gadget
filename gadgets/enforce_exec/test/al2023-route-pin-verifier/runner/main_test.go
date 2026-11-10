@@ -75,7 +75,7 @@ func TestPublicationRejectsOrdinaryFilesystem(t *testing.T) {
 func TestPublicationStateChecks(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"cgroup.subtree_control", "cgroup.procs", "cgroup.threads"} {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -86,13 +86,13 @@ func TestPublicationStateChecks(t *testing.T) {
 	for name, data := range map[string]string{"cgroup.subtree_control": "memory\n", "cgroup.procs": "1\n", "cgroup.threads": "2\n"} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, name)
-			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if p.check() == nil {
 				t.Fatal("changed mask or populated cgroup accepted")
 			}
-			if err := os.WriteFile(path, nil, 0600); err != nil {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -102,7 +102,7 @@ func TestPublicationStateChecks(t *testing.T) {
 func TestPublicationCleanup(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "owned")
-	if err := os.Mkdir(dir, 0700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	p := &publicationTrigger{dir: dir}
@@ -112,11 +112,11 @@ func TestPublicationCleanup(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("owned directory remains: %v", err)
 	}
-	if err := os.Mkdir(dir, 0700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	unexpected := filepath.Join(dir, "unexpected")
-	if err := os.WriteFile(unexpected, nil, 0600); err != nil {
+	if err := os.WriteFile(unexpected, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.close(); err == nil {

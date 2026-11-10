@@ -35,10 +35,12 @@ func TestOpaqueExecCapsuleContract(t *testing.T) {
 	for _, optimization := range []string{"-O0", "-O2"} {
 		t.Run(optimization, func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "exec-capsule")
-			args := []string{"-std=gnu11", optimization, "-Wall", "-Wextra",
+			args := []string{
+				"-std=gnu11", optimization, "-Wall", "-Wextra",
 				"-Werror", "-iquote", "../full", "-iquote",
 				"../fullpolicy/bpf",
-				"testdata/opaque_exec_capsule_contract.c", "-o", binary}
+				"testdata/opaque_exec_capsule_contract.c", "-o", binary,
+			}
 			if out, err := exec.CommandContext(t.Context(), cc, args...).CombinedOutput(); err != nil {
 				t.Fatalf("compile capsule fixture: %v\n%s", err, out)
 			}

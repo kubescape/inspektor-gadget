@@ -53,6 +53,7 @@ func digest(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
 func run() error {
 	object := flag.String("object", "", "reviewed observer BPF object")
 	cgroup := flag.String("cgroup", "", "existing empty isolated cgroup2")
@@ -166,7 +167,7 @@ func run() error {
 		}
 		defer os.RemoveAll(dir)
 		commandPath = filepath.Join(dir, "script")
-		if err := os.WriteFile(commandPath, []byte("#!"+*executable+" --ig-argv-phase\n"), 0700); err != nil {
+		if err := os.WriteFile(commandPath, []byte("#!"+*executable+" --ig-argv-phase\n"), 0o700); err != nil {
 			return err
 		}
 		args[0] = commandPath
@@ -197,7 +198,7 @@ func run() error {
 	if err != nil {
 		var v *ebpf.VerifierError
 		if errors.As(err, &v) {
-			return fmt.Errorf("verifier: %+v", v)
+			return fmt.Errorf("verifier: %+w", v)
 		}
 		return err
 	}

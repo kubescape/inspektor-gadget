@@ -18,7 +18,8 @@ import (
 // Direct shebang ownership diagnostic only; no policy reevaluation or role grant.
 func runOpaqueRealSameBprmAttached(t *testing.T, collection *ebpf.Collection,
 	spec *ebpf.CollectionSpec, stdin io.Writer, cmd *exec.Cmd, physical, locator, before uint64,
-	script, helper string, stderr *bytes.Buffer) {
+	script, helper string, stderr *bytes.Buffer,
+) {
 	t.Helper()
 	const name = "opaque_real_owner_continue_witness"
 	witness := collection.Maps[name]

@@ -249,8 +249,10 @@ func TestOpaqueRealOwnerLiveExecAttached(t *testing.T) {
 		}
 	}
 	if racingTerminal || sourceOwned {
-		for _, name := range []string{"opaque_real_owner_terminal_retain_target",
-			"opaque_real_owner_terminal_race_complete"} {
+		for _, name := range []string{
+			"opaque_real_owner_terminal_retain_target",
+			"opaque_real_owner_terminal_race_complete",
+		} {
 			if sourceOwned && name == "opaque_real_owner_terminal_race_complete" {
 				continue
 			}
@@ -306,9 +308,11 @@ func TestOpaqueRealOwnerLiveExecAttached(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bridge {
-		config := sharedNodeWire{NodeCookie: 11, Nonce: 22, ABI: 3,
+		config := sharedNodeWire{
+			NodeCookie: 11, Nonce: 22, ABI: 3,
 			ProfileVersion: 1, Bindings: 2, Objects: 2, Cells: 512,
-			Slots: [4]uint32{2}}
+			Slots: [4]uint32{2},
+		}
 		if err := collection.Maps["se_configuration"].Update(uint32(0), config,
 			ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
@@ -317,9 +321,11 @@ func TestOpaqueRealOwnerLiveExecAttached(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"opaque_real_live_bootstrap_gate",
+	for _, name := range []string{
+		"opaque_real_live_bootstrap_gate",
 		"opaque_real_owner_child_gate", "se_opaque_payload_zero",
-		"se_opaque_work_zero"} {
+		"se_opaque_work_zero",
+	} {
 		if err := collection.Maps[name].Freeze(); err != nil {
 			t.Fatalf("freeze %s: %v", name, err)
 		}
@@ -432,7 +438,7 @@ func TestOpaqueRealOwnerLiveExecAttached(t *testing.T) {
 	}
 	if producerFailure || failureDrain || promptFailure {
 		path := filepath.Join(t.TempDir(), "invalid-executable")
-		if err := os.WriteFile(path, []byte("invalid executable image\n"), 0755); err != nil {
+		if err := os.WriteFile(path, []byte("invalid executable image\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		cmd.Env = append(os.Environ(), "IG_OPAQUE_FAIL_EXEC_PATH="+path)
@@ -443,7 +449,7 @@ func TestOpaqueRealOwnerLiveExecAttached(t *testing.T) {
 			t.Fatal("same-bprm shebang requires a short helper path without whitespace")
 		}
 		scriptPath = filepath.Join(t.TempDir(), "direct-script")
-		if err := os.WriteFile(scriptPath, []byte("#!"+helper+"\n"), 0755); err != nil {
+		if err := os.WriteFile(scriptPath, []byte("#!"+helper+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		cmd.Env = append(os.Environ(), "IG_OPAQUE_SCRIPT_PATH="+scriptPath)
@@ -684,8 +690,10 @@ func TestOpaqueRealOwnerLiveExecAttached(t *testing.T) {
 		uint32(0), uint32(1), ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"opaque_real_owner_work_completion_selector",
-		"opaque_real_owner_work_completion_gate"} {
+	for _, name := range []string{
+		"opaque_real_owner_work_completion_selector",
+		"opaque_real_owner_work_completion_gate",
+	} {
 		if err := collection.Maps[name].Freeze(); err != nil {
 			t.Fatal(err)
 		}

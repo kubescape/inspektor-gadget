@@ -20,7 +20,8 @@ import (
 // idle, not on its next exec/fork. No meaningful role grants or Ready claim.
 func runOpaqueRealPromptFailureAttached(t *testing.T, collection *ebpf.Collection,
 	spec *ebpf.CollectionSpec, stdin io.Writer, stdout *bufio.Reader, cmd *exec.Cmd,
-	physical, locator uint64, stderr *bytes.Buffer) {
+	physical, locator uint64, stderr *bytes.Buffer,
+) {
 	t.Helper()
 	for _, name := range []string{"opaque_real_owner_work_completion_probe", "opaque_real_owner_work_retry_probe", "opaque_real_owner_terminal_race_complete"} {
 		if collection.Programs[name] != nil {

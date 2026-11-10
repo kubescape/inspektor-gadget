@@ -23,7 +23,8 @@ import (
 // Bootstrap birth/qualify remain attached for this isolated diagnostic only.
 func runOpaqueRealPolicyBridgeChildChurn(t *testing.T, collection *ebpf.Collection,
 	stdin io.Writer, reader *bufio.Reader, cmd *exec.Cmd, parent, parentLocator uint64,
-	cgroup uint64, stderr *bytes.Buffer, births int, pendingABA bool) {
+	cgroup uint64, stderr *bytes.Buffer, births int, pendingABA bool,
+) {
 	t.Helper()
 	parentCharge, err := collection.Maps["se_opaque_charges"].LookupBytes(uint32(0))
 	if err != nil || len(parentCharge) < 8 {

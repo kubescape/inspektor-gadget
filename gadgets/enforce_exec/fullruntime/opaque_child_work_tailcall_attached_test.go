@@ -65,8 +65,12 @@ func TestOpaqueChildWorkTailcallAttached(t *testing.T) {
 	cases := []struct {
 		name string
 		mode int
-	}{{"populated-target", 0}, {"missing-target", 1}, {"route-lost", 2},
-		{"abort-after-publish", 3}}
+	}{
+		{"populated-target", 0},
+		{"missing-target", 1},
+		{"route-lost", 2},
+		{"abort-after-publish", 3},
+	}
 	if churn != 0 {
 		cases = []struct {
 			name string
@@ -148,8 +152,10 @@ func runOpaqueChildWorkTailcallAttached(t *testing.T, object, cgroup string, cgr
 			t.Fatal(err)
 		}
 	}
-	for _, m := range []*ebpf.Map{gate, targets, fault, collection.Maps["writer_probe_gate"],
-		collection.Maps["se_opaque_payload_zero"], collection.Maps["se_opaque_work_zero"]} {
+	for _, m := range []*ebpf.Map{
+		gate, targets, fault, collection.Maps["writer_probe_gate"],
+		collection.Maps["se_opaque_payload_zero"], collection.Maps["se_opaque_work_zero"],
+	} {
 		if m == nil {
 			t.Fatal("missing frozen diagnostic prerequisite")
 		}
@@ -328,7 +334,8 @@ func runOpaqueChildWorkTailcallAttached(t *testing.T, object, cgroup string, cgr
 
 func runOpaqueChildWorkChurn(t *testing.T, collection *ebpf.Collection, counts *ebpf.Map,
 	cmd *exec.Cmd, stdin io.WriteCloser, reader *bufio.Reader, ctx context.Context,
-	stopKill func() bool, stderr *bytes.Buffer, births int) {
+	stopKill func() bool, stderr *bytes.Buffer, births int,
+) {
 	t.Helper()
 	for i := 0; i < births; i++ {
 		if _, err := io.WriteString(stdin, "GO\n"); err != nil {
@@ -368,7 +375,8 @@ func runOpaqueChildWorkChurn(t *testing.T, collection *ebpf.Collection, counts *
 // This is a diagnostic accounting test, not an enforcement-policy test.
 func runOpaqueChildWorkExhaustion(t *testing.T, collection *ebpf.Collection, counts *ebpf.Map,
 	cmd *exec.Cmd, stdin io.WriteCloser, reader *bufio.Reader, ctx context.Context,
-	stopKill func() bool, stderr *bytes.Buffer) {
+	stopKill func() bool, stderr *bytes.Buffer,
+) {
 	t.Helper()
 	const workQuota = 32
 	releaseChildren := func(want int) {
@@ -490,7 +498,8 @@ func runOpaqueChildWorkExhaustion(t *testing.T, collection *ebpf.Collection, cou
 // exact old DEAD key to the new charged constructor, never accept by address.
 func runOpaqueChildWorkReuse(t *testing.T, collection *ebpf.Collection, counts *ebpf.Map,
 	cmd *exec.Cmd, stdin io.WriteCloser, reader *bufio.Reader, ctx context.Context,
-	stopKill func() bool, stderr *bytes.Buffer) {
+	stopKill func() bool, stderr *bytes.Buffer,
+) {
 	t.Helper()
 	const births = 32
 	for i := 0; i < births; i++ {
@@ -546,7 +555,8 @@ func runOpaqueChildWorkReuse(t *testing.T, collection *ebpf.Collection, counts *
 // Use the fixture's exact slot/cookie reapers, WORK first. A successful
 // callback that merely returned zero but stranded a credit must fail here.
 func reapOpaqueChildWorkDiagnostic(t *testing.T, collection *ebpf.Collection,
-	wantDeaths, wantTasks, remainTasks, wantWork int) {
+	wantDeaths, wantTasks, remainTasks, wantWork int,
+) {
 	t.Helper()
 	requestMap := collection.Maps["opaque_lifecycle_request"]
 	workCharges := collection.Maps["se_opaque_work_charges"]

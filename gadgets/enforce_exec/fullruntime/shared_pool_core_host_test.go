@@ -30,9 +30,11 @@ func runSharedPoolCoreHostCandidate(t *testing.T, filename, marker string, defin
 	for _, optimization := range []string{"-O0", "-O2"} {
 		t.Run(optimization, func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "pool-core")
-			args := []string{"-std=gnu11", optimization,
+			args := []string{
+				"-std=gnu11", optimization,
 				"-Wall", "-Wextra", "-Werror", "-iquote", root,
-				"-iquote", policyRoot}
+				"-iquote", policyRoot,
+			}
 			args = append(args, defines...)
 			args = append(args, source, "-o", binary)
 			command := exec.CommandContext(t.Context(), cc, args...)

@@ -161,9 +161,11 @@ func TestOpaqueRealOwnerChildCandidateKernelLoad(t *testing.T) {
 		gate.Flags != unix.BPF_F_RDONLY_PROG {
 		t.Fatalf("invalid default-inert gate: %+v", gate)
 	}
-	for _, forbidden := range []string{"se_tasks", "se_invocations",
+	for _, forbidden := range []string{
+		"se_tasks", "se_invocations",
 		"writer_probe_route", "writer_probe_snapshots",
-		"opaque_lifecycle_policy_object", "opaque_lifecycle_gate"} {
+		"opaque_lifecycle_policy_object", "opaque_lifecycle_gate",
+	} {
 		if spec.Maps[forbidden] != nil {
 			t.Fatalf("mixed or synthetic owner map %s", forbidden)
 		}
@@ -221,9 +223,11 @@ func TestOpaqueRealOwnerChildRecoveredCandidateKernelLoad(t *testing.T) {
 		t.Fatalf("unexpected recovered cohort: maps=%d programs=%d admin=%v",
 			len(spec.Maps), len(spec.Programs), spec.Maps["se_admin"])
 	}
-	for _, name := range []string{"se_rm_configuration", "se_rm_guardian_request",
+	for _, name := range []string{
+		"se_rm_configuration", "se_rm_guardian_request",
 		"se_rm_admin_request", "se_rm_control", "se_rm_guardian_receipt",
-		"se_rm_admin_receipt"} {
+		"se_rm_admin_receipt",
+	} {
 		if spec.Maps[name] == nil {
 			t.Fatalf("missing recovered authorization map %s", name)
 		}
@@ -263,8 +267,10 @@ func TestOpaqueRealOwnerChildRecoveredCandidateKernelLoad(t *testing.T) {
 			t.Fatalf("invalid recovered callback %s: %+v", name, program)
 		}
 	}
-	for _, name := range []string{"se_rm_guardian", "se_rm_administrator", "se_command",
-		"se_pool_reaper_entry", "se_pool_reaper_chunk"} {
+	for _, name := range []string{
+		"se_rm_guardian", "se_rm_administrator", "se_command",
+		"se_pool_reaper_entry", "se_pool_reaper_chunk",
+	} {
 		if program := spec.Programs[name]; program == nil || program.Type != ebpf.SchedCLS {
 			t.Fatalf("invalid TEST_RUN-only recovered endpoint %s: %+v", name, program)
 		}

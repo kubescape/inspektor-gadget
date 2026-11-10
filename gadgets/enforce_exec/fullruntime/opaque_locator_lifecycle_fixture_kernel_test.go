@@ -311,8 +311,10 @@ func TestOpaqueLocatorLifecycleFixtureKernelRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"opaque_lifecycle_gate", "writer_probe_gate",
-		"se_opaque_payload_zero", "se_opaque_work_zero"} {
+	for _, name := range []string{
+		"opaque_lifecycle_gate", "writer_probe_gate",
+		"se_opaque_payload_zero", "se_opaque_work_zero",
+	} {
 		if err := collection.Maps[name].Freeze(); err != nil {
 			t.Fatalf("freeze %s: %v", name, err)
 		}
@@ -355,7 +357,7 @@ func TestOpaqueLocatorLifecycleFixtureKernelRun(t *testing.T) {
 			t.Fatalf("invalid fixture birth count %q", raw)
 		}
 	}
-	counters := opaqueLifecycleCounters(t, collection)
+	var counters []byte
 	var reclaimed uint64
 	var workReturned uint64
 	threadHelper := os.Getenv("IG_OPAQUE_LIFECYCLE_THREAD_HELPER")

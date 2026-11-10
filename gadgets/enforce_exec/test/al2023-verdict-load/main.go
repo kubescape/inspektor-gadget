@@ -166,7 +166,7 @@ func run() error {
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
-			return fmt.Errorf("load failed: %v\n--- verifier tail ---\n%s", err, tail(fmt.Sprintf("%+v", ve), 60))
+			return fmt.Errorf("load failed: %w\n--- verifier tail ---\n%s", err, tail(fmt.Sprintf("%+v", ve), 60))
 		}
 		return fmt.Errorf("load failed: %w", err)
 	}

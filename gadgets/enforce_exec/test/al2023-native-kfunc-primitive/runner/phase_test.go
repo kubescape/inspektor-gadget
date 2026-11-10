@@ -11,6 +11,7 @@ func phaseSample(args []string, p uint64) sample {
 	}
 	return s
 }
+
 func TestExactInterpreterPhases(t *testing.T) {
 	phases := [][]string{{"/script", "nonce"}, {"/elf", "--phase", "/script", "nonce"}}
 	a := phaseSample(phases[0], 0x9000)
@@ -32,6 +33,7 @@ func TestExactInterpreterPhases(t *testing.T) {
 		})
 	}
 }
+
 func TestRequiresObservedArgumentPageCrossing(t *testing.T) {
 	phases := [][]string{{"/elf", "abcdefgh"}}
 	crossing := phaseSample(phases[0], 0x1ff8)

@@ -19,9 +19,11 @@ func runOpaqueSourceModeHeaderless(t *testing.T, scenario string) {
 	for _, optimization := range []string{"-O0", "-O2"} {
 		t.Run(optimization, func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "headerless-source-mode")
-			args := []string{"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
+			args := []string{
+				"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
 				"-iquote", "../full", "-iquote", "../fullpolicy/bpf",
-				"testdata/opaque_source_mode_headerless_migration.c", "-o", binary}
+				"testdata/opaque_source_mode_headerless_migration.c", "-o", binary,
+			}
 			if out, err := exec.CommandContext(t.Context(), cc, args...).CombinedOutput(); err != nil {
 				t.Fatalf("compile actual-route fixture: %v\n%s", err, out)
 			}

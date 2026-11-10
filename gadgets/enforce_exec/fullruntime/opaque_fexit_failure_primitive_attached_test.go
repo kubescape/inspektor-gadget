@@ -92,7 +92,7 @@ func TestOpaqueFexitFailurePrimitiveAttached(t *testing.T) {
 		t.Fatal("missing or malformed primitive maps")
 	}
 	invalid := filepath.Join(t.TempDir(), "invalid-exec")
-	if err := os.WriteFile(invalid, []byte("invalid executable image\n"), 0755); err != nil {
+	if err := os.WriteFile(invalid, []byte("invalid executable image\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cg, err := os.Open(cgroup)

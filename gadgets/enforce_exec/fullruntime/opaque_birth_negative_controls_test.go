@@ -5,7 +5,6 @@ package fullruntime
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,7 +89,7 @@ func moveOpaqueBirthChild(t *testing.T, cgroup string, pid int) func() {
 		t.Fatal("scope movement requires exact disposable cgroup2")
 	}
 	sibling := cgroup + "-birth-moved"
-	if err := os.Mkdir(sibling, 0755); err != nil {
+	if err := os.Mkdir(sibling, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	restored := false
@@ -99,7 +98,7 @@ func moveOpaqueBirthChild(t *testing.T, cgroup string, pid int) func() {
 			return
 		}
 		restored = true
-		if err := os.WriteFile(filepath.Join(cgroup, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(cgroup, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o600); err != nil {
 			t.Errorf("restore held child scope: %v", err)
 		}
 		if err := os.Remove(sibling); err != nil {
@@ -107,7 +106,7 @@ func moveOpaqueBirthChild(t *testing.T, cgroup string, pid int) func() {
 		}
 	}
 	t.Cleanup(restore)
-	if err := os.WriteFile(filepath.Join(sibling, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(sibling, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	members, err := os.ReadFile(filepath.Join(sibling, "cgroup.procs"))
@@ -123,6 +122,6 @@ func moveOpaqueBirthChild(t *testing.T, cgroup string, pid int) func() {
 			t.Fatal("child remains in original exact scope")
 		}
 	}
-	t.Log(fmt.Sprintf("held child %d moved to distinct unbound sibling cgroup", pid))
+	t.Logf("held child %d moved to distinct unbound sibling cgroup", pid)
 	return restore
 }

@@ -22,7 +22,8 @@ import (
 // a batch runner must require observed overlap before calling it race proof.
 func runOpaqueRealTerminalRaceAttached(t *testing.T, collection *ebpf.Collection,
 	stdin io.Writer, cmd *exec.Cmd, physical, locator uint64, stderr *bytes.Buffer,
-	producerFailure bool) {
+	producerFailure bool,
+) {
 	t.Helper()
 	expectedPhase := uint32(2)
 	if producerFailure {
@@ -47,8 +48,10 @@ func runOpaqueRealTerminalRaceAttached(t *testing.T, collection *ebpf.Collection
 		uint32(0), uint32(1), ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"opaque_real_owner_work_completion_selector",
-		"opaque_real_owner_work_completion_gate"} {
+	for _, name := range []string{
+		"opaque_real_owner_work_completion_selector",
+		"opaque_real_owner_work_completion_gate",
+	} {
 		if err := collection.Maps[name].Freeze(); err != nil {
 			t.Fatal(err)
 		}

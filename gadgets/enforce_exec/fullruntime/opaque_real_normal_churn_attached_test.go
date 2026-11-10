@@ -50,7 +50,8 @@ func selectOpaqueNormalChurnBirthPrograms(spec *ebpf.CollectionSpec, selected ma
 // birth/qualify links are closed; only the real child source may construct it.
 func runOpaqueRealNormalChurnAttached(t *testing.T, c *ebpf.Collection, spec *ebpf.CollectionSpec,
 	attach func(string) link.Link, stdin io.Writer, stdout *bufio.Reader, cmd *exec.Cmd,
-	parent, parentLocator uint64, stderr *bytes.Buffer, births int) {
+	parent, parentLocator uint64, stderr *bytes.Buffer, births int,
+) {
 	t.Helper()
 	for _, name := range []string{"opaque_real_owner_work_completion_probe", "opaque_real_owner_work_retry_probe", "opaque_real_owner_terminal_race_complete"} {
 		if c.Programs[name] != nil {

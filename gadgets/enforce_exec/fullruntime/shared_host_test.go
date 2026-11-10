@@ -312,8 +312,10 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 			conditionals = append(conditionals, line)
 		}
 	}
-	if want := []string{"#ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_FINAL_FREE_CANDIDATE_H",
-		"#ifndef ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE"}; !slices.Equal(conditionals, want) {
+	if want := []string{
+		"#ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_FINAL_FREE_CANDIDATE_H",
+		"#ifndef ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE",
+	}; !slices.Equal(conditionals, want) {
 		t.Errorf("final-free header conditionals %q, want only %q: the withdrawal must not depend on any option", conditionals, want)
 	}
 	// SE_OC_WORD has no bound of its own in the one-word profile; its

@@ -23,7 +23,8 @@ type realPolicyBridgeWitness struct {
 
 func runOpaqueRealPolicyBridgeAttached(t *testing.T, collection *ebpf.Collection,
 	stdin io.Writer, cmd *exec.Cmd, physical, locator uint64, stderr *bytes.Buffer,
-	expectPrepared, expectWork, expectRuleMissing, expectUIDMatch bool) {
+	expectPrepared, expectWork, expectRuleMissing, expectUIDMatch bool,
+) {
 	t.Helper()
 	var witness realPolicyBridgeWitness
 	if progressMap := collection.Maps["opaque_real_owner_rule_progress"]; progressMap != nil {

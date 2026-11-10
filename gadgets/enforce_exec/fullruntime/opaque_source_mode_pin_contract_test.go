@@ -20,9 +20,11 @@ func runOpaqueSourceModeContract(t *testing.T, cases []string) {
 	for _, optimization := range []string{"-O0", "-O2"} {
 		t.Run(optimization, func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "source-mode-contract")
-			args := []string{"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
+			args := []string{
+				"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
 				"-iquote", "../full", "-iquote", "../fullpolicy/bpf",
-				"testdata/opaque_source_mode_pin_contract.c", "-o", binary}
+				"testdata/opaque_source_mode_pin_contract.c", "-o", binary,
+			}
 			if out, err := exec.CommandContext(t.Context(), cc, args...).CombinedOutput(); err != nil {
 				t.Fatalf("compile actual-header fixture: %v\n%s", err, out)
 			}

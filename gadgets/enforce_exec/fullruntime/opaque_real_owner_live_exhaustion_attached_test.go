@@ -23,7 +23,8 @@ import (
 // transitions are the actual opaque candidate. No exec verdict is tested.
 func runOpaqueRealCreditExhaustion(t *testing.T, collection *ebpf.Collection,
 	attachLSM func(string) link.Link, stdin io.Writer, reader *bufio.Reader,
-	cmd *exec.Cmd, parentPhysical uint64, workExhaust bool) {
+	cmd *exec.Cmd, parentPhysical uint64, workExhaust bool,
+) {
 	t.Helper()
 	if err := collection.Maps["opaque_real_owner_child_targets"].Update(uint32(0),
 		collection.Programs["opaque_real_owner_child_target_candidate"], ebpf.UpdateAny); err != nil {

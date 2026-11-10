@@ -65,8 +65,10 @@ func newSharedRecoveryLinkPins(gc operators.GadgetContext, profile SharedProfile
 	if err != nil {
 		return nil, err
 	}
-	ledger := &sharedRecoveryLinkPins{dirFD: ownedFD,
-		links: make(map[string]operators.NativePinnedLink, len(receipts))}
+	ledger := &sharedRecoveryLinkPins{
+		dirFD: ownedFD,
+		links: make(map[string]operators.NativePinnedLink, len(receipts)),
+	}
 	for idx, entry := range sharedRecoveryTaskLinks {
 		ledger.attempts = append(ledger.attempts, entry.program)
 		lease, err := receipts[idx].PinAt(ownedFD)

@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
 	"os"
 	"os/exec"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
@@ -111,7 +112,8 @@ func TestOpaqueBirthNegativeState(t *testing.T) {
 // after actual cleanup; it does not prove recovery from leaked lexical leases.
 func runOpaqueBirthNegativeAttached(t *testing.T, c *ebpf.Collection, spec *ebpf.CollectionSpec,
 	attach func(string) link.Link, stdin io.Writer, stdout *bufio.Reader, cmd *exec.Cmd,
-	parent uint64, stderr *bytes.Buffer, scenario, cgroup string, prior link.Link) {
+	parent uint64, stderr *bytes.Buffer, scenario, cgroup string, prior link.Link,
+) {
 	t.Helper()
 	for _, name := range []string{"opaque_real_owner_work_completion_probe", "opaque_real_owner_work_retry_probe", "opaque_real_owner_terminal_race_complete", "opaque_real_owner_birth_signal0_diagnostic"} {
 		if c.Programs[name] != nil {

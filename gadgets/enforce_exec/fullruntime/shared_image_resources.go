@@ -330,13 +330,15 @@ func sharedPoolGeometry(p SharedProfile) (map[string]operators.NativeMapResource
 // program-array slot must be installed with the exact loaded chunk program
 // before any reaper step is accepted. Geometry alone never makes it Ready.
 func sharedPoolReaperTransportGeometry() (map[string]operators.NativeMapResource, map[string]operators.NativeProgramResource) {
-	return map[string]operators.NativeMapResource{
+	maps := map[string]operators.NativeMapResource{
 		"se_pool_reap_stage": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 144, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
 		"se_pool_reap_chain": {Type: uint32(ebpf.ProgramArray), KeySize: 4, ValueSize: 4, MaxEntries: 1},
-	}, map[string]operators.NativeProgramResource{
+	}
+	programs := map[string]operators.NativeProgramResource{
 		"se_pool_reaper_entry": {Type: uint32(ebpf.SchedCLS), Instructions: 1},
 		"se_pool_reaper_chunk": {Type: uint32(ebpf.SchedCLS), Instructions: 1},
 	}
+	return maps, programs
 }
 
 func hasSharedPoolReaperTransport(r *operators.NativeResources) bool {
@@ -417,7 +419,7 @@ type sharedImageUsage struct {
 }
 
 func sharedImageGeometry(p SharedProfile) (map[string]operators.NativeMapResource, map[string]operators.NativeProgramResource) {
-	return map[string]operators.NativeMapResource{
+	maps := map[string]operators.NativeMapResource{
 		"se_tasks":            {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: sharedTaskValueBytes, MaxEntries: uint32(p.Tasks), Flags: unix.BPF_F_RDONLY},
 		"se_zero_tasks":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: sharedTaskValueBytes, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
 		"se_invocations":      {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: sharedInvocationValueBytes, MaxEntries: uint32(p.Scratch), Flags: unix.BPF_F_RDONLY},
@@ -436,7 +438,8 @@ func sharedImageGeometry(p SharedProfile) (map[string]operators.NativeMapResourc
 		"se_epoch_bank":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 32, MaxEntries: uint32(p.AcceptedUIDs), Flags: unix.BPF_F_RDONLY},
 		"se_epoch_index":      {Type: uint32(ebpf.Hash), KeySize: 16, ValueSize: 4, MaxEntries: uint32(p.AcceptedUIDs), Flags: unix.BPF_F_RDONLY},
 		"se_arm_frame":        {Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 176, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
-	}, map[string]operators.NativeProgramResource{
+	}
+	programs := map[string]operators.NativeProgramResource{
 		"se_command":               {Type: uint32(ebpf.Syscall)},
 		"se_publication_arm":       {Type: uint32(ebpf.Tracing), Target: "cgroup_kn_lock_live"},
 		"se_sched_exec":            {Type: uint32(ebpf.Tracing), Target: "sched_process_exec"},
@@ -447,6 +450,7 @@ func sharedImageGeometry(p SharedProfile) (map[string]operators.NativeMapResourc
 		"enforce_exec_full":        {Type: uint32(ebpf.LSM), Target: "bprm_check_security"},
 		"enforce_exec_track_memfd": {Type: uint32(ebpf.LSM), Target: "inode_init_security_anon"},
 	}
+	return maps, programs
 }
 
 func validateSharedImageResources(p SharedProfile, r *operators.NativeResources) (sharedImageUsage, error) {

@@ -18,9 +18,11 @@ func TestOpaqueExecReceiptClassification(t *testing.T) {
 	for _, optimization := range []string{"-O0", "-O2"} {
 		t.Run(optimization, func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "proposal")
-			args := []string{"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
+			args := []string{
+				"-std=gnu11", optimization, "-Wall", "-Wextra", "-Werror",
 				"-iquote", "../full", "-iquote", "../fullpolicy/bpf",
-				"testdata/opaque_exec_receipt_classify.c", "-o", binary}
+				"testdata/opaque_exec_receipt_classify.c", "-o", binary,
+			}
 			if out, err := exec.CommandContext(t.Context(), cc, args...).CombinedOutput(); err != nil {
 				t.Fatalf("compile: %v\n%s", err, out)
 			}
