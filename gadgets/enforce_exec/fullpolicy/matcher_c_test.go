@@ -14,17 +14,52 @@ import (
 	"testing"
 )
 
-func buildMatcherRunner(t *testing.T) string {
+func buildMatcherRunner(t *testing.T, flags ...string) string {
 	t.Helper()
 	clang, err := exec.LookPath("clang")
 	if err != nil {
 		t.Skip("plain-C matcher validation requires clang")
 	}
 	binary := filepath.Join(t.TempDir(), "matcher")
-	if output, err := exec.Command(clang, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "testdata/matcher_runner.c", "-o", binary).CombinedOutput(); err != nil {
+	args := []string{"-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"}
+	args = append(args, flags...)
+	args = append(args, "testdata/matcher_runner.c", "-o", binary)
+	if output, err := exec.Command(clang, args...).CombinedOutput(); err != nil {
 		t.Fatalf("compile matcher: %v\n%s", err, output)
 	}
 	return binary
+}
+
+func TestScalarGlobalMatcherContext(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("plain-C scalar matcher validation requires clang")
+	}
+	binary := filepath.Join(t.TempDir(), "matcher-scalar")
+	if output, err := exec.Command(clang, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "testdata/matcher_scalar_context.c", "-o", binary).CombinedOutput(); err != nil {
+		t.Fatalf("compile scalar matcher: %v\n%s", err, output)
+	}
+	if output, err := exec.Command(binary).CombinedOutput(); err != nil || !strings.Contains(string(output), "scalar matcher context PASS") {
+		t.Fatalf("scalar matcher: %v\n%s", err, output)
+	}
+}
+
+func TestWorkRunStateMatcherContext(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("plain-C WORK matcher validation requires clang")
+	}
+	for _, opt := range []string{"-O0", "-O2"} {
+		t.Run(opt, func(t *testing.T) {
+			binary := filepath.Join(t.TempDir(), "matcher-work-run")
+			if output, err := exec.Command(clang, "-std=c11", opt, "-Wall", "-Wextra", "-Werror", "testdata/matcher_work_run_state.c", "-o", binary).CombinedOutput(); err != nil {
+				t.Fatalf("compile WORK matcher: %v\n%s", err, output)
+			}
+			if output, err := exec.Command(binary).CombinedOutput(); err != nil || !strings.Contains(string(output), "WORK run state PASS") {
+				t.Fatalf("WORK matcher: %v\n%s", err, output)
+			}
+		})
+	}
 }
 
 func runCMatcher(t *testing.T, runner string, entries []Blob, key uint32, input []byte) int {
@@ -65,7 +100,20 @@ func compileMatcherPattern(t *testing.T, pattern string) (*KernelProgram, uint32
 }
 
 func TestCMatcherReferenceParity(t *testing.T) {
-	runner := buildMatcherRunner(t)
+	runMatcherReferenceParity(t, buildMatcherRunner(t))
+}
+
+func TestCMatcherBoundedGlobalReferenceParity(t *testing.T) {
+	runMatcherReferenceParity(t, buildMatcherRunner(t,
+		"-DFE_BOUNDED_LOOP_CANDIDATE", "-DFM_CANDIDATE_GLOBAL_TEST"))
+}
+
+func TestCMatcherWorkRunStateReferenceParity(t *testing.T) {
+	runMatcherReferenceParity(t, buildMatcherRunner(t,
+		"-DFE_BOUNDED_LOOP_CANDIDATE", "-DFM_WORK_RUN_STATE_DIAGNOSTIC"))
+}
+
+func runMatcherReferenceParity(t *testing.T, runner string) {
 	patterns := []string{"/**", "/usr/*", "/a?/x", "/[a-cx-z]", "/[^a-c]", "/[\\d]", "/工具/**", "/file\\*", "/line?", "/*a*a*a*a*a*", "/**/**/**", "/😀?", "/[α-ω]"}
 	inputs := []string{"", "/", "/usr/tool", "/usr/tool/sub", "/ab/x", "/a/x", "/b", "/z", "/d", "/5", "/工具/甲", "/file*", "/file1", "/line\n", "prefix/usr/tool", "/aaaaa", "/aaaaab", "/😀é", "/λ", "/x/y/z", "/" + strings.Repeat("a", 254)}
 	for _, pattern := range patterns {
@@ -106,7 +154,20 @@ func TestCMatcherRejectsInvalidOrIncompleteBytes(t *testing.T) {
 }
 
 func TestCMatcherBoundsAndEpsilonCycles(t *testing.T) {
-	runner := buildMatcherRunner(t)
+	runMatcherBoundsAndEpsilonCycles(t, buildMatcherRunner(t))
+}
+
+func TestCMatcherBoundedGlobalBoundsAndEpsilonCycles(t *testing.T) {
+	runMatcherBoundsAndEpsilonCycles(t, buildMatcherRunner(t,
+		"-DFE_BOUNDED_LOOP_CANDIDATE", "-DFM_CANDIDATE_GLOBAL_TEST"))
+}
+
+func TestCMatcherWorkRunStateBoundsAndEpsilonCycles(t *testing.T) {
+	runMatcherBoundsAndEpsilonCycles(t, buildMatcherRunner(t,
+		"-DFE_BOUNDED_LOOP_CANDIDATE", "-DFM_WORK_RUN_STATE_DIAGNOSTIC"))
+}
+
+func runMatcherBoundsAndEpsilonCycles(t *testing.T, runner string) {
 	makeEntries := func(pattern KernelPattern, code []KernelInstruction) []Blob {
 		entries := make([]Blob, 2+len(code))
 		var err error

@@ -21,10 +21,22 @@ struct se_pin_ticket {
 	__u64 scope, snapshot_serial, object_generation;
 	__u32 position, object_slot, phase, reserved;
 };
+/* Scoped factual metadata is not part of a deduplicated compiled object.
+ * PREPARE supplies it, Commit authenticates epochs/image authority; immutable
+ * once PREPARED. It never certifies successful history by itself. */
+struct se_snapshot_metadata {
+	__u64 root_epochs[8], policy_uids[8], image_handle;
+	__u32 role_writers, required_known, container_length;
+	unsigned char container[256];
+	__u32 reserved;
+};
+_Static_assert(sizeof(struct se_snapshot_metadata) == 408,
+	       "scoped metadata wire");
 struct se_snapshot {
 	__u64 scope, serial, command_sequence, generation;
 	__u32 phase, count, claims, commands, execution_class, reserved;
 	struct se_pin_ticket tickets[8];
+	struct se_snapshot_metadata metadata;
 };
 /* Exactly two records and sixteen tickets. No release outbox or dynamic queue.
  * A single command per record is intentionally serialized; exec claims are
@@ -42,8 +54,33 @@ struct se_snapshot_command {
 	__u32 record, kind, owned, reserved;
 };
 
+static __attribute__((always_inline)) inline int
+se_snapshot_metadata_valid(const struct se_snapshot_metadata *m, __u32 count,
+			   __u64 generation)
+{
+	if (!count || count > 8 || !generation || generation == ~0ULL ||
+	    m->reserved || !m->container_length || m->container_length > 255 ||
+	    ((m->role_writers | m->required_known) >> count))
+		return 0;
+	for (__u32 i = 0; i < 8; i++) {
+		if (i < count) {
+			if (!m->root_epochs[i] ||
+			    m->root_epochs[i] > generation ||
+			    !m->policy_uids[i])
+				return 0;
+			for (__u32 j = 0; j < i; j++)
+				if (m->policy_uids[j] == m->policy_uids[i])
+					return 0;
+		} else if (m->root_epochs[i] || m->policy_uids[i])
+			return 0;
+	}
+	return 1;
+}
 /* Binding lock held. Handles are fully validated before any persistent store. */
-static inline int
+/* Called while holding the original route lock. Older kernels reject BPF
+ * subprogram calls from that lexical region, even when Clang chose not to
+ * inline an ordinary static inline as the surrounding image grew. */
+static __attribute__((always_inline)) inline int
 se_snapshot_prepare_locked(struct se_binding_snapshots *b, __u32 record,
 			   const struct se_pin_ticket *handles, __u32 count,
 			   __u32 execution_class)
@@ -59,9 +96,13 @@ se_snapshot_prepare_locked(struct se_binding_snapshots *b, __u32 record,
 		return -1;
 	if (s->phase != SE_SNAPSHOT_FREE || s->commands || s->claims)
 		return -1;
+	/* Literal ticket offsets keep older verifiers inside the two-record map. */
+#ifdef __clang__
+#pragma unroll
+#endif
 	for (__u32 i = 0; i < 8; i++) {
 		if (i >= count)
-			break;
+			continue;
 		if (!handles[i].object_generation ||
 		    handles[i].object_generation == ~0ULL)
 			return -1;
@@ -71,9 +112,12 @@ se_snapshot_prepare_locked(struct se_binding_snapshots *b, __u32 record,
 				   .phase = SE_SNAPSHOT_PREPARING,
 				   .count = count,
 				   .execution_class = execution_class };
+#ifdef __clang__
+#pragma unroll
+#endif
 	for (__u32 i = 0; i < 8; i++) {
 		if (i >= count)
-			break;
+			continue;
 		s->tickets[i] = (struct se_pin_ticket){
 			.scope = s->scope,
 			.snapshot_serial = s->serial,
@@ -87,7 +131,7 @@ se_snapshot_prepare_locked(struct se_binding_snapshots *b, __u32 record,
 /* Acquire BEFORE retaining a record/ticket pointer outside the binding lock,
  * including retries, release and receipt inspection. RETIRING excludes PIN.
  */
-static inline int
+static __attribute__((always_inline)) inline int
 se_snapshot_command_begin_locked(struct se_binding_snapshots *b, __u32 record,
 				 __u64 scope, __u64 serial, __u32 kind,
 				 struct se_snapshot_command *c)
@@ -115,7 +159,8 @@ se_snapshot_command_begin_locked(struct se_binding_snapshots *b, __u32 record,
 }
 /* Caller consumed every record/ticket access and copied receipt to local memory
  * BEFORE this call; after it, only the local receipt/token may be touched. */
-static inline int se_snapshot_command_end_locked(struct se_binding_snapshots *b,
+static __attribute__((always_inline)) inline int
+se_snapshot_command_end_locked(struct se_binding_snapshots *b,
 						 struct se_snapshot_command *c)
 {
 	if (!c->owned || c->reserved || c->record >= 2 || c->scope != b->scope)
@@ -132,7 +177,8 @@ static inline int se_snapshot_command_end_locked(struct se_binding_snapshots *b,
 }
 /* Object lock ONLY, with an already-owned snapshot command spanning this call.
  * The caller supplies the selected ticket pointer from that stable record. */
-static inline int se_ticket_pin_locked(struct se_object *o,
+static __attribute__((always_inline)) inline int
+se_ticket_pin_locked(struct se_object *o,
 				       struct se_pin_ticket *t,
 				       const struct se_snapshot_command *c,
 				       __u32 position)
@@ -152,7 +198,8 @@ static inline int se_ticket_pin_locked(struct se_object *o,
 	t->phase = SE_TICKET_HELD;
 	return 0;
 }
-static inline int se_ticket_release_locked(struct se_object *o,
+static __attribute__((always_inline)) inline int
+se_ticket_release_locked(struct se_object *o,
 					   struct se_pin_ticket *t,
 					   const struct se_snapshot_command *c,
 					   __u32 position)
@@ -174,14 +221,19 @@ static inline int se_ticket_release_locked(struct se_object *o,
 	t->phase = SE_TICKET_RELEASED;
 	return 0;
 }
-static inline int se_snapshot_prepared_locked(struct se_snapshot *s)
+static __attribute__((always_inline)) inline int
+se_snapshot_prepared_locked(struct se_snapshot *s)
 {
-	if (s->phase != SE_SNAPSHOT_PREPARING || s->commands || !s->count ||
-	    s->count > 8)
+	__u32 count = s->count;
+	if (s->phase != SE_SNAPSHOT_PREPARING || s->commands || !count ||
+	    count > 8)
 		return -1;
+#ifdef __clang__
+#pragma unroll
+#endif
 	for (__u32 i = 0; i < 8; i++) {
-		if (i >= s->count)
-			break;
+		if (i >= count)
+			continue;
 		if (s->tickets[i].phase != SE_TICKET_HELD)
 			return -1;
 	}
@@ -190,7 +242,8 @@ static inline int se_snapshot_prepared_locked(struct se_snapshot *s)
 }
 /* Abort only an uncommitted candidate. ACTIVE retirement is exclusively the
  * binding-level Commit/Remove transition with all admission counts checked. */
-static inline int se_snapshot_retire_locked(struct se_snapshot *s)
+static __attribute__((always_inline)) inline int
+se_snapshot_retire_locked(struct se_snapshot *s)
 {
 	if (s->phase < SE_SNAPSHOT_PREPARING ||
 	    s->phase > SE_SNAPSHOT_PREPARED || s->commands || s->claims)
@@ -198,14 +251,19 @@ static inline int se_snapshot_retire_locked(struct se_snapshot *s)
 	s->phase = SE_SNAPSHOT_RETIRING;
 	return 0;
 }
-static inline int se_snapshot_reclaim_locked(struct se_snapshot *s)
+static __attribute__((always_inline)) inline int
+se_snapshot_reclaim_locked(struct se_snapshot *s)
 {
+	__u32 count = s->count;
 	if (s->phase != SE_SNAPSHOT_RETIRING || s->commands || s->claims ||
-	    s->count > 8)
+	    count > 8)
 		return -1;
+#ifdef __clang__
+#pragma unroll
+#endif
 	for (__u32 i = 0; i < 8; i++) {
-		if (i >= s->count)
-			break;
+		if (i >= count)
+			continue;
 		if (s->tickets[i].phase != SE_TICKET_EMPTY &&
 		    s->tickets[i].phase != SE_TICKET_RELEASED)
 			return -1;
@@ -220,7 +278,7 @@ static inline int se_snapshot_reclaim_locked(struct se_snapshot *s)
  * Inventory/epoch-target validation is additionally required by the adapter;
  * this primitive proves only snapshot/pin/admission preconditions.
  */
-static inline int
+static __attribute__((always_inline)) inline int
 se_binding_commit_preflight_locked(struct se_binding_snapshots *b, __u32 record,
 				   __u64 serial, __u64 expected_generation,
 				   __u64 qualification_serial)
@@ -232,13 +290,16 @@ se_binding_commit_preflight_locked(struct se_binding_snapshots *b, __u32 record,
 	    b->admission_serial >= ~0ULL - 1 || b->inflight)
 		return -1;
 	struct se_snapshot *s = &b->records[record];
+	/* Copy the pin count before the loop. Reloading it from the map lets
+	 * the verifier treat the trip count as unbounded and walk off tickets. */
+	__u32 n = s->count;
 	if (s->scope != b->scope || s->serial != serial ||
 	    s->phase != SE_SNAPSHOT_PREPARED || s->commands || s->claims ||
-	    !s->count || s->count > 8 || s->reserved ||
+	    !n || n > 8 || s->reserved ||
 	    s->execution_class < 1 || s->execution_class > 2)
 		return -1;
 	for (__u32 i = 0; i < 8; i++) {
-		if (i >= s->count)
+		if (i >= n)
 			break;
 		const struct se_pin_ticket *t = &s->tickets[i];
 		if (t->phase != SE_TICKET_HELD || t->scope != b->scope ||
@@ -247,9 +308,10 @@ se_binding_commit_preflight_locked(struct se_binding_snapshots *b, __u32 record,
 			return -1;
 	}
 	if (b->active_serial) {
-		if (b->active_record >= 2 || b->active_record == record)
+		__u32 old_index = b->active_record;
+		if (old_index >= 2 || old_index == record)
 			return -1;
-		const struct se_snapshot *old = &b->records[b->active_record];
+		const struct se_snapshot *old = &b->records[old_index & 1];
 		if (old->phase != SE_SNAPSHOT_ACTIVE ||
 		    old->scope != b->scope || old->serial != b->active_serial ||
 		    old->generation != b->generation || old->claims ||
@@ -263,11 +325,15 @@ se_binding_commit_preflight_locked(struct se_binding_snapshots *b, __u32 record,
 /* Infallible only under the above same-lock preflight contract. Pin counts are
  * untouched: candidate pins become ACTIVE pins, old pins remain RETIRING pins.
  */
-static inline void
+static __attribute__((always_inline)) inline void
 se_binding_commit_publish_locked(struct se_binding_snapshots *b, __u32 record)
 {
+	/* Two records. The mask is the verifier bound; preflight already
+	 * rejected every other index. */
+	__u32 old = b->active_record & 1;
+	record &= 1;
 	if (b->active_serial)
-		b->records[b->active_record].phase = SE_SNAPSHOT_RETIRING;
+		b->records[old].phase = SE_SNAPSHOT_RETIRING;
 	struct se_snapshot *s = &b->records[record];
 	s->generation = ++b->generation;
 	s->phase = SE_SNAPSHOT_ACTIVE;
@@ -278,7 +344,7 @@ se_binding_commit_publish_locked(struct se_binding_snapshots *b, __u32 record)
 /* Withdrawal preserves scope/generation and all accepted history. The adapter
  * must atomically tombstone routing in the SAME lock after this preflight; only
  * after ticket/routing-reader cleanup may it remove/reuse the routing cell. */
-static inline int
+static __attribute__((always_inline)) inline int
 se_binding_withdraw_preflight_locked(struct se_binding_snapshots *b,
 				     __u64 expected_generation,
 				     __u64 qualification_serial)
@@ -301,10 +367,12 @@ se_binding_withdraw_preflight_locked(struct se_binding_snapshots *b,
 		return -1;
 	return 0;
 }
-static inline void
+static __attribute__((always_inline)) inline void
 se_binding_withdraw_publish_locked(struct se_binding_snapshots *b)
 {
-	b->records[b->active_record].phase = SE_SNAPSHOT_RETIRING;
+	/* Two records. The mask is the verifier bound; preflight already
+	 * rejected every other index. */
+	b->records[b->active_record & 1].phase = SE_SNAPSHOT_RETIRING;
 	b->active_serial = 0;
 	b->active_record = 0;
 	b->admission_serial++;
@@ -322,7 +390,7 @@ struct se_reader_owner {
 	struct se_reader_token token;
 	__u32 owned, reserved;
 };
-static inline int
+static __attribute__((always_inline)) inline int
 se_reader_acquire_record_locked(struct se_binding_snapshots *b, __u32 record,
 				__u64 serial, __u64 scope, __u64 task_cookie,
 				struct se_reader_owner *owner,
@@ -333,6 +401,10 @@ se_reader_acquire_record_locked(struct se_binding_snapshots *b, __u32 record,
 	    b->active_serial != serial || b->active_record != record ||
 	    b->next_reader >= ~0ULL - 1 || b->admission_serial >= ~0ULL - 1)
 		return -1;
+	/* Clang otherwise removes a redundant mask after the strict check. Keep
+	 * the scalar barrier so older verifiers retain the two-record bound. */
+	asm volatile("" : "+r"(record));
+	record &= 1U;
 	struct se_snapshot *s = &b->records[record];
 	if (s->scope != scope || s->serial != serial ||
 	    s->phase != SE_SNAPSHOT_ACTIVE || s->generation != b->generation ||
@@ -361,7 +433,7 @@ static inline int se_reader_acquire_locked(struct se_binding_snapshots *b,
 					       b->active_serial, scope,
 					       task_cookie, owner, token);
 }
-static inline int se_reader_release_locked(struct se_binding_snapshots *b,
+static __attribute__((always_inline)) inline int se_reader_release_locked(struct se_binding_snapshots *b,
 					   struct se_reader_owner *owner,
 					   const struct se_reader_token *token)
 {
@@ -374,7 +446,10 @@ static inline int se_reader_release_locked(struct se_binding_snapshots *b,
 	    owner->token.record != token->record ||
 	    owner->token.execution_class != token->execution_class)
 		return -1;
-	struct se_snapshot *s = &b->records[token->record];
+	__u32 bounded_record = token->record;
+	asm volatile("" : "+r"(bounded_record));
+	bounded_record &= 1U;
+	struct se_snapshot *s = &b->records[bounded_record];
 	if (s->scope != token->scope || s->serial != token->serial ||
 	    s->phase != SE_SNAPSHOT_ACTIVE || !s->claims)
 		return -1;
@@ -384,7 +459,6 @@ static inline int se_reader_release_locked(struct se_binding_snapshots *b,
 }
 
 struct se_shared_binding {
-	struct bpf_spin_lock lock;
 	struct se_binding_snapshots state;
 };
 struct se_shared_object {
@@ -406,38 +480,38 @@ struct se_ticket_request {
  * A fixed map object pointer is safe across reuse: ticket generation is checked
  * while holding that object's lock, before touching its current pin count.
  */
-static inline int se_ticket_command(struct se_shared_binding *binding,
+static inline int se_ticket_command(struct bpf_spin_lock *authority_lock,
+				    struct se_shared_binding *binding,
 				    struct se_shared_object *object,
 				    const struct se_ticket_request *request,
 				    __u32 *receipt)
 {
-	if (request->position >= 8 || request->reserved)
+	/* Keep the checked scalar across helper calls; do not reload map input. */
+	__u32 position = request->position;
+	if (position >= 8 || request->reserved)
 		return -1;
 	struct se_snapshot_command command = {};
-	bpf_spin_lock(&binding->lock);
+	bpf_spin_lock(authority_lock);
 	int result = se_snapshot_command_begin_locked(
 		&binding->state, request->record, request->scope,
 		request->serial, request->kind, &command);
-	bpf_spin_unlock(&binding->lock);
+	bpf_spin_unlock(authority_lock);
 	if (result)
 		return result;
 	/* Record storage cannot be cleared/reused until this owned command ends. */
 	struct se_snapshot *snapshot = &binding->state.records[command.record];
 	__u32 local_receipt = 0;
-	if (request->position >= snapshot->count) {
+	if (position >= snapshot->count) {
 		result = -1;
 	} else {
-		struct se_pin_ticket *ticket =
-			&snapshot->tickets[request->position];
+		struct se_pin_ticket *ticket = &snapshot->tickets[position];
 		bpf_spin_lock(&object->lock);
 		if (command.kind == SE_COMMAND_PIN)
 			result = se_ticket_pin_locked(&object->state, ticket,
-						      &command,
-						      request->position);
+						      &command, position);
 		else if (command.kind == SE_COMMAND_RELEASE)
-			result = se_ticket_release_locked(&object->state,
-							  ticket, &command,
-							  request->position);
+			result = se_ticket_release_locked(
+				&object->state, ticket, &command, position);
 		bpf_spin_unlock(&object->lock);
 		SE_TICKET_BEFORE_COMMAND_END(binding);
 		/* The command excludes every other ticket command and record reuse.
@@ -445,9 +519,9 @@ static inline int se_ticket_command(struct se_shared_binding *binding,
 		if (!result)
 			local_receipt = ticket->phase;
 	}
-	bpf_spin_lock(&binding->lock);
+	bpf_spin_lock(authority_lock);
 	int end = se_snapshot_command_end_locked(&binding->state, &command);
-	bpf_spin_unlock(&binding->lock);
+	bpf_spin_unlock(authority_lock);
 	/* No snapshot/ticket dereference beyond this point. */
 	if (end || result)
 		return -1;

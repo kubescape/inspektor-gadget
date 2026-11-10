@@ -259,4 +259,180 @@ ER_INLINE int er_publish(struct er_state *state, const struct er_work *w,
 	state->version++;
 	return 0;
 }
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+/* Canonical-ledger primitives, not yet wired into owner storage. er_state is
+ * the sole persistent 16-cell ledger; these records are bounded scratch only.
+ * Caller holds a stable COMPLETE catalogue/descriptor authority claim from
+ * snapshot through final use, and exclusive candidate ownership for staging.
+ * Snapshot/store run under the task lock; classification/preparation run outside
+ * it. Caller rechecks physical task cookie, session, generation, eligibility and
+ * transaction ownership before either publisher. These helpers do not establish
+ * those properties, inventory coverage, or a candidate pass receipt.
+ * Prepared scratch is API-owned, not an untrusted command representation. */
+struct er_canonical_view {
+	struct er_work work;
+	__u32 accepted_mask;
+};
+struct er_fact_change {
+	struct er_row before, after;
+	__u32 index;
+};
+struct er_fact_patch {
+	__u64 base_version, authority_version;
+	__u32 count, prepared;
+	struct er_fact_change changes[ER_ACTIVE];
+};
+/* Preserve physical indices. Catalogue-proven unaccepted cells are omitted
+ * only from scratch; they must never be erased by publishing this projection. */
+ER_INLINE int er_canonical_classify(struct er_canonical_view *view)
+{
+	struct er_work *w = &view->work;
+	const struct er_candidate none = {};
+	view->accepted_mask = 0;
+	if (w->error || !w->authority_version || er_rows_valid(w->rows, &none))
+		return er_fail(w, ER_INVALID);
+	for (int i = 0; i < ER_SLOTS; i++)
+		if (er_row_kind(&w->rows[i], &none) == 1)
+			view->accepted_mask |= 1U << i;
+	w->prepared = 1;
+	return 0;
+}
+/* Caller snapshots with er_snapshot before classification. Only this projection
+ * may be inherited into a fresh RESERVED child; never overwrite a live child. */
+ER_INLINE int er_canonical_project(const struct er_canonical_view *view,
+				   struct er_work *projection)
+{
+	if (view->work.error || !view->work.prepared)
+		return ER_INVALID;
+	*projection = view->work;
+	for (int i = 0; i < ER_SLOTS; i++)
+		if (!(view->accepted_mask & (1U << i)))
+			projection->rows[i] = (struct er_row){};
+	return 0;
+}
+ER_INLINE int er_canonical_patch_prepare(const struct er_canonical_view *view,
+					 const struct er_row *desired,
+					 __u32 count,
+					 struct er_fact_patch *patch)
+{
+	patch->prepared = patch->count = 0;
+	if (view->work.error || !view->work.prepared || count > ER_ACTIVE)
+		return ER_INVALID;
+	patch->base_version = view->work.base_version;
+	patch->authority_version = view->work.authority_version;
+	const struct er_candidate none = {};
+	for (__u32 n = 0; n < ER_ACTIVE; n++) {
+		if (n >= count)
+			break;
+		if (er_row_kind(&desired[n], &none) != 1)
+			return ER_INVALID;
+		for (__u32 j = 0; j < n; j++)
+			if (desired[j].uid == desired[n].uid)
+				return ER_INVALID;
+		int found = -1;
+		for (int i = 0; i < ER_SLOTS; i++)
+			if ((view->accepted_mask & (1U << i)) &&
+			    view->work.rows[i].uid == desired[n].uid &&
+			    view->work.rows[i].epoch == desired[n].epoch)
+				found = i;
+		if (found < 0)
+			return ER_INVALID;
+		patch->changes[n] =
+			(struct er_fact_change){ .before =
+							 view->work.rows[found],
+						 .after = desired[n],
+						 .index = (__u32)found };
+	}
+	patch->count = count;
+	patch->prepared = 1;
+	return 0;
+}
+/* No catalogue/helper calls below. Validate ALL targets before the first store.
+ * Candidate-only writes cannot conflict: they neither move accepted cells nor
+ * change fact_version. Unchanged/empty patches do not consume a fact version. */
+ER_INLINE int er_canonical_patch_publish(struct er_state *state,
+					 const struct er_fact_patch *patch,
+					 __u64 authority)
+{
+	if (!patch->prepared || patch->count > ER_ACTIVE || !authority ||
+	    authority != patch->authority_version ||
+	    state->version != patch->base_version)
+		return ER_STALE;
+	int changed = 0;
+	for (__u32 n = 0; n < ER_ACTIVE; n++) {
+		if (n >= patch->count)
+			break;
+		const struct er_fact_change *change = &patch->changes[n];
+		if (change->index >= ER_SLOTS)
+			return ER_INVALID;
+		const struct er_row *row = &state->rows[change->index];
+		if (row->uid != change->before.uid ||
+		    row->epoch != change->before.epoch ||
+		    row->role != change->before.role ||
+		    row->knowledge != change->before.knowledge ||
+		    row->reserved != change->before.reserved)
+			return ER_STALE;
+		if (change->after.uid != row->uid ||
+		    change->after.epoch != row->epoch || !change->after.role ||
+		    change->after.reserved ||
+		    (change->after.knowledge != ER_ROLE_KNOWN &&
+		     change->after.knowledge != ER_ROLE_UNKNOWN))
+			return ER_INVALID;
+		changed |= row->role != change->after.role ||
+			   row->knowledge != change->after.knowledge;
+	}
+	if (changed && state->version >= ER_UNKNOWN - 1)
+		return ER_STALE;
+	for (__u32 n = 0; n < ER_ACTIVE; n++) {
+		if (n >= patch->count)
+			break;
+		const struct er_fact_change *change = &patch->changes[n];
+		/* Every index was rejected unless < ER_SLOTS before ANY store.
+		 * Exclusive owned scratch cannot change between passes. Constrain
+		 * this reload for the verifier without a fallible partial publisher. */
+		__u32 index = change->index & (ER_SLOTS - 1);
+		state->rows[index].role = change->after.role;
+		state->rows[index].knowledge = change->after.knowledge;
+	}
+	if (changed)
+		state->version++;
+	return 0;
+}
+/* Reuse existing bounded root planning in scratch. It preserves all accepted
+ * cells at their immutable indices. No accepted missing row acquires a root. */
+ER_INLINE int er_canonical_stage_prepare(struct er_canonical_view *view,
+					 const struct er_candidate *candidate,
+					 int lineage_verified)
+{
+	if (er_canonical_classify(view))
+		return view->work.error;
+	return er_stage_roots(&view->work, candidate, lineage_verified);
+}
+ER_INLINE int er_canonical_stage_publish(struct er_state *state,
+					 const struct er_canonical_view *view,
+					 __u64 authority)
+{
+	const struct er_work *w = &view->work;
+	if (w->error)
+		return w->error;
+	if (!w->prepared || !authority || authority != w->authority_version ||
+	    state->version != w->base_version)
+		return ER_STALE;
+	for (int i = 0; i < ER_SLOTS; i++) {
+		if (!(view->accepted_mask & (1U << i)))
+			continue;
+		const struct er_row *a = &state->rows[i], *b = &w->rows[i];
+		if (a->uid != b->uid || a->epoch != b->epoch ||
+		    a->role != b->role || a->knowledge != b->knowledge ||
+		    a->reserved != b->reserved)
+			return ER_STALE;
+	}
+	/* Held catalogue authority and exclusive staging make every other index
+  * still unaccepted. Never copy accepted cells or increment factual version. */
+	for (int i = 0; i < ER_SLOTS; i++)
+		if (!(view->accepted_mask & (1U << i)))
+			state->rows[i] = w->rows[i];
+	return 0;
+}
+#endif
 #endif

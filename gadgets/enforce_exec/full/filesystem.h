@@ -26,6 +26,7 @@ struct full_fs_diagnostics {
 struct full_fs_facts {
 	__u32 mask, known;
 };
+#ifndef FULL_FS_SHARED_MARK
 struct {
 	__uint(type, BPF_MAP_TYPE_INODE_STORAGE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
@@ -39,26 +40,34 @@ struct {
 	__type(value, struct full_fs_diagnostics);
 } fs_diagnostics SEC(".maps");
 
+#endif
+
 static __always_inline void full_fs_mark_memfd(struct inode *inode,
 					       const struct qstr *class)
 {
+#ifndef FULL_FS_SHARED_MARK
 	__u32 zero = 0;
 	struct full_fs_diagnostics *d =
 		bpf_map_lookup_elem(&fs_diagnostics, &zero);
 	if (!d)
 		return;
+#endif
 	__u32 length = 0;
 	const unsigned char *name = 0;
 	unsigned char bytes[7] = {};
 	if (!class || BPF_CORE_READ_INTO(&length, class, len) ||
 	    BPF_CORE_READ_INTO(&name, class, name) || !name) {
+#ifndef FULL_FS_SHARED_MARK
 		__sync_fetch_and_or(&d->faults, 2);
+#endif
 		return;
 	}
 	if (length != 7)
 		return;
 	if (bpf_probe_read_kernel(bytes, sizeof(bytes), name)) {
+#ifndef FULL_FS_SHARED_MARK
 		__sync_fetch_and_or(&d->faults, 2);
+#endif
 		return;
 	}
 	/* This is the kernel's security class QSTR(MEMFD_ANON_NAME), NOT the
@@ -68,6 +77,9 @@ static __always_inline void full_fs_mark_memfd(struct inode *inode,
 	    bytes[3] != 'm' || bytes[4] != 'f' || bytes[5] != 'd' ||
 	    bytes[6] != ']')
 		return;
+#ifdef FULL_FS_SHARED_MARK
+	FULL_FS_SHARED_MARK(inode);
+#else
 	if (bpf_inode_storage_get(&fs_inode_origins, inode, 0, 0))
 		return;
 	int reserved = 0;
@@ -93,6 +105,7 @@ static __always_inline void full_fs_mark_memfd(struct inode *inode,
 		return;
 	}
 	marker->memfd = 1;
+#endif
 }
 
 /* file must be a verifier-trusted, live exec file (not a probed raw file ptr).
@@ -121,9 +134,13 @@ full_file_filesystem(struct file *file)
 		if (magic != 0x01021994UL && magic != 0x958458f6UL)
 			out.known |= FULL_FS_MEMFD;
 	}
+#ifdef FULL_FS_SHARED_READ
+	if (FULL_FS_SHARED_READ(inode)) {
+#else
 	struct full_fs_marker *marker =
 		bpf_inode_storage_get(&fs_inode_origins, inode, 0, 0);
 	if (marker && marker->memfd == 1) {
+#endif
 		out.known |= FULL_FS_MEMFD;
 		out.mask |= FULL_FS_MEMFD;
 	}

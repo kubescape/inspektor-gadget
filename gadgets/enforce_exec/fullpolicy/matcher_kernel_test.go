@@ -20,6 +20,88 @@ type matcherKernelInput struct {
 	Bytes              [256]byte
 }
 
+type matcherScalarKernelInput struct {
+	PatternKey, Length, Slot, Reserved uint32
+	Cookie                             uint64
+	Bytes                              [256]byte
+}
+
+// The explicit scalar-context matcher uses a typed stack token as its fifth
+// global-function argument. This opt-in test loads and test-runs it without
+// attachment; it does not qualify selected exec enforcement or kernel matrix.
+func TestScalarGlobalMatcherKernel(t *testing.T) {
+	object := os.Getenv("IG_FULL_MATCHER_SCALAR_OBJECT")
+	if object == "" {
+		t.Skip("set IG_FULL_MATCHER_SCALAR_OBJECT to the compiled scalar matcher fixture on a BPF-capable host")
+	}
+	if os.Geteuid() != 0 {
+		t.Fatal("root required for scalar matcher TEST_RUN")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := ebpf.LoadCollectionSpec(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{Programs: ebpf.ProgramOptions{LogSizeStart: 16 * 1024 * 1024}})
+	if err != nil {
+		var verifier *ebpf.VerifierError
+		if errors.As(err, &verifier) {
+			t.Logf("complete scalar matcher verifier log:\n%+v", verifier)
+		}
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	blobs, inputs, program := collection.Maps["blobs"], collection.Maps["input_map"], collection.Programs["matcher_scalar"]
+	if blobs == nil || inputs == nil || program == nil || blobs.MaxEntries() != 2*MaxKernelEntries || blobs.ValueSize() != KernelBlobSize || inputs.ValueSize() != 280 {
+		t.Fatal("scalar matcher loaded ABI mismatch")
+	}
+	var keys [2]uint32
+	for slot, pattern := range []string{"/a", "/b"} {
+		compiled, key := compileMatcherPattern(t, pattern)
+		keys[slot] = key
+		for i, blob := range compiled.Entries {
+			if err := blobs.Put(uint32(slot*MaxKernelEntries+i), blob); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	run := func(slot uint32, cookie uint64, path string) int {
+		t.Helper()
+		input := matcherScalarKernelInput{PatternKey: keys[slot], Length: uint32(len(path)), Slot: slot, Cookie: cookie}
+		copy(input.Bytes[:], path)
+		if err := inputs.Put(uint32(0), input); err != nil {
+			t.Fatal(err)
+		}
+		result, _, err := program.Test(make([]byte, 64))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result > 2 {
+			t.Fatalf("invalid scalar matcher result %d", result)
+		}
+		return int(result) - 1
+	}
+	if run(0, 101, "/a") != 1 || run(0, 101, "/b") != 0 ||
+		run(1, 102, "/b") != 1 || run(1, 102, "/a") != 0 ||
+		run(0, 102, "/a") != -1 {
+		t.Fatal("scalar WORK token did not isolate matcher blobs")
+	}
+	longPath := "/" + strings.Repeat("a", 254)
+	longProgram, longKey := compileMatcherPattern(t, longPath)
+	keys[0] = longKey
+	for i, blob := range longProgram.Entries {
+		if err := blobs.Put(uint32(i), blob); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if run(0, 101, longPath) != 1 || run(0, 101, longPath+"a") != -1 ||
+		run(1, 102, "/b") != 1 {
+		t.Fatal("long scalar matcher changed bounds or crossed WORK slots")
+	}
+}
+
 // TestMatcherKernel verifies the matcher with BPF_PROG_TEST_RUN only. Nothing is
 // attached, and this is not proof of pre-exec fact acquisition or enforcement.
 func TestMatcherKernel(t *testing.T) {
@@ -36,9 +118,12 @@ func TestMatcherKernel(t *testing.T) {
 	if source == "" {
 		source = "bpf/matcher_test.bpf.c"
 	}
-	object := filepath.Join(t.TempDir(), "matcher.bpf.o")
-	if output, err := exec.Command("clang", "-target", "bpf", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", source, "-o", object).CombinedOutput(); err != nil {
-		t.Fatalf("compile BPF matcher: %v\n%s", err, output)
+	object := os.Getenv("IG_FULL_MATCHER_BPF_OBJECT")
+	if object == "" {
+		object = filepath.Join(t.TempDir(), "matcher.bpf.o")
+		if output, err := exec.Command("clang", "-target", "bpf", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", source, "-o", object).CombinedOutput(); err != nil {
+			t.Fatalf("compile BPF matcher: %v\n%s", err, output)
+		}
 	}
 	spec, err := ebpf.LoadCollectionSpec(object)
 	if err != nil {

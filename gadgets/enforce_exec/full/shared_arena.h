@@ -23,7 +23,10 @@ struct se_write_claim {
 	__u64 generation, attempt, sequence;
 	__u32 slot, index, owned, reserved;
 };
-static inline __u32 se_object_capacity(__u32 size_class)
+/* All object transitions below run under the object spinlock. Stock Rocky
+ * 4.18 disallows a BPF-to-BPF call in that lexical region. */
+static __attribute__((always_inline)) inline __u32
+se_object_capacity(__u32 size_class)
 {
 	switch (size_class) {
 	case 0:
@@ -38,7 +41,8 @@ static inline __u32 se_object_capacity(__u32 size_class)
 		return 0;
 	}
 }
-static inline int se_object_begin_locked(struct se_object *s, __u64 attempt,
+static __attribute__((always_inline)) inline int
+se_object_begin_locked(struct se_object *s, __u64 attempt,
 					 __u32 length)
 {
 	__u32 capacity = se_object_capacity(s->size_class);
@@ -57,7 +61,8 @@ static inline int se_object_begin_locked(struct se_object *s, __u64 attempt,
 	s->phase = SE_OBJECT_LOADING;
 	return 0;
 }
-static inline int se_object_write_begin_locked(struct se_object *s,
+static __attribute__((always_inline)) inline int
+se_object_write_begin_locked(struct se_object *s,
 					       __u64 generation, __u64 attempt,
 					       __u32 index,
 					       struct se_write_claim *w)
@@ -79,7 +84,8 @@ static inline int se_object_write_begin_locked(struct se_object *s,
 }
 /* Exact active sequence, not caller-owned alone, prevents copied stale tokens
  * refunding a later writer. Call only AFTER the last physical cell store. */
-static inline int se_object_write_finish_locked(struct se_object *s,
+static __attribute__((always_inline)) inline int
+se_object_write_finish_locked(struct se_object *s,
 						struct se_write_claim *w)
 {
 	if (!w->owned || w->reserved || !w->sequence ||
@@ -96,7 +102,8 @@ static inline int se_object_write_finish_locked(struct se_object *s,
 /* The trusted native compiler has validated all semantic data/references. This
  * publication boundary checks complete sequential installation and scalar
  * metadata; it deliberately does not repeat the deep native bytecode walk. */
-static inline int se_object_finalize_locked(struct se_object *s,
+static __attribute__((always_inline)) inline int
+se_object_finalize_locked(struct se_object *s,
 					    __u64 generation, __u64 attempt,
 					    __u32 rule_count,
 					    __u32 execution_class)
@@ -119,7 +126,8 @@ static inline int se_object_finalize_locked(struct se_object *s,
 	s->phase = SE_OBJECT_READY;
 	return 0;
 }
-static inline int se_object_abort_locked(struct se_object *s, __u64 generation,
+static __attribute__((always_inline)) inline int
+se_object_abort_locked(struct se_object *s, __u64 generation,
 					 __u64 attempt)
 {
 	if (!generation || !attempt || s->generation != generation ||
@@ -131,7 +139,8 @@ static inline int se_object_abort_locked(struct se_object *s, __u64 generation,
 	s->length = s->completed = s->rule_count = s->execution_class = 0;
 	return 0;
 }
-static inline int se_object_retire_locked(struct se_object *s, __u64 generation)
+static __attribute__((always_inline)) inline int
+se_object_retire_locked(struct se_object *s, __u64 generation)
 {
 	if (!generation || s->generation != generation ||
 	    s->phase != SE_OBJECT_READY || s->pins || s->commands ||
@@ -140,7 +149,8 @@ static inline int se_object_retire_locked(struct se_object *s, __u64 generation)
 	s->phase = SE_OBJECT_RETIRING;
 	return 0;
 }
-static inline int se_object_reclaim_locked(struct se_object *s,
+static __attribute__((always_inline)) inline int
+se_object_reclaim_locked(struct se_object *s,
 					   __u64 generation)
 {
 	if (!generation || s->generation != generation ||

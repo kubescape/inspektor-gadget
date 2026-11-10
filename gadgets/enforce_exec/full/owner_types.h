@@ -26,6 +26,108 @@ static __always_inline __u64 eo_accepted_epoch(__u64 uid);
 #define ER_ACCEPTED_EPOCH(uid) eo_accepted_epoch(uid)
 #include "epoch_roles.h"
 
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+/* EO_DISPATCH_TYPES_BEGIN */
+/* dispatch_lock owns this entire record. Lock order is cgroup_mutex ->
+ * dispatch_lock; never acquire a task lock or call helpers while it is held. */
+struct eo_dispatch_descriptor {
+	__u64 generation;
+	__u32 execution_class, program_bank, history_reserved, reserved;
+	__u32 policy_count, role_writer_mask;
+};
+enum eo_reader_kind {
+	EO_READER_AUTHORITY = 1,
+	EO_READER_EXEC,
+	EO_READER_FORK,
+	EO_READER_INGRESS,
+	EO_READER_MUTATION,
+	EO_READER_CANDIDATE
+};
+struct eo_reader_claim {
+	struct eo_dispatch_descriptor descriptor;
+	__u64 session_cookie, sequence;
+	__u32 owned, kind;
+};
+_Static_assert(sizeof(struct eo_reader_claim) == 56, "reader claim ABI");
+enum eo_candidate_state {
+	EO_CANDIDATE_NONE = 0,
+	EO_CANDIDATE_LOADING,
+	EO_CANDIDATE_SEALING,
+	EO_CANDIDATE_SEALED,
+	EO_CANDIDATE_STAGING,
+	EO_CANDIDATE_CERTIFIED,
+	EO_CANDIDATE_COMMITTED,
+	EO_CANDIDATE_ABORTED
+};
+struct eo_candidate_addition {
+	__u64 uid, epoch;
+};
+struct eo_candidate {
+	__u64 attempt, receipt_serial, inventory_count, writers, write_sequence;
+	__u64 pass_id, pass_start_serial;
+	struct eo_dispatch_descriptor expected;
+	__u32 state, program_bank, history_reserved, sealed_class;
+	__u32 entries, required_known_mask, addition_count,
+		certified_known_mask;
+	__u32 sealed_policy_count, sealed_role_writer_mask;
+	struct eo_candidate_addition additions[8];
+};
+enum eo_scope_state {
+	EO_SCOPE_UNINITIALIZED = 0,
+	EO_SCOPE_INACTIVE,
+	EO_SCOPE_ACTIVE
+};
+struct eo_dispatch {
+	struct bpf_spin_lock lock;
+	__u32 scope_state;
+	__u64 session_cookie, cgroup, serial, last_attempt;
+	struct eo_dispatch_descriptor active;
+	__u64 exec_inflight, fork_inflight, ingress_inflight, mutation_writers;
+	__u64 authority_readers, bank_readers[2];
+	__u64 integrity_fault, coverage_unknown;
+	struct eo_candidate candidate;
+};
+/* Stack-owned borrowed token; copies do not create extra release authority. */
+struct eo_writer_token {
+	__u64 session_cookie, attempt, sequence;
+	__u32 bank, owned;
+};
+struct eo_dispatch_token {
+	__u64 session_cookie, attempt;
+	__u32 bank, owned;
+};
+_Static_assert(sizeof(struct eo_dispatch_descriptor) == 32,
+	       "dispatch descriptor ABI");
+_Static_assert(sizeof(struct eo_candidate) == 256, "candidate lease ABI");
+_Static_assert(sizeof(struct eo_dispatch) == 400, "scope dispatch ABI");
+_Static_assert(sizeof(struct eo_dispatch_token) == 24,
+	       "borrowed dispatch token ABI");
+struct eo_candidate_request {
+	__u64 session_cookie, attempt;
+	__u32 entries, reserved, index, bank;
+};
+struct eo_candidate_input {
+	struct eo_candidate_request request;
+	unsigned char data[288];
+};
+struct eo_seal_workspace {
+	__u64 busy, session_cookie, attempt;
+	__u32 patterns, instructions;
+	__u64 seen[256];
+};
+_Static_assert(sizeof(struct eo_seal_workspace) == 2080, "seal workspace ABI");
+struct eo_program_cell {
+	__u64 attempt;
+	unsigned char data[288];
+};
+_Static_assert(sizeof(struct eo_candidate_request) == 32,
+	       "candidate request ABI");
+_Static_assert(sizeof(struct eo_candidate_input) == 320, "candidate input ABI");
+_Static_assert(sizeof(struct eo_program_cell) == 296, "program cell ABI");
+_Static_assert(sizeof(struct eo_writer_token) == 32, "writer token ABI");
+/* EO_DISPATCH_TYPES_END */
+#endif
+
 struct eo_config {
 	__u64 cookie, cgroup;
 	__u32 init_host_pid, task_limit, gate_slot, abi;
@@ -47,6 +149,13 @@ enum eo_operation {
 	EO_PHASE_CLEAR = 10,
 	EO_RETIRE = 11,
 	EO_REATTEST = 12,
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	EO_SESSION_OPEN = 13,
+	EO_CANDIDATE_BEGIN = 14,
+	EO_CANDIDATE_ABORT = 15,
+	EO_CANDIDATE_WRITE = 16,
+	EO_CANDIDATE_SEAL = 17,
+#endif
 };
 enum eo_result {
 	EO_OK = 0,
@@ -100,16 +209,38 @@ struct eo_exec_tx {
 	__u32 enforced_write_mask, role_conflict_mask;
 #endif
 	struct er_row pending[ER_ACTIVE];
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	struct eo_reader_claim reader;
+#endif
 };
 struct eo_fork_tx {
 	__u64 child, cgroup, owner_cookie;
 	__u32 owned, slot;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	struct eo_reader_claim reader;
+#endif
 };
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+struct eo_stage_stamp {
+	__u64 attempt, pass_id, task_cookie, fact_version, prior_generation,
+		pass_start_serial;
+	__u32 eligibility_flags, staged_new_uid_mask, required_known_mask,
+		reserved;
+};
+_Static_assert(sizeof(struct eo_stage_stamp) == 64,
+	       "canonical stage stamp ABI");
+#endif
 struct eo_task {
 	struct bpf_spin_lock lock;
 	__u32 flags;
 	__u64 cookie;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	__u64 invocation_sequence;
+#endif
 	struct er_state committed;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	struct eo_stage_stamp staged;
+#endif
 	struct eo_exec_tx exec;
 	struct eo_fork_tx fork;
 };
@@ -120,6 +251,14 @@ struct eo_work {
 	struct er_candidate candidate;
 	__u64 authority, a_epoch;
 	__u32 source_flags, padding;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	struct eo_reader_claim reader;
+	struct eo_dispatch_descriptor source_descriptor;
+	struct er_canonical_view view;
+	struct er_fact_patch patch;
+	struct eo_stage_stamp stage_request;
+
+#endif
 };
 _Static_assert(sizeof(struct eo_config) == 32, "owner config ABI");
 _Static_assert(sizeof(struct eo_command) == 32, "owner command ABI");
@@ -128,7 +267,7 @@ _Static_assert(sizeof(struct eo_phase) == 48, "owner phase ABI");
 _Static_assert(sizeof(struct eo_anchor) == 16, "owner anchor ABI");
 _Static_assert(sizeof(struct eo_row) == 24, "owner row ABI");
 #ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
-_Static_assert(sizeof(struct eo_exec_tx) == 336, "development exec ABI");
+_Static_assert(sizeof(struct eo_exec_tx) == 392, "development exec ABI");
 _Static_assert(__builtin_offsetof(struct eo_exec_tx, pending) == 80,
 	       "development pending ABI");
 _Static_assert(sizeof(struct er_state) == 520, "development state ABI");
@@ -137,14 +276,53 @@ _Static_assert(__builtin_offsetof(struct eo_exec_tx, enforced_write_mask) == 72,
 	       "development enforced provenance ABI");
 _Static_assert(__builtin_offsetof(struct eo_exec_tx, role_conflict_mask) == 76,
 	       "development conflict provenance ABI");
-_Static_assert(sizeof(struct eo_task) == 904, "development task ABI");
-_Static_assert(sizeof(struct eo_work) == 1352, "development work ABI");
+_Static_assert(sizeof(struct eo_task) == 1088, "development task ABI");
+_Static_assert(sizeof(struct eo_work) == 2648, "development work ABI");
 #else
 _Static_assert(sizeof(struct eo_exec_tx) == 240, "owner exec ABI");
 _Static_assert(sizeof(struct eo_task) == 680, "owner task ABI");
 _Static_assert(sizeof(struct eo_work) == 1096, "owner work ABI");
 #endif
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+_Static_assert(sizeof(struct eo_fork_tx) == 88, "development fork ABI");
+#else
 _Static_assert(sizeof(struct eo_fork_tx) == 32, "owner fork ABI");
+#endif
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+/* One permanent scope record; userspace cannot write its lock or authority. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct eo_dispatch);
+} eo_dispatch SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, struct eo_candidate_input);
+} eo_candidate_input SEC(".maps");
+/* One exclusive validation workspace per Scope, never per task. Physical map
+ * allocation/native handle charges remain part of the development resource proof. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct eo_seal_workspace);
+} eo_seal_work SEC(".maps");
+/* Permanent banks: no native map replacement after session construction. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 16384);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct eo_program_cell);
+} eo_program_bank0 SEC(".maps"), eo_program_bank1 SEC(".maps");
+
+#endif
 struct eo_inner {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384);
@@ -162,7 +340,11 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 65536);
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	__uint(map_flags, BPF_F_NO_PREALLOC | BPF_F_RDONLY);
+#else
 	__uint(map_flags, BPF_F_NO_PREALLOC | BPF_F_RDONLY_PROG);
+#endif
 	__type(key, __u64);
 	__type(value, __u64);
 } eo_epochs SEC(".maps");
@@ -335,6 +517,26 @@ static __always_inline __u64 eo_accepted_epoch(__u64 uid)
 	__u64 *v = bpf_map_lookup_elem(&eo_epochs, &uid);
 	return v ? *v : 0;
 }
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+static __always_inline struct eo_dispatch *eo_dispatch_state(void)
+{
+	__u32 zero = 0;
+	return bpf_map_lookup_elem(&eo_dispatch, &zero);
+}
+/* EO_PHYSICAL_BLOB_BEGIN */
+static __always_inline const struct fm_blob *
+eo_program_blob(__u32 bank, __u32 key, __u64 generation)
+{
+	if (bank > 1 || key >= 16384 || !generation)
+		return 0;
+	const struct eo_program_cell *cell =
+		bank ? bpf_map_lookup_elem(&eo_program_bank1, &key) :
+		       bpf_map_lookup_elem(&eo_program_bank0, &key);
+	return cell && cell->attempt == generation ? (const void *)cell->data :
+						     0;
+}
+/* EO_PHYSICAL_BLOB_END */
+#endif
 static __always_inline const struct fm_blob *eo_blob(__u32 slot, __u32 key)
 {
 	if (slot > 1 || key >= 16384)
@@ -367,6 +569,56 @@ static __always_inline struct eo_task *eo_lookup_task(struct task_struct *task)
 		return 0;
 	return bpf_map_lookup_elem(&eo_tasks, &cookie);
 }
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+static __always_inline struct eo_work *eo_borrow_work(void)
+{
+	return bpf_task_storage_get(&eo_work, bpf_get_current_task_btf(), 0, 0);
+}
+/* EO_CURRENT_BLOB_BEGIN */
+static __always_inline int eo_current_admin(__u64 cookie)
+{
+	__u64 *nonce = bpf_task_storage_get(&eo_admin,
+					    bpf_get_current_task_btf(), 0, 0);
+	return nonce && *nonce == cookie;
+}
+
+/* The retained claim, never the mutable active selector, identifies every
+ * evaluator callback's bank. Admin SEAL/control owns exclusive work storage. */
+static __always_inline const struct fm_blob *eo_current_blob(__u32 key)
+{
+	struct eo_config *c = eo_config();
+	if (!c || !c->cookie || c->abi != EO_ABI)
+		return 0;
+	struct eo_dispatch_descriptor descriptor = {};
+	struct eo_work *w = eo_borrow_work();
+	if (w && w->busy && w->reader.owned == 1) {
+		if (w->reader.session_cookie != c->cookie ||
+		    (w->reader.kind != EO_READER_CANDIDATE &&
+		     w->reader.kind != EO_READER_AUTHORITY) ||
+		    !eo_current_admin(c->cookie))
+			return 0;
+		descriptor = w->reader.descriptor;
+	} else {
+		struct eo_task *s = eo_lookup_task(bpf_get_current_task_btf());
+		if (!s)
+			return 0;
+		bpf_spin_lock(&s->lock);
+		if (s->exec.owned && s->exec.reader.owned == 1 &&
+		    s->exec.reader.kind == EO_READER_EXEC &&
+		    s->exec.owner_cookie == c->cookie &&
+		    s->exec.reader.session_cookie == c->cookie &&
+		    s->exec.reader.descriptor.generation == s->exec.generation)
+			descriptor = s->exec.reader.descriptor;
+		bpf_spin_unlock(&s->lock);
+	}
+	if (!descriptor.generation || descriptor.reserved ||
+	    descriptor.history_reserved)
+		return 0;
+	return eo_program_blob(descriptor.program_bank, key,
+			       descriptor.generation);
+}
+/* EO_CURRENT_BLOB_END */
+#endif
 static __always_inline struct eo_task *eo_get_task(struct task_struct *task)
 {
 	__u64 *identity = bpf_task_storage_get(&eo_task_ids, task, 0, 0);
@@ -437,6 +689,13 @@ static __always_inline struct eo_work *eo_get_work(void)
 }
 static __always_inline void eo_put_work(struct eo_work *w)
 {
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	if (w->reader.owned) {
+		eo_fault(EO_FAULT_STATE);
+		return;
+	}
+	w->reader = (struct eo_reader_claim){};
+#endif
 	__sync_lock_test_and_set(&w->busy, 0);
 }
 static __always_inline __u64 eo_group(struct task_struct *task)
@@ -455,6 +714,10 @@ static __always_inline int eo_admin_authorized(const struct eo_command *command)
 					    bpf_get_current_task_btf(), 0, 0);
 	return nonce && *nonce == c->cookie;
 }
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+static __always_inline int eo_mutation_begin(struct eo_reader_claim *claim);
+static __always_inline void eo_mutation_end(struct eo_reader_claim *claim);
+#endif
 // This is the ONLY historical adoption proof: exact pinned init group, or an
 // actual observed direct-root birth. Other descendants must already carry a
 // kernel-verified creator chain; current ancestry/cgroup membership is not proof.
@@ -477,6 +740,11 @@ static __always_inline int eo_lineage(struct task_struct *task,
 	int root_group = group && group == a->group;
 	if (!root_group && (!creator || *creator != a->group))
 		return 0;
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	struct eo_reader_claim mutation = {};
+	if (eo_mutation_begin(&mutation))
+		return 0;
+#endif
 	int result = 0, overflow = 0;
 	bpf_spin_lock(&s->lock);
 	if (!(s->flags & EO_QUARANTINED)) {
@@ -494,12 +762,22 @@ static __always_inline int eo_lineage(struct task_struct *task,
 		}
 	}
 	bpf_spin_unlock(&s->lock);
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	eo_mutation_end(&mutation);
+#endif
 	if (overflow)
 		eo_fault(EO_FAULT_VERSION);
 	return result;
 }
 static __always_inline void eo_quarantine(struct eo_task *s)
 {
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	struct eo_reader_claim mutation = {};
+	if (eo_mutation_begin(&mutation)) {
+		eo_fault(EO_FAULT_STATE);
+		return;
+	}
+#endif
 	int overflow = 0;
 	bpf_spin_lock(&s->lock);
 	if (!(s->flags & EO_QUARANTINED)) {
@@ -510,6 +788,9 @@ static __always_inline void eo_quarantine(struct eo_task *s)
 			s->committed.version++;
 	}
 	bpf_spin_unlock(&s->lock);
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+	eo_mutation_end(&mutation);
+#endif
 	eo_fault(overflow ? EO_FAULT_VERSION : EO_FAULT_LINEAGE);
 }
 // Force concrete local BTF for custom map values without kernel-target field
@@ -530,6 +811,11 @@ static __always_inline int eo_local_types(void)
 // task+authority version validation. No accepted role is initialized from absence.
 static __always_inline int eo_stage_task(struct task_struct *, struct eo_task *,
 					 struct eo_work *, __u32);
+#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
+static __always_inline int eo_stage_candidate_task(struct task_struct *,
+						   struct eo_task *,
+						   struct eo_work *, __u32);
+#endif
 static __always_inline int eo_validate_task(struct eo_task *, struct eo_work *);
 static __always_inline int eo_load_candidate(struct eo_work *, __u32, __u32);
 struct fe_facts;

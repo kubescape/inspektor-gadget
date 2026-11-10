@@ -30,13 +30,16 @@ func TestEvaluatorKernel(t *testing.T) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		t.Fatal(err)
 	}
-	source := os.Getenv("IG_FULL_EVALUATOR_BPF_SOURCE")
-	if source == "" {
-		source = "testdata/evaluator_runner.c"
-	}
-	object := filepath.Join(t.TempDir(), "evaluator.bpf.o")
-	if output, err := exec.Command("clang", "-target", "bpf", "-DENFORCE_EXEC_ABI3_DEVELOPMENT=1", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", source, "-o", object).CombinedOutput(); err != nil {
-		t.Fatalf("compile evaluator BPF: %v\n%s", err, output)
+	object := os.Getenv("IG_FULL_EVALUATOR_BPF_OBJECT")
+	if object == "" {
+		source := os.Getenv("IG_FULL_EVALUATOR_BPF_SOURCE")
+		if source == "" {
+			source = "testdata/evaluator_runner.c"
+		}
+		object = filepath.Join(t.TempDir(), "evaluator.bpf.o")
+		if output, err := exec.Command("clang", "-target", "bpf", "-DENFORCE_EXEC_ABI3_DEVELOPMENT=1", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-c", source, "-o", object).CombinedOutput(); err != nil {
+			t.Fatalf("compile evaluator BPF: %v\n%s", err, output)
+		}
 	}
 	spec, err := ebpf.LoadCollectionSpec(object)
 	if err != nil {
@@ -117,6 +120,10 @@ func TestEvaluatorKernel(t *testing.T) {
 		return first
 	})
 	t.Run("frozen-program", func(t *testing.T) {
+		beforeResult, _, err := program.Test(make([]byte, 64))
+		if err != nil {
+			t.Fatal(err)
+		}
 		before, err := scratch.LookupBytes(uint32(0))
 		if err != nil {
 			t.Fatal(err)
@@ -131,8 +138,8 @@ func TestEvaluatorKernel(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != 1 {
-			t.Fatalf("frozen evaluator result %d", result)
+		if result != beforeResult {
+			t.Fatalf("freeze changed evaluator result: before=%d after=%d", beforeResult, result)
 		}
 		after, err := scratch.LookupBytes(uint32(0))
 		if err != nil {

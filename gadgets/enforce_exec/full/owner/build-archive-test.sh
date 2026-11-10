@@ -94,6 +94,7 @@ manifest=$(jq -r '.manifests[0].digest | sub("sha256:"; "")' "$layout/blobs/sha2
 config=$(jq -r '.config.digest | sub("sha256:"; "")' "$layout/blobs/sha256/$manifest")
 grep -q 'enforce-exec-owner-abi: "3"' "$layout/blobs/sha256/$config"
 grep -q 'enforce-exec-owner-development: "true"' "$layout/blobs/sha256/$config"
+if grep -q 'enforce-exec-shared-recovery:' "$layout/blobs/sha256/$config"; then echo 'ordinary development gained recovery annotation' >&2; exit 1; fi
 [[ $(sha256sum "$owner/gadget.yaml") == "$original" ]]
 cmp "$work/first.tar" "$work/owner.tar"
 echo 'PASS: development archive metadata/macro isolated from untouched default source and archive'
@@ -110,3 +111,24 @@ if ABI3_DEVELOPMENT=1 "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftoo
 fi
 [[ ! -e "$work/ordinary.tar" ]]
 echo 'PASS: development publication is no-replace and canonical-name isolated'
+
+# Recovered development is a third, explicit and still-unavailable image. The
+# fake compiler verifies selector packaging only, not emitted BPF or admission.
+recovery=(ABI3_DEVELOPMENT=1 SHARED_DEVELOPMENT=1 SHARED_RECOVERY_DEVELOPMENT=1 SHARED_BINDINGS=2 SHARED_SLOTS_256=2 SHARED_SLOTS_1024=0 SHARED_SLOTS_4096=0 SHARED_SLOTS_16384=0 SHARED_TASKS=128 SHARED_SCRATCH=32 SHARED_ACCEPTED_UIDS=32 SHARED_TASK_QUOTA=64 SHARED_SCRATCH_QUOTA=16 SHARED_INODE_FACTS=1024 SHARED_INODE_QUOTA=512 SHARED_IMAGES=65536 SHARED_IMAGE_QUOTA=32768)
+recovered=$work/owner.abi3-recovery-development.tar
+env "${recovery[@]}" "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftool" localhost/enforce-exec-owner:abi3-recovery-development "$recovered"
+grep -Fx -- '-DENFORCE_EXEC_SHARED_RECOVERY=1' "$COMPILER_ARGS" >/dev/null
+grep -Fx -- '-DENFORCE_EXEC_SHARED_NODE=1' "$COMPILER_ARGS" >/dev/null
+mkdir "$work/recovered"
+tar -xf "$recovered" -C "$work/recovered"
+layout=$work/recovered
+index=$(jq -r '.manifests[0].digest | sub("sha256:"; "")' "$layout/index.json")
+manifest=$(jq -r '.manifests[0].digest | sub("sha256:"; "")' "$layout/blobs/sha256/$index")
+config=$(jq -r '.config.digest | sub("sha256:"; "")' "$layout/blobs/sha256/$manifest")
+grep -q 'enforce-exec-shared-recovery: "1"' "$layout/blobs/sha256/$config"
+grep -q 'native supervisor and enforcement unavailable' "$layout/blobs/sha256/$config"
+if env "${recovery[@]}" "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftool" localhost/enforce-exec-owner:abi3-development "$work/wrong.abi3-recovery-development.tar" > "$work/recovery-error" 2>&1; then exit 1; fi
+if env "${recovery[@]}" "$owner/build-archive.sh" "$1" "$work/clang" "$work/bpftool" localhost/enforce-exec-owner:abi3-recovery-development "$work/wrong.abi3-development.tar" > "$work/recovery-error" 2>&1; then exit 1; fi
+[[ $(sha256sum "$owner/gadget.yaml") == "$original" ]]
+cmp "$work/first.tar" "$work/owner.tar"
+echo 'PASS: recovered selector archive is distinct, explicit, and default-isolated (fake compiler)'

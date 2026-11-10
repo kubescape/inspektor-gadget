@@ -35,6 +35,7 @@
 struct se_inode_identity {
 	__u64 inode_address, birth_cookie, charge_scope_cookie,
 		charge_generation;
+	__u32 charge_slot, reserved;
 };
 struct se_inode_row {
 	struct se_inode_identity identity;
@@ -58,12 +59,12 @@ static inline int se_inode_lookup(__u64 address, struct se_inode_row **row);
 static inline int se_inode_insert(const struct se_inode_row *row);
 static inline int
 se_inode_delete_exact(const struct se_inode_identity *identity);
-static inline int se_inode_account(__u64 scope, __u64 generation,
+static inline int se_inode_account(const struct se_inode_identity *identity,
 				   struct se_inode_quota **account);
 
 static inline int se_inode_identity_valid(const struct se_inode_identity *i)
 {
-	return i->inode_address && i->birth_cookie &&
+	return !i->reserved && i->inode_address && i->birth_cookie &&
 	       i->birth_cookie != ~0ULL && i->charge_scope_cookie &&
 	       i->charge_scope_cookie != ~0ULL && i->charge_generation &&
 	       i->charge_generation != ~0ULL;
@@ -74,7 +75,8 @@ static inline int se_inode_identity_equal(const struct se_inode_identity *a,
 	return a->inode_address == b->inode_address &&
 	       a->birth_cookie == b->birth_cookie &&
 	       a->charge_scope_cookie == b->charge_scope_cookie &&
-	       a->charge_generation == b->charge_generation;
+	       a->charge_generation == b->charge_generation &&
+	       a->charge_slot == b->charge_slot && a->reserved == b->reserved;
 }
 static inline int se_inode_quota_matches(const struct se_inode_quota *q,
 					 const struct se_inode_identity *i)
@@ -121,8 +123,7 @@ static inline int se_inode_mark_memfd(const struct se_inode_identity *identity)
 	if (result != SE_INODE_MISSING)
 		return result;
 	struct se_inode_quota *q = 0;
-	result = se_inode_account(identity->charge_scope_cookie,
-				  identity->charge_generation, &q);
+	result = se_inode_account(identity, &q);
 	if (result != SE_INODE_OK)
 		return result;
 	if (!se_inode_quota_matches(q, identity))
@@ -174,8 +175,7 @@ static inline int se_inode_retire_dead(const struct se_inode_identity *identity)
 		return SE_INODE_CONFLICT;
 	row->valid_memfd = 0;
 	struct se_inode_quota *q = 0;
-	result = se_inode_account(identity->charge_scope_cookie,
-				  identity->charge_generation, &q);
+	result = se_inode_account(identity, &q);
 	if (result != SE_INODE_OK)
 		return result;
 	if (!se_inode_quota_matches(q, identity) ||

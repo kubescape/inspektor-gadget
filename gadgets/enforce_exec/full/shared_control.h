@@ -3,7 +3,7 @@
  */
 #ifndef ENFORCE_EXEC_SHARED_CONTROL_H
 #define ENFORCE_EXEC_SHARED_CONTROL_H
-#include "shared_snapshot.h"
+#include "shared_route.h"
 
 /* Mandatory explicit image geometry, validated again by native pre-allocation
  * admission. There are no inferred shared-profile defaults. */
@@ -66,21 +66,25 @@ enum se_operation {
 	SE_SNAPSHOT_RELEASE,
 	SE_SNAPSHOT_RECLAIM,
 	SE_OBJECT_INSPECT,
-	SE_SNAPSHOT_INSPECT
+	SE_SNAPSHOT_INSPECT,
+	SE_NODE_INSPECT
 };
 struct se_control_command {
-	__u64 node_cookie, nonce, sequence, generation, attempt, scope, serial;
+	__u64 node_cookie, nonce, sequence, generation, attempt, scope, serial,
+		cgroup_identity;
 	__u32 operation, object, binding, record, index, count, execution_class,
 		reserved;
 	struct se_pin_ticket handles[8];
 	struct se_arena_cell value;
+	struct se_snapshot_metadata metadata;
 };
 struct se_control_receipt {
 	__u64 node_cookie, sequence, generation, serial;
 	__u32 operation, status, value, reserved;
 };
 _Static_assert(sizeof(struct se_node_config) == 56, "shared config wire");
-_Static_assert(sizeof(struct se_control_command) == 696, "shared command wire");
+_Static_assert(sizeof(struct se_control_command) == 1112,
+	       "shared command wire");
 _Static_assert(sizeof(struct se_control_receipt) == 48, "shared receipt wire");
 _Static_assert(sizeof(struct se_arena_cell) == 288, "shared arena cell wire");
 #ifndef SE_CONTROL_TEST
@@ -91,12 +95,14 @@ struct {
 	__type(key, __u32);
 	__type(value, struct se_node_config);
 } se_configuration SEC(".maps");
+#ifndef ENFORCE_EXEC_SHARED_RECOVERY
 struct {
 	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, int);
 	__type(value, __u64);
 } se_admin SEC(".maps");
+#endif
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -127,6 +133,21 @@ struct {
 } se_bindings SEC(".maps");
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_PROFILE_BINDINGS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct se_route_anchor);
+} se_routes SEC(".maps");
+/* Locator only; preallocated, not an authority lock or copied class. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, SE_PROFILE_BINDINGS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u64);
+	__type(value, __u64);
+} se_route_index SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, SE_PROFILE_CELLS);
 	__uint(map_flags, BPF_F_RDONLY);
 	__type(key, __u32);
@@ -135,9 +156,12 @@ struct {
 #define SE_CONFIG_LOOKUP(key) bpf_map_lookup_elem(&se_configuration, key)
 #define SE_COMMAND_LOOKUP(key) bpf_map_lookup_elem(&se_commands, key)
 #define SE_RECEIPT_LOOKUP(key) bpf_map_lookup_elem(&se_receipts, key)
+#ifndef ENFORCE_EXEC_SHARED_RECOVERY
 #define SE_ADMIN_LOOKUP() \
 	bpf_task_storage_get(&se_admin, bpf_get_current_task_btf(), 0, 0)
+#endif
 #define SE_OBJECT_LOOKUP(key) bpf_map_lookup_elem(&se_objects, key)
+#define SE_ROUTE_LOOKUP(key) bpf_map_lookup_elem(&se_routes, key)
 #define SE_BINDING_LOOKUP(key) bpf_map_lookup_elem(&se_bindings, key)
 #define SE_CELL_LOOKUP(key) bpf_map_lookup_elem(&se_arena, key)
 #endif
@@ -158,6 +182,9 @@ static inline int se_profile_matches(const struct se_node_config *c)
 	       c->slots[2] == SE_PROFILE_SLOTS_4096 &&
 	       c->slots[3] == SE_PROFILE_SLOTS_16384;
 }
+#ifdef SE_OBJECT_RANGE_INLINE_DIAGNOSTIC
+__attribute__((always_inline))
+#endif
 static inline int se_object_range(const struct se_node_config *c, __u32 slot,
 				  __u32 *size_class, __u32 *base)
 {
@@ -175,21 +202,48 @@ static inline int se_object_range(const struct se_node_config *c, __u32 slot,
 	}
 	return -1;
 }
-/* Exact native admin physical thread is pinned in frozen task storage. Its
- * input map is private to that trusted serialized host thread; workloads have
- * neither this FD nor administrative authority. No candidate operation here
- * establishes routing, accepted epochs, native Ready, Commit or withdrawal. */
-SEC("syscall") int se_command(void *unused)
+/* The recovered physical-admin lookup uses only the node cookie as input and
+ * relooks its own maps. Keep its lock frame out of the command interpreter's
+ * call chain on older kernels; never pass a borrowed map-value pointer into
+ * this subprogram. */
+#ifdef ENFORCE_EXEC_SHARED_RECOVERY
+static __attribute__((noinline)) int se_command_recovery_authorized(
+	__u64 node_cookie)
+{
+	return se_rm_command_authorized(node_cookie);
+}
+#endif
+
+/* Protocol-only mode uses the pinned native admin task storage. Recovered
+ * mode admits only the committed live physical admin under the recovery lock.
+ * The trusted host protocol serializes complete command-map writes and runs.
+ * Publication remains in se_publication_arm after cgroup_kn_lock_live. */
+/* Stock Rocky 4.18 refuses spinlocks in the syscall program type. Probe a
+ * non-sleepable TEST_RUN-only endpoint in the unselected real-map candidate;
+ * selected-image transport/resources must be revised before adopting it. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE
+SEC("tc")
+#else
+SEC("syscall")
+#endif
+int se_command(void *unused)
 {
 	(void)unused;
 	__u32 zero = 0;
 	const struct se_node_config *config = SE_CONFIG_LOOKUP(&zero);
 	const struct se_control_command *input = SE_COMMAND_LOOKUP(&zero);
+#ifdef ENFORCE_EXEC_SHARED_RECOVERY
+	if (!se_profile_matches(config) || !input ||
+	    input->node_cookie != config->node_cookie || input->reserved ||
+	    !se_command_recovery_authorized(config->node_cookie))
+		return 1;
+#else
 	const __u64 *admin = SE_ADMIN_LOOKUP();
 	if (!se_profile_matches(config) || !input || !admin ||
 	    *admin != config->nonce || input->nonce != config->nonce ||
 	    input->node_cookie != config->node_cookie || input->reserved)
 		return 1;
+#endif
 	struct se_control_receipt *receipt = SE_RECEIPT_LOOKUP(&zero);
 	if (!receipt ||
 	    (receipt->node_cookie &&
@@ -204,6 +258,12 @@ SEC("syscall") int se_command(void *unused)
 					     .sequence = input->sequence,
 					     .operation = input->operation,
 					     .status = 1 };
+	/* Read-only node handshake is independent of object class/initialization. */
+	if (input->operation == SE_NODE_INSPECT) {
+		receipt->value = config->profile_version;
+		receipt->status = 0;
+		return 0;
+	}
 	int result = -1;
 	if ((input->operation >= SE_OBJECT_BEGIN &&
 	     input->operation <= SE_OBJECT_RECLAIM) ||
@@ -295,7 +355,8 @@ SEC("syscall") int se_command(void *unused)
 		if (key >= config->bindings)
 			return 1;
 		struct se_shared_binding *binding = SE_BINDING_LOOKUP(&key);
-		if (!binding)
+		struct se_route_anchor *route = SE_ROUTE_LOOKUP(&key);
+		if (!binding || !route)
 			return 1;
 		if (input->operation == SE_SNAPSHOT_PIN ||
 		    input->operation == SE_SNAPSHOT_RELEASE ||
@@ -320,27 +381,37 @@ SEC("syscall") int se_command(void *unused)
 						SE_COMMAND_INSPECT
 			};
 			__u32 value = 0;
-			result = se_ticket_command(binding, object, &request,
-						   &value);
+			result = se_ticket_command(&route->lock, binding,
+						   object, &request, &value);
 			if (!result)
 				receipt->value = value;
 		} else {
-			if (input->record >= 2)
+			__u32 record = input->record;
+			if (record >= 2)
 				return 1;
 			struct se_pin_ticket handles[8] = {};
 			if (input->operation == SE_SNAPSHOT_PREPARE) {
-				if (!input->count || input->count > 8)
+				if (!input->count || input->count > 8 ||
+				    input->generation >= ~0ULL - 1 ||
+				    !se_snapshot_metadata_valid(
+					    &input->metadata, input->count,
+					    input->generation + 1))
 					return 1;
+				/* Literal slot offsets: older verifiers cannot prove a
+				 * variable stack cursor remains inside handles[8]. */
+#ifdef __clang__
+#pragma unroll
+#endif
 				for (__u32 i = 0; i < 8; i++) {
 					if (i >= input->count)
-						break;
+						continue;
 					handles[i] = input->handles[i];
 					if (handles[i].object_slot >=
 					    config->objects)
 						return 1;
 				}
 			}
-			bpf_spin_lock(&binding->lock);
+			bpf_spin_lock(&route->lock);
 			struct se_binding_snapshots *b = &binding->state;
 			if (input->operation == SE_BINDING_OPEN &&
 			    input->scope == input->sequence && input->scope &&
@@ -348,21 +419,26 @@ SEC("syscall") int se_command(void *unused)
 			    !b->next_serial && !b->next_command &&
 			    !b->generation && !b->active_serial &&
 			    !b->inflight && !b->records[0].phase &&
-			    !b->records[1].phase) {
+			    !b->records[1].phase &&
+			    !se_route_open_locked(route, input->cgroup_identity,
+						  input->scope, key)) {
 				b->scope = input->scope;
 				result = 0;
-			} else if (b->scope == input->scope && input->scope) {
-				struct se_snapshot *s =
-					&b->records[input->record];
+			} else if (route->scope == input->scope &&
+				   b->scope == input->scope && input->scope) {
+				struct se_snapshot *s = &b->records[record];
 				if (input->operation == SE_SNAPSHOT_PREPARE &&
 				    b->generation == input->generation &&
-				    b->next_serial == input->serial)
+				    b->next_serial == input->serial) {
 					result = se_snapshot_prepare_locked(
-						b, input->record, handles,
+						b, record, handles,
 						input->count,
 						input->execution_class);
-				else if (s->serial == input->serial &&
-					 s->scope == input->scope) {
+					if (!result)
+						b->records[record].metadata =
+							input->metadata;
+				} else if (s->serial == input->serial &&
+					   s->scope == input->scope) {
 					switch (input->operation) {
 					case SE_SNAPSHOT_SEAL:
 						result =
@@ -387,12 +463,10 @@ SEC("syscall") int se_command(void *unused)
 				}
 			}
 			if (!result) {
-				receipt->serial =
-					b->records[input->record].serial;
-				receipt->value =
-					b->records[input->record].phase;
+				receipt->serial = b->records[record].serial;
+				receipt->value = b->records[record].phase;
 			}
-			bpf_spin_unlock(&binding->lock);
+			bpf_spin_unlock(&route->lock);
 		}
 	}
 	receipt->status = result ? 1 : 0;

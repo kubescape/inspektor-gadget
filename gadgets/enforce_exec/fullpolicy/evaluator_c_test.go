@@ -69,14 +69,14 @@ func evaluatorFactBytes(t *testing.T, p *KernelProgram, policies []Policy, f Fac
 			out.Ancestors[i] = evaluatorPathOf(s)
 		}
 	}
-	hashes := map[string]uint64{}
-	for hash, name := range p.Identities {
-		hashes[name] = hash
+	header := mustDecode[KernelHeader](t, p, 0)
+	if int(header.PolicyCount) != len(policies) {
+		t.Fatal("compiled policy count mismatch")
 	}
-	for i, policy := range policies {
-		if role := f.Roles[policy.ID]; role != "" {
-			kp := mustDecode[KernelPolicy](t, p, uint32(i+1))
-			out.Roles[out.RoleCount] = evaluatorRole{kp.UID, hashes[role]}
+	for i := uint32(0); i < header.PolicyCount; i++ {
+		policy := mustDecode[KernelPolicy](t, p, KernelPolicyBase+i)
+		if role := f.Roles[p.Identities[policy.UID]]; role != "" {
+			out.Roles[out.RoleCount] = evaluatorRole{policy.UID, stableHash(role)}
 			out.RoleCount++
 		}
 	}
@@ -195,6 +195,35 @@ func TestCEvaluatorFixedMapReferenceParity(t *testing.T) {
 	})
 }
 
+func TestCEvaluatorStageCandidateParity(t *testing.T) {
+	runner := buildEvaluatorRunner(t, "-DFE_STAGE_CANDIDATE")
+	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {
+		return runCEvaluator(t, runner, p, facts)
+	})
+}
+
+func TestCEvaluatorBoundedLoopStageCandidateParity(t *testing.T) {
+	runner := buildEvaluatorRunner(t, "-DFE_STAGE_CANDIDATE", "-DFE_BOUNDED_LOOP_CANDIDATE")
+	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {
+		return runCEvaluator(t, runner, p, facts)
+	})
+}
+
+func TestCEvaluatorBoundedLoopFixedMapStageCandidateParity(t *testing.T) {
+	runner := buildEvaluatorRunner(t, "-DFE_STAGE_CANDIDATE", "-DFE_BOUNDED_LOOP_CANDIDATE", "-DFE_FIXED_MAP_TEST")
+	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {
+		return runCEvaluator(t, runner, p, facts)
+	})
+}
+
+func TestCEvaluatorStageHeaderRelookupCandidateParity(t *testing.T) {
+	runner := buildEvaluatorRunner(t, "-DFE_STAGE_CANDIDATE", "-DFE_BOUNDED_LOOP_CANDIDATE",
+		"-DFE_FIXED_MAP_TEST", "-DFE_STAGE_RELOOKUP_HEADER_CANDIDATE")
+	runEvaluatorParity(t, func(t *testing.T, p *KernelProgram, facts evaluatorFacts) []uint64 {
+		return runCEvaluator(t, runner, p, facts)
+	})
+}
+
 func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evaluatorFacts) []uint64) {
 	yes, no := true, false
 	uid := uint32(1000)
@@ -303,12 +332,35 @@ func runEvaluatorParity(t *testing.T, run func(*testing.T, *KernelProgram, evalu
 	multi("audit-conflicting-roles", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}}}, {ID: "q", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "grant", Action: Allow, Target: Target{SetRole: "known"}}}}})
 	multi("audit-conflict-then-enforced-grant", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Allow, Target: Target{SetRole: "two"}}, {Name: "c", Action: Allow, Mode: Enforce, Target: Target{SetRole: "one"}}}}})
 	multi("deny-clears-role", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: []Rule{{Name: "a", Action: Allow, Target: Target{SetRole: "one"}}, {Name: "b", Action: Deny}}}})
+	boundaryRules := make([]Rule, 17)
+	for i := range boundaryRules {
+		boundaryRules[i] = Rule{Name: fmt.Sprintf("boundary-%02d", i), Action: Allow}
+	}
+	boundaryRules[0].Target.SetRole = "one"
+	boundaryRules[16].Target.SetRole = "two"
+	multi("role-conflict-across-stage", []Policy{{ID: "p", Revision: "r", Mode: Enforce, Rules: boundaryRules}})
+	auditBoundary := append([]Rule(nil), boundaryRules...)
+	auditBoundary[0] = Rule{Name: "uncertain-first", Action: Deny, Actor: Actor{Path: []string{"/usr/**"}}}
+	auditBoundary[16] = Rule{Name: "known-last", Action: Allow}
+	unknownBoundaryFacts := base
+	unknownBoundaryFacts.ActorPath = ""
+	tests = append(tests, struct {
+		name     string
+		policies []Policy
+		facts    Facts
+	}{"audit-unknown-across-stage", []Policy{{ID: "p", Revision: "r", Mode: Audit, Rules: auditBoundary}}, unknownBoundaryFacts})
 	paths := make([]string, 128)
 	for i := range paths {
 		paths[i] = fmt.Sprintf("/allowed/%d", i)
 	}
 	paths[127] = "/bin/tool"
 	add("128-paths", Rule{Name: "many", Action: Allow, Target: Target{Path: paths}}, base)
+	fullList := make([]string, 256)
+	for i := range fullList {
+		fullList[i] = fmt.Sprintf("/alternative/%03d", i)
+	}
+	fullList[255] = "/bin/tool"
+	add("256-paths-last-match", Rule{Name: "full-list", Action: Allow, Target: Target{Path: fullList}}, base)
 	for i := 0; i < 10; i++ {
 		r := variants[i]
 		r.Name = "mismatch"
@@ -677,6 +729,109 @@ func TestRoleConflictVersusUnknownProvenance(t *testing.T) {
 				if (oracleErr != nil) != wantError || (got[0] != 0) != wantError || (got[19] != 0) != enforced || (got[20] != 0) != conflict {
 					t.Fatalf("conflict=%v enforced=%v oracle=%v C=%v", conflict, enforced, oracleErr, got)
 				}
+			}
+		}
+	}
+}
+
+func TestAuditFallbackDenyUncertaintyParity(t *testing.T) {
+	yes, no := true, false
+	for _, fixed := range []bool{false, true} {
+		flags := []string{}
+		if fixed {
+			flags = append(flags, "-DFE_FIXED_MAP_TEST")
+		}
+		runner := buildEvaluatorRunner(t, flags...)
+		for _, tc := range []struct {
+			name                                string
+			action                              Action
+			fallback                            Action
+			mode                                Mode
+			observed                            *bool
+			knownDeny, wantUncertain, wantBlock bool
+		}{
+			{"unknown allow audit fallback", Allow, Deny, Audit, nil, false, true, false},
+			{"unknown allow enforced fallback", Allow, Deny, Enforce, nil, false, false, true},
+			{"known false deterministic fallback", Allow, Deny, Audit, &no, false, false, false},
+			{"unknown deny deterministic fallback", Deny, Deny, Audit, nil, false, false, false},
+			{"known audit deny", Allow, Deny, Audit, nil, true, false, false},
+			{"unknown allow without fallback", Allow, "", Audit, nil, false, false, false},
+		} {
+			t.Run(fmt.Sprintf("%v/%s", fixed, tc.name), func(t *testing.T) {
+				policies := []Policy{{ID: "a", Revision: "r", Mode: Audit, RootRole: "root", Rules: []Rule{{Name: "maybe", Action: tc.action, Actor: Actor{FromImage: &yes}}}}, {ID: "fallback", Revision: "r", Mode: tc.mode, RootRole: "root", Default: tc.fallback}}
+				if tc.knownDeny {
+					policies[0].Rules = append(policies[0].Rules, Rule{Name: "known", Action: Deny})
+				}
+				facts := Facts{ActorFromImage: tc.observed}
+				oracle, err := Compile(policies)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := oracle.Evaluate(facts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want.UncertainFallback != tc.wantUncertain || want.Block != tc.wantBlock {
+					t.Errorf("oracle provenance/block: %+v", want)
+				}
+				program, err := CompileKernel(policies, 7, "app")
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := runCEvaluator(t, runner, program, evaluatorFactBytes(t, program, policies, facts))
+				if got[16]&(1<<30) != 0 != tc.wantUncertain {
+					t.Errorf("C uncertain fallback flags: %#x", got[16])
+				}
+				if tc.wantUncertain && got[16]&(1<<31) == 0 {
+					t.Error("uncertain fallback did not suppress earlier proposals")
+				}
+				if (got[1] != 0) != (want.Action == Deny) || (got[1] != 0 && got[2] == 2) != tc.wantBlock {
+					t.Errorf("C decision: %v; oracle %+v", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestEvaluatorKnownRolesSurvivePolicyReorder(t *testing.T) {
+	policies := []Policy{
+		{ID: "z", Revision: "r", Mode: Audit, RootRole: "zroot", Rules: []Rule{{Name: "allow-z", Action: Allow, Actor: Actor{Role: []string{"zroot"}}}}},
+		{ID: "a", Revision: "r", Mode: Enforce, RootRole: "aroot", Rules: []Rule{{Name: "deny-a", Action: Deny, Actor: Actor{Role: []string{"aroot"}}}}},
+	}
+	facts := Facts{Roles: map[string]string{"a": "aroot", "z": "zroot"}}
+	for _, fixed := range []bool{false, true} {
+		flags := []string{}
+		if fixed {
+			flags = append(flags, "-DFE_FIXED_MAP_TEST")
+		}
+		runner := buildEvaluatorRunner(t, flags...)
+		for reverse := 0; reverse < 2; reverse++ {
+			if reverse != 0 {
+				policies[0], policies[1] = policies[1], policies[0]
+			}
+			program, err := CompileKernel(policies, 7, "app")
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded := evaluatorFactBytes(t, program, policies, facts)
+			for i := uint32(0); i < encoded.RoleCount; i++ {
+				role := encoded.Roles[i]
+				name := program.Identities[role.PolicyUID]
+				if role.Role != stableHash(facts.Roles[name]) {
+					t.Errorf("policy %q received wrong role hash %#x", name, role.Role)
+				}
+			}
+			oracle, err := Compile(policies)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := oracle.Evaluate(facts)
+			if err != nil || !want.Block {
+				t.Fatalf("oracle %+v %v", want, err)
+			}
+			got := runCEvaluator(t, runner, program, encoded)
+			if got[1] != 1 || got[2] != 2 {
+				t.Errorf("known-role parity fixed=%v reverse=%d: %v", fixed, reverse, got)
 			}
 		}
 	}

@@ -11,16 +11,34 @@ export SOURCE_DATE_EPOCH=0
 fail() { printf 'owner archive: %s\n' "$*" >&2; exit 1; }
 [[ $# == 5 ]] || fail 'usage: build-archive.sh VMLINUX_BTF CLANG BPFTOOL IMAGE ARCHIVE'
 btf=$1 clang=$2 bpftool=$3 image=$4 archive=$5
+case ${SHARED_RECOVERY_DEVELOPMENT:-0} in
+    0) [[ "$image" != *:abi3-recovery-development ]] || fail 'recovery IMAGE requires SHARED_RECOVERY_DEVELOPMENT=1' ;;
+    1)
+        [[ ${SHARED_DEVELOPMENT:-0} == 1 && ${ABI3_DEVELOPMENT:-0} == 1 ]] || fail 'recovery requires shared ABI3 development'
+        [[ "$image" == *:abi3-recovery-development ]] || fail 'recovery requires explicit IMAGE ending :abi3-recovery-development'
+        [[ "$archive" == *.abi3-recovery-development.tar ]] || fail 'recovery requires separate ARCHIVE ending .abi3-recovery-development.tar'
+        ;;
+    *) fail 'SHARED_RECOVERY_DEVELOPMENT must be 0 or 1' ;;
+esac
 case ${ABI3_DEVELOPMENT:-0} in
     0) development_flags=() ;;
     1)
-        [[ "$image" == *:abi3-development ]] || fail 'development requires explicit IMAGE ending :abi3-development'
-        [[ "$archive" == *.abi3-development.tar ]] || fail 'development requires separate ARCHIVE ending .abi3-development.tar'
+        if [[ ${SHARED_RECOVERY_DEVELOPMENT:-0} != 1 ]]; then
+            [[ "$image" == *:abi3-development ]] || fail 'development requires explicit IMAGE ending :abi3-development'
+            [[ "$archive" == *.abi3-development.tar ]] || fail 'development requires separate ARCHIVE ending .abi3-development.tar'
+        fi
         [[ ! -e "$archive" ]] || fail 'development ARCHIVE must not replace an existing output'
         development_flags=(-DENFORCE_EXEC_ABI3_DEVELOPMENT=1)
         ;;
     *) fail 'ABI3_DEVELOPMENT must be 0 or 1' ;;
 esac
+profile_script=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/shared-build-profile.sh
+shared_flags=()
+profile_flags=$("$profile_script" flags)
+if [[ -n "$profile_flags" ]]; then
+    mapfile -t shared_flags <<< "$profile_flags"
+fi
+development_flags+=("${shared_flags[@]}")
 [[ -f "$btf" && -r "$btf" ]] || fail 'VMLINUX_BTF must be a readable regular file'
 [[ -n "$archive" && "$archive" != */ ]] || fail 'ARCHIVE must name an output file'
 [[ "$image" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,254}$ ]] || fail 'IMAGE must be a bounded image reference'
@@ -37,7 +55,11 @@ owner=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$owner/../../../.." && pwd)
 archive=$(realpath -m -- "$archive")
 if [[ ${ABI3_DEVELOPMENT:-0} == 1 ]]; then
-    [[ "$archive" == *.abi3-development.tar ]] || fail 'canonical development ARCHIVE must end .abi3-development.tar'
+    if [[ ${SHARED_RECOVERY_DEVELOPMENT:-0} == 1 ]]; then
+        [[ "$archive" == *.abi3-recovery-development.tar ]] || fail 'canonical recovery ARCHIVE must end .abi3-recovery-development.tar'
+    else
+        [[ "$archive" == *.abi3-development.tar ]] || fail 'canonical development ARCHIVE must end .abi3-development.tar'
+    fi
 fi
 [[ -d $(dirname -- "$archive") && ! -d "$archive" ]] || fail 'ARCHIVE parent must exist and output must not be a directory'
 [[ "$archive" != "$(realpath -- "$btf")" && "$archive" != "$repo/"* ]] || fail 'ARCHIVE must be outside the source tree and must not replace BTF'
@@ -74,6 +96,11 @@ cp -- "$owner/gadget.yaml" "$work/gadget.yaml"
 if [[ ${ABI3_DEVELOPMENT:-0} == 1 ]]; then
     sed -i 's/enforce-exec-owner-abi: "2"/enforce-exec-owner-abi: "3"\n  enforce-exec-owner-development: "true"/; s/^description:.*/description: "Stage A ABI3 development only; incomplete lifecycle, not production-ready"/' "$work/gadget.yaml"
 fi
+if [[ ${SHARED_RECOVERY_DEVELOPMENT:-0} == 1 ]]; then
+    sed -i 's/^description:.*/description: "Shared ABI3 recovery development only; native supervisor and enforcement unavailable"/' "$work/gadget.yaml"
+fi
+"$profile_script" metadata > "$work/shared-annotations"
+sed -i '/^annotations:/r '"$work/shared-annotations" "$work/gadget.yaml"
 config=$(blob "$work/gadget.yaml" application/vnd.gadget.config.v1+yaml)
 program=$(blob "$work/program.o" application/vnd.gadget.ebpf.program.v1+binary)
 jq -cnS --argjson config "$config" --argjson program "$program" \
