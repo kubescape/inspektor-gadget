@@ -31,6 +31,9 @@ const (
 	CriDockerDefaultSocketPath  = "/run/cri-dockerd.sock"
 )
 
+// ContainerdDefaultNamespace is the namespace used by containerd CRI for Kubernetes workloads.
+const ContainerdDefaultNamespace = "k8s.io"
+
 var ErrPauseContainer = errors.New("it is a pause container")
 
 type K8sContainerData struct {
@@ -47,6 +50,7 @@ type RuntimeContainerData struct {
 	ContainerID          string
 	ContainerName        string
 	ContainerImageName   string
+	ContainerImageID     string
 	ContainerImageDigest string
 	ContainerStartedAt   types.Time
 
@@ -139,10 +143,13 @@ func ParseContainerID(expectedRuntime types.RuntimeName, containerID string) (st
 			return "", fmt.Errorf("invalid container runtime %q, it should be %q",
 				containerID, expectedRuntime)
 		}
-		return split[1], nil
+		containerID = split[1]
 	}
 
-	return split[0], nil
+	if err := types.ValidateContainerID(containerID); err != nil {
+		return "", err
+	}
+	return containerID, nil
 }
 
 func EnrichWithK8sMetadata(container *ContainerData, labels map[string]string) {

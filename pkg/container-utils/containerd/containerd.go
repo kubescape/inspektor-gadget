@@ -19,9 +19,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/pkg/cri/constants"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -65,7 +64,7 @@ func NewContainerdClient(socketPath string, protocol string, config *containerut
 		return nil, fmt.Errorf("unknown runtime protocol %q", protocol)
 	}
 
-	namespace := constants.K8sContainerdNamespace
+	namespace := runtimeclient.ContainerdDefaultNamespace
 	if config != nil && config.Namespace != "" {
 		namespace = config.Namespace
 	}
@@ -314,6 +313,14 @@ func (c *ContainerdClient) buildContainerData(container containerd.Container, ta
 		return nil, fmt.Errorf("getting image of container %q: %w", container.ID(), err)
 	}
 
+	containerImageDigest := image.Target().Digest.String()
+	containerImageID := containerImageDigest
+	if imageConfig, err := image.Config(c.ctx); err == nil {
+		containerImageID = imageConfig.Digest.String()
+	} else {
+		log.Debugf("getting image config for container %q: %s. Falling back to using the image digest as the image ID", container.ID(), err)
+	}
+
 	// When `task` is nil, state is getting set to `Running` for the following reasons:
 	// 1. `buildContainerData` is called by `GetContainer`, which is only getting called on
 	//    new created containers
@@ -330,7 +337,8 @@ func (c *ContainerdClient) buildContainerData(container containerd.Container, ta
 			ContainerName:        getContainerName(container, labels),
 			RuntimeName:          types.RuntimeNameContainerd,
 			ContainerImageName:   image.Name(),
-			ContainerImageDigest: image.Metadata().Target.Digest.String(),
+			ContainerImageID:     containerImageID,
+			ContainerImageDigest: containerImageDigest,
 			State:                taskState,
 		},
 	}

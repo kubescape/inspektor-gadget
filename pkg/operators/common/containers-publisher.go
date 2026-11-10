@@ -16,6 +16,7 @@ package common
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -125,7 +126,42 @@ func (publisher *ContainersPublisher) emitContainersDatasourceEvent(eventType co
 	return nil
 }
 
-func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector) (err error) {
+// scopedContainerEventMatches is an additional boundary check for authenticated
+// namespace-scoped streams. Collection.Subscribe deliberately delivers all
+// PRECREATE events before namespace enrichment, so its selector is not enough.
+func scopedContainerEventMatches(eventType containercollection.EventType, container *containercollection.Container, selector containercollection.ContainerSelector) bool {
+	switch eventType {
+	case containercollection.EventTypeAddContainer, containercollection.EventTypeRemoveContainer,
+		containercollection.EventTypePreCreateContainer, containercollection.EventTypeExecContainer:
+	default:
+		return false
+	}
+	if container == nil || container.K8s.Namespace == "" {
+		return false
+	}
+	// An empty or exclusion-only selector is not proof of authorization.
+	authorized := false
+	for _, namespace := range strings.Split(selector.K8s.Namespace, ",") {
+		if namespace == container.K8s.Namespace {
+			authorized = true
+			break
+		}
+	}
+	return authorized && containercollection.ContainerSelectorMatches(&selector, container)
+}
+
+func (publisher *ContainersPublisher) emitSelectedContainersDatasourceEvent(eventType containercollection.EventType, container *containercollection.Container, k8s bool, selector containercollection.ContainerSelector, namespaceScopeRequired bool) error {
+	if namespaceScopeRequired && !scopedContainerEventMatches(eventType, container, selector) {
+		return nil
+	}
+	return publisher.emitContainersDatasourceEvent(eventType, container, k8s)
+}
+
+// PublishContainers uses namespaceScopeRequired as a restrictive emission
+// signal for an authenticated policy context or a persisted scoped-policy marker.
+// Neither the marker nor a user-supplied selector is an authorization grant.
+// Every caller must explicitly choose whether the scoped boundary applies.
+func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainers []*containercollection.Container, containerSelector containercollection.ContainerSelector, namespaceScopeRequired bool) (err error) {
 	// Subscribe snapshots the collection atomically, but publishing that snapshot
 	// takes time. Queue concurrent changes until the snapshot has been delivered.
 	var mu sync.Mutex
@@ -159,7 +195,7 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 					pending = append(pending, event)
 					return
 				}
-				err := publisher.emitContainersDatasourceEvent(event.Type, event.Container, k8s)
+				err := publisher.emitSelectedContainersDatasourceEvent(event.Type, event.Container, k8s, containerSelector, namespaceScopeRequired)
 				if err != nil {
 					log.Errorf("publishing new container event: %v", err)
 				}
@@ -172,7 +208,7 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 	}
 
 	for _, container := range containers {
-		err := publisher.emitContainersDatasourceEvent(containercollection.EventTypeAddContainer, container, k8s)
+		err := publisher.emitSelectedContainersDatasourceEvent(containercollection.EventTypeAddContainer, container, k8s, containerSelector, namespaceScopeRequired)
 		if err != nil {
 			return fmt.Errorf("publishing existing container event: %w", err)
 		}
@@ -189,7 +225,7 @@ func (publisher *ContainersPublisher) PublishContainers(k8s bool, extraContainer
 		pending = nil
 		mu.Unlock()
 		for _, event := range batch {
-			if err := publisher.emitContainersDatasourceEvent(event.Type, event.Container, k8s); err != nil {
+			if err := publisher.emitSelectedContainersDatasourceEvent(event.Type, event.Container, k8s, containerSelector, namespaceScopeRequired); err != nil {
 				return fmt.Errorf("publishing queued container event: %w", err)
 			}
 		}

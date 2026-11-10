@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -27,20 +28,24 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 
 	containercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/container-collection"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/datasource/compat"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api"
 	apihelpers "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api-helpers"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/auth"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/logger"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/common"
 	hookservice "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/kubemanager/hook-service"
 	hookserviceapi "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/kubemanager/hook-service/api"
+	kubemanagerpolicy "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/kubemanager/policy"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/kubemanager/types"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/params"
 	tracercollection "github.com/inspektor-gadget/inspektor-gadget/pkg/tracer-collection"
@@ -55,8 +60,10 @@ const (
 	ParamHookLivenessSocketFile = "hook-liveness-socketfile"
 
 	// Instance parameter keys
-	ParamAllNamespaces = "all-namespaces"
+	ParamAllNamespaces = kubemanagerpolicy.ParamAllNamespaces
 )
+
+const paramPolicyScope = kubemanagerpolicy.ParamPolicyScope
 
 type MountNsMapSetter interface {
 	SetMountNsMap(*ebpf.Map)
@@ -85,6 +92,9 @@ type KubeManager struct {
 	externalCollections bool
 }
 
+// NewKubeManager creates a new KubeManager operator skipping the Init() method.
+// This can be used when the operator is used as a library and the caller wants to manage the lifecycle of the collections.
+// It also means that all initialization steps in Init() are skipped, so the caller is responsible for initializing the collections.
 func NewKubeManager(containerCollection *containercollection.ContainerCollection, tracerCollection *tracercollection.TracerCollection) *KubeManager {
 	return &KubeManager{
 		containerCollection: containerCollection,
@@ -234,16 +244,19 @@ type KubeManagerInstance struct {
 	mountnsmap   *ebpf.Map
 	subscribed   bool
 
-	attachedContainersMu sync.Mutex
-	attachedContainers   map[string]*containercollection.Container
-	attacher             Attacher
-	params               *params.Params
-	gadgetInstance       any
-	gadgetCtx            operators.GadgetContext
+	containerMutex     sync.Mutex
+	attachedContainers map[string]*containercollection.Container
+	attacher           Attacher
+	params             *params.Params
+	gadgetInstance     any
+	gadgetCtx          operators.GadgetContext
 
 	eventWrappers map[datasource.DataSource]*compat.EventWrapperBase
 
 	containersPublisher *common.ContainersPublisher
+	// A restrictive publisher signal, not an authorization grant. Persisted
+	// scoped instances run without the original authenticated request context.
+	namespaceScopeRequired bool
 }
 
 func (m *KubeManagerInstance) Name() string {
@@ -302,9 +315,9 @@ func (m *KubeManagerInstance) handleGadgetInstance(log logger.Logger) error {
 				return
 			}
 
-			m.attachedContainersMu.Lock()
+			m.containerMutex.Lock()
 			m.attachedContainers[container.Runtime.ContainerID] = container
-			m.attachedContainersMu.Unlock()
+			m.containerMutex.Unlock()
 
 			log.Debugf("tracer attached: container %q pid %d mntns %d netns %d",
 				container.K8s.ContainerName, container.ContainerPid(), container.Mntns, container.Netns)
@@ -312,9 +325,9 @@ func (m *KubeManagerInstance) handleGadgetInstance(log logger.Logger) error {
 
 		detachContainerFunc := func(container *containercollection.Container) {
 			log.Debugf("calling gadget.Detach()")
-			m.attachedContainersMu.Lock()
+			m.containerMutex.Lock()
 			delete(m.attachedContainers, container.Runtime.ContainerID)
-			m.attachedContainersMu.Unlock()
+			m.containerMutex.Unlock()
 
 			err := attacher.DetachContainer(container)
 			if err != nil {
@@ -385,13 +398,16 @@ func (m *KubeManagerInstance) PostGadgetRun() error {
 		m.gadgetCtx.Logger().Debugf("calling Unsubscribe()")
 		m.manager.containerCollection.Unsubscribe(m.id)
 
-		// emit detach for all remaining containers
-		m.attachedContainersMu.Lock()
+		// emit detach for all remaining containers. Snapshot the map under
+		// the lock so we don't hold it while calling DetachContainer and so we
+		// don't race with callbacks that might still be running.
+		m.containerMutex.Lock()
 		remaining := make([]*containercollection.Container, 0, len(m.attachedContainers))
 		for _, container := range m.attachedContainers {
 			remaining = append(remaining, container)
 		}
-		m.attachedContainersMu.Unlock()
+		m.containerMutex.Unlock()
+
 		for _, container := range remaining {
 			m.attacher.DetachContainer(container)
 		}
@@ -449,14 +465,16 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 		containersPublisher: containersPublisher,
 	}
 
-	// A gadget can consume lifecycle events without requesting enrichment maps.
-	activate := enableContainersDs
+	// Keep notification-only activation separate from the pre-existing manager
+	// activation paths. Notifications do not establish isolation for another
+	// datasource emitted by the gadget.
+	legacyActivation := false
 
 	// Check, whether the gadget requested a map from us
 	if t, ok := gadgetCtx.GetVar(gadgets.MntNsFilterMapName); ok {
 		if _, ok := t.(*ebpf.Map); ok {
 			gadgetCtx.Logger().Debugf("gadget requested map %s", gadgets.MntNsFilterMapName)
-			activate = true
+			legacyActivation = true
 		}
 	}
 
@@ -464,7 +482,7 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 	// require the Attacher interface to be aware of containers
 	if val, ok := gadgetCtx.GetVar("NeedContainerEvents"); ok {
 		if b, ok := val.(bool); ok && b {
-			activate = true
+			legacyActivation = true
 		}
 	}
 
@@ -474,11 +492,30 @@ func (k *KubeManager) InstantiateDataOperator(gadgetCtx operators.GadgetContext,
 	}
 	traceInstance.eventWrappers = wrappers
 	if len(wrappers) > 0 {
-		activate = true
+		legacyActivation = true
 	}
 
-	if !activate {
+	_, hasPolicyScope := auth.PolicyScopeFromContext(gadgetCtx.Context())
+	policyRequired := hasPolicyScope || strings.EqualFold(paramValues[paramPolicyScope], "true")
+	// The persisted policy marker can only add a restriction here. It is not
+	// trusted to authorize namespaces or exempt a gadget from isolation checks.
+	traceInstance.namespaceScopeRequired = policyRequired
+	if !legacyActivation && !enableContainersDs {
+		if policyRequired {
+			return nil, status.Error(codes.PermissionDenied, "gadget does not support Kubernetes namespace isolation")
+		}
 		return nil, nil
+	}
+	if policyRequired && !legacyActivation {
+		return nil, status.Error(codes.PermissionDenied, "container notifications alone do not establish Kubernetes namespace isolation for gadget output")
+	}
+
+	if err := kubemanagerpolicy.EnforcePolicyScopeFromContext(gadgetCtx.Context(), paramValues); err != nil {
+		return nil, err
+	}
+	delete(paramValues, paramPolicyScope)
+	if err := params.CopyFromMap(paramValues, ""); err != nil {
+		return nil, err
 	}
 
 	return traceInstance, nil
@@ -532,7 +569,7 @@ func (m *KubeManagerInstance) Start(gadgetCtx operators.GadgetContext) error {
 
 	containerSelector := newContainerSelector(m.params)
 
-	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector)
+	return m.containersPublisher.PublishContainers(true, []*containercollection.Container{}, containerSelector, m.namespaceScopeRequired)
 }
 
 func (m *KubeManagerInstance) Stop(gadgetCtx operators.GadgetContext) error {

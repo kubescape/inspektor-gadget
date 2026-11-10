@@ -1,13 +1,13 @@
 ARG CLANG_LLVM_VERSION=18
 ARG BPFTOOL_VERSION=v7.3.0
 ARG LIBBPF_VERSION=v1.3.0
-ARG GOLANG_VERSION=1.27.3
+ARG GOLANG_VERSION=1.26.10
 ARG RUST_VERSION=1.87.0
 
 # Args need to be redefined on each stage
 # https://docs.docker.com/engine/reference/builder/#understand-how-arg-and-from-interact
 
-FROM debian:bookworm-slim@sha256:56ff6d36d4eb3db13a741b342ec466f121480b5edded42e4b7ee850ce7a418ee AS builder
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS builder
 ARG BPFTOOL_VERSION
 ARG LIBBPF_VERSION
 
@@ -27,7 +27,7 @@ RUN \
 	tar -C /usr/local/bin -xzf bpftool-${BPFTOOL_VERSION}-${ARCH}.tar.gz && \
 	chmod +x /usr/local/bin/bpftool
 
-FROM debian:bookworm-slim@sha256:56ff6d36d4eb3db13a741b342ec466f121480b5edded42e4b7ee850ce7a418ee
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 ARG CLANG_LLVM_VERSION
 ARG GOLANG_VERSION
 ARG RUST_VERSION
@@ -97,3 +97,17 @@ WORKDIR /work
 
 # Add files used to build containerized gadgets
 ADD include /usr/include
+
+ARG WITHOUT_CACHE
+# Keep the final refresh after all package installs, and fail if a cached or
+# incomplete refresh leaves the vulnerable bookworm apt packages in the image.
+RUN set -eu; \
+	apt-get -y update; \
+	apt-get upgrade -y --with-new-pkgs; \
+	for package in apt libapt-pkg6.0; do \
+		version="$(dpkg-query -W -f='${Version}' "$package")"; \
+		if ! dpkg --compare-versions "$version" ge 2.6.2; then \
+			echo >&2 "$package $version is older than the CVE-2026-109518 fix (2.6.2)"; \
+			exit 1; \
+		fi; \
+	done

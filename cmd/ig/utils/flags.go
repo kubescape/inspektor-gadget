@@ -18,11 +18,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containerd/containerd/pkg/cri/constants"
 	securejoin "github.com/cyphar/filepath-securejoin"
 
 	commonutils "github.com/inspektor-gadget/inspektor-gadget/cmd/common/utils"
 	containerutils "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils"
+	runtimeclient "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils/runtime-client"
 	containerutilsTypes "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils/types"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/types"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
@@ -41,6 +41,12 @@ type CommonFlags struct {
 
 	// Containername allows to filter containers by name.
 	Containername string
+
+	// ContainerImageDigest allows to filter containers by image digest.
+	ContainerImageDigest string
+
+	// ContainerImageID allows to filter containers by image ID.
+	ContainerImageID string
 
 	// Kubernetes-related filters
 	K8sPodName       string
@@ -158,6 +164,32 @@ func AddCommonFlags(command *cobra.Command, commonFlags *CommonFlags) {
 	)
 	command.PersistentFlags().MarkHidden("runtime-containername")
 
+	command.PersistentFlags().StringVarP(
+		&commonFlags.ContainerImageDigest,
+		"containerimage-digest",
+		"",
+		"",
+		"Show data only from containers with the runtime-assigned image digest (alias: runtime-containerimage-digest)",
+	)
+	command.PersistentFlags().StringVarP(
+		&commonFlags.ContainerImageDigest,
+		"runtime-containerimage-digest", "", "", "",
+	)
+	command.PersistentFlags().MarkHidden("runtime-containerimage-digest")
+
+	command.PersistentFlags().StringVarP(
+		&commonFlags.ContainerImageID,
+		"containerimage-id",
+		"",
+		"",
+		"Show data only from containers with the runtime-assigned image ID (alias: runtime-containerimage-id)",
+	)
+	command.PersistentFlags().StringVarP(
+		&commonFlags.ContainerImageID,
+		"runtime-containerimage-id", "", "", "",
+	)
+	command.PersistentFlags().MarkHidden("runtime-containerimage-id")
+
 	command.PersistentFlags().BoolVarP(
 		&commonFlags.Host,
 		"host",
@@ -184,7 +216,7 @@ func AddCommonFlags(command *cobra.Command, commonFlags *CommonFlags) {
 	command.PersistentFlags().StringVar(
 		&commonFlags.ContainerdNamespace,
 		"containerd-namespace",
-		constants.K8sContainerdNamespace,
+		runtimeclient.ContainerdDefaultNamespace,
 		"Namespace used by containerd",
 	)
 
