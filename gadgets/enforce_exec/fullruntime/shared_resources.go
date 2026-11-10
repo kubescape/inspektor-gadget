@@ -66,6 +66,23 @@ func sharedProtocolOwnershipBytes(bindings uint64) (uint64, error) {
 	return checkedSharedResourceSum(uint64(unsafe.Sizeof(sharedProtocolHostOwnership{})), scopes, joining)
 }
 
+// sharedProtocolGeometry is the common physical base for the protocol-only
+// and recovered-image manifests. The recovered image removes se_admin and
+// adds its own recovery maps; neither path may infer a map from a name prefix.
+func sharedProtocolGeometry(profile SharedProfile, admission SharedAdmission) map[string]operators.NativeMapResource {
+	return map[string]operators.NativeMapResource{
+		"se_configuration": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 56, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
+		"se_admin":         {Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: 8, Flags: unix.BPF_F_NO_PREALLOC},
+		"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1112, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
+		"se_receipts":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 48, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
+		"se_objects":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 80, MaxEntries: uint32(admission.PolicyObjects), Flags: unix.BPF_F_RDONLY},
+		"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1632, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_routes":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 88, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_route_index":   {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 8, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
+		"se_arena":         {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: uint32(admission.ArenaCells), Flags: unix.BPF_F_RDONLY},
+	}
+}
+
 // validateSharedProtocolResources validates the current protocol-only manifest
 // before allocation. It NEVER resizes or rewrites image resources. An image with
 // legacy eo_* banks/hooks or future unaccounted canonical maps is rejected: the
@@ -79,17 +96,7 @@ func validateSharedProtocolResources(profile SharedProfile, resources *operators
 	if resources == nil {
 		return sharedResourceUsage{}, fmt.Errorf("shared native resource manifest required")
 	}
-	expected := map[string]operators.NativeMapResource{
-		"se_configuration": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 56, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
-		"se_admin":         {Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: 8, Flags: unix.BPF_F_NO_PREALLOC},
-		"se_commands":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1112, MaxEntries: 1, Flags: unix.BPF_F_WRONLY},
-		"se_receipts":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 48, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
-		"se_objects":       {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 80, MaxEntries: uint32(admission.PolicyObjects), Flags: unix.BPF_F_RDONLY},
-		"se_bindings":      {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 1632, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
-		"se_routes":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 88, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
-		"se_route_index":   {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 8, MaxEntries: uint32(profile.Bindings), Flags: unix.BPF_F_RDONLY},
-		"se_arena":         {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 288, MaxEntries: uint32(admission.ArenaCells), Flags: unix.BPF_F_RDONLY},
-	}
+	expected := sharedProtocolGeometry(profile, admission)
 	for name, want := range expected {
 		if got, ok := resources.Maps[name]; !ok || got != want {
 			return sharedResourceUsage{}, fmt.Errorf("shared map %s missing or incompatible", name)

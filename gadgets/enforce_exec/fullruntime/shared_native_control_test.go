@@ -192,6 +192,21 @@ func TestSharedZeroTemplatesFrozenBeforeInspection(t *testing.T) {
 	}
 }
 
+func TestSharedPoolZeroTemplatesFrozenBeforeInspection(t *testing.T) {
+	for _, dirty := range []bool{false, true} {
+		task, work := &sharedZeroMapTest{}, &sharedZeroMapTest{dirty: dirty}
+		err := freezeSharedPoolZeroTemplates(map[string]sharedZeroTemplateMap{
+			"se_pool_task_zero": task, "se_pool_work_zero": work,
+		})
+		if (err != nil) != dirty || !task.frozen || !work.frozen {
+			t.Fatalf("pool zero templates: dirty=%v err=%v task=%v work=%v", dirty, err, task.frozen, work.frozen)
+		}
+	}
+	if err := freezeSharedPoolZeroTemplates(map[string]sharedZeroTemplateMap{}); err == nil {
+		t.Fatal("missing pool zero templates accepted")
+	}
+}
+
 func TestSharedProgramIdentityAliasesRejected(t *testing.T) {
 	for _, ids := range [][]ebpf.ProgramID{{0, 2}, {1, 1}} {
 		if err := validateSharedProgramIDs(ids); err == nil {

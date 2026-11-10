@@ -246,13 +246,11 @@ type workerRecordView struct {
 	Account bool
 	Digests [8][32]byte
 }
-
 type workerSlotView struct {
 	State  sharedObjectSlot
 	Object bool
 	Digest [32]byte
 }
-
 type workerStateView struct {
 	ControlSequence uint64
 	Pending         sharedPendingCommand

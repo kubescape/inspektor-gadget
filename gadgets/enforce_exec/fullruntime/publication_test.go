@@ -26,12 +26,9 @@ type fakePublicationControl struct {
 	hook   func(ControlCommand)
 }
 
-func (c *fakePublicationControl) Phase() (ControlPhase, error) { return c.phase, nil }
-
-func (c *fakePublicationControl) Health() (ControlHealth, error) { return c.health, nil }
-
+func (c *fakePublicationControl) Phase() (ControlPhase, error)           { return c.phase, nil }
+func (c *fakePublicationControl) Health() (ControlHealth, error)         { return c.health, nil }
 func (c *fakePublicationControl) GenerationFault(uint64) (uint64, error) { return c.fault, nil }
-
 func (c *fakePublicationControl) Call(ctx context.Context, cmd ControlCommand) (ControlHealth, error) {
 	if err := ctx.Err(); err != nil {
 		return c.health, err

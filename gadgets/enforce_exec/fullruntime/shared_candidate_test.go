@@ -8,7 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 )
 
 // This models only the transport fault boundary. It does not attest candidate
@@ -196,4 +202,202 @@ func TestSharedCandidateCanceledCallRetainsCompletedReceipt(t *testing.T) {
 	}
 	// Do not retry on err: the receipt proves this operation completed. A fresh
 	// call after pending cleared would be a NEW command, not reconciliation.
+}
+
+// This reuses the actual authenticated command body and reader primitives. It
+// proves candidate operations preserve a held active record, not root/factual
+// qualification, real BPF concurrency or native publication integration.
+func TestSharedCandidateCommandsKeepActiveReader(t *testing.T) {
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs("../full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures, err := filepath.Abs("testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := `#define main original_fixture_main
+#include "shared_control.c"
+#undef main
+int main(void) {
+ command=(struct se_control_command){.scope=1};
+ assert(!call(SE_BINDING_OPEN));
+ command.object=1;
+ command.attempt=99;
+ command.count=1;
+ assert(!call(SE_OBJECT_BEGIN));
+ command.generation=receipt.generation;
+ assert(!call(SE_OBJECT_WRITE));
+ command.execution_class=CANDIDATE_TEST_CLASS;
+ assert(!call(SE_OBJECT_FINALIZE));
+ command.metadata=(struct se_snapshot_metadata){.root_epochs={1},.policy_uids={1},.container_length=1,.container={'c'},.role_writers=1};
+ command.handles[0]=(struct se_pin_ticket){.object_slot=1,.object_generation=1};
+ command.generation=bindings[0].state.generation;
+ command.serial=bindings[0].state.next_serial;
+ command.record=0;
+ command.count=1;
+ command.execution_class=CANDIDATE_TEST_CLASS;
+ assert(!call(SE_SNAPSHOT_PREPARE));
+ command.serial=receipt.serial;
+ assert(!call(SE_SNAPSHOT_PIN));
+ assert(!call(SE_SNAPSHOT_SEAL));
+ bpf_spin_lock(&routes[0].lock);
+ assert(!se_route_commit_preflight_locked(&routes[0],&bindings[0].state,0,command.serial,routes[0].admission_serial));
+ se_route_commit_publish_locked(&routes[0],&bindings[0].state,0);
+ struct se_reader_owner owner={};
+ struct se_reader_token token={};
+ assert(!se_reader_acquire_locked(&bindings[0].state,1,99,&owner,&token));
+ bpf_spin_unlock(&routes[0].lock);
+ struct se_snapshot active=bindings[0].state.records[0];
+ struct se_route_anchor route=routes[0];
+ __u64 generation=bindings[0].state.generation;
+ __u64 admission=bindings[0].state.admission_serial;
+ __u64 active_serial=bindings[0].state.active_serial;
+ assert(active.claims==1 && objects[1].state.pins==1);
+ command.record=1;
+ command.generation=generation-1;
+ command.serial=bindings[0].state.next_serial;
+ assert(call(SE_SNAPSHOT_PREPARE)); /* stale revision refused, no drain */
+ assert(bindings[0].state.records[1].phase==SE_SNAPSHOT_FREE);
+ command.generation=generation;
+ assert(!call(SE_SNAPSHOT_PREPARE));
+ command.serial=receipt.serial;
+ assert(!call(SE_SNAPSHOT_PIN));
+ assert(!call(SE_SNAPSHOT_SEAL));
+ assert(objects[1].state.pins==2);
+ assert(!memcmp(&active,&bindings[0].state.records[0],sizeof(active)));
+ assert(!memcmp(&route,&routes[0],sizeof(route)));
+ /* Refuse this prepared candidate: only its own tickets may be released. */
+ assert(!call(SE_SNAPSHOT_ABORT));
+ assert(!call(SE_SNAPSHOT_RELEASE));
+ assert(!call(SE_SNAPSHOT_RELEASE)); /* exact ticket release replay */
+ assert(objects[1].state.pins==1);
+ assert(!call(SE_SNAPSHOT_RECLAIM));
+ assert(call(SE_SNAPSHOT_RECLAIM)); /* stale reclaim must not touch active */
+ assert(!memcmp(&active,&bindings[0].state.records[0],sizeof(active)));
+ assert(!memcmp(&route,&routes[0],sizeof(route)));
+ assert(bindings[0].state.generation==generation);
+ assert(bindings[0].state.admission_serial==admission);
+ assert(bindings[0].state.active_serial==active_serial);
+ assert(bindings[0].state.active_record==0 && owner.owned);
+ bpf_spin_lock(&routes[0].lock);
+ assert(!se_reader_release_locked(&bindings[0].state,&owner,&token));
+ bpf_spin_unlock(&routes[0].lock);
+ assert(!owner.owned && !bindings[0].state.records[0].claims);
+ puts("candidate stale/refusal cleanup preserves held active reader, metadata and admission");
+ return 0;
+}
+`
+	for _, class := range []int{1, 2} {
+		t.Run(fmt.Sprint(class), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "candidate.c")
+			binary := filepath.Join(dir, "candidate")
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := exec.Command(cc, "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", fmt.Sprintf("-DCANDIDATE_TEST_CLASS=%d", class), "-iquote", root, "-iquote", fixtures, path, "-o", binary).CombinedOutput()
+			if err != nil {
+				t.Fatalf("compile: %v\n%s", err, out)
+			}
+			out, err = exec.Command(binary).CombinedOutput()
+			if err != nil {
+				t.Fatalf("candidate: %v\n%s", err, out)
+			}
+			t.Log(string(out))
+		})
+	}
+}
+
+func TestSharedCandidateMetadataMatchesActualSeal(t *testing.T) {
+	var generated strings.Builder
+	for seed := 0; seed < 16; seed++ {
+		policies := make([]fullpolicy.Policy, 8)
+		refs := make([]fullpolicy.SharedPolicyRef, 8)
+		for i := range policies {
+			p := fullpolicy.Policy{ID: fmt.Sprintf("policy-%d", (i*5)%8), Revision: "r", RootRole: "root", Mode: fullpolicy.Audit}
+			if seed != 0 && (i+seed)%4 == 0 {
+				p.Mode = fullpolicy.Enforce
+			}
+			if (i+seed)%3 == 0 {
+				p.Default = fullpolicy.Deny
+			}
+			r := fullpolicy.Rule{Name: "r", Action: fullpolicy.Allow}
+			if seed != 0 && (i+seed)%5 == 0 {
+				r.Mode = fullpolicy.Enforce
+			} else if (i+seed)%2 == 0 {
+				r.Mode = fullpolicy.Audit
+			}
+			if (i+seed)%3 != 1 {
+				r.Actor.Role = []string{"root"}
+			}
+			if (i+seed)%4 == 0 {
+				r.Target.SetRole = "next"
+			} else if (i+seed)%2 == 0 {
+				r.Action = fullpolicy.Deny
+			}
+			p.Rules = []fullpolicy.Rule{r}
+			policies[i] = p
+			object, err := fullpolicy.CompileSharedPolicy(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs[(i+seed)%8] = fullpolicy.SharedPolicyRef{Object: object, RootEpoch: 1}
+		}
+		snapshot, err := fullpolicy.NewSharedSnapshot(7, 2, "app", refs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary, err := snapshot.ExecutionMetadata()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seed == 0 && (summary.ExecutionClass != 1 || summary.RequiredKnown != 0) {
+			t.Fatal("audit-only dependency gained strict requirement")
+		}
+		program, err := fullpolicy.CompileKernel(policies, 2, "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var required, writers uint32
+		for i := uint32(0); i < 8; i++ {
+			policy, err := fullpolicy.Decode[fullpolicy.KernelPolicy](program.Entries[fullpolicy.KernelPolicyBase+i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for j, ref := range refs {
+				if ref.Object.UID() == policy.UID {
+					found = true
+					if summary.RequiredKnown&(1<<j) != 0 {
+						required |= 1 << i
+					}
+					if summary.RoleWriters&(1<<j) != 0 {
+						writers |= 1 << i
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing compiled UID")
+			}
+		}
+		fmt.Fprintf(&generated, "/* shared metadata seed=%d */\n{static const unsigned char image[][288]={\n", seed)
+		for _, blob := range program.Entries {
+			generated.WriteString("{")
+			for _, b := range blob {
+				fmt.Fprintf(&generated, "%d,", b)
+			}
+			generated.WriteString("},\n")
+		}
+		generated.WriteString("};\nmemset(cells,0,sizeof(cells));memset(&work,0,sizeof(work));\n")
+		generated.WriteString("dispatch=(struct eo_dispatch){.scope_state=EO_SCOPE_ACTIVE,.session_cookie=7,.cgroup=42,.serial=1,.active={.generation=1,.execution_class=1,.policy_count=1}};\n")
+		fmt.Fprintf(&generated, "assert(!eo_candidate_begin_locked(&dispatch,7,2,%d));\n", len(program.Entries))
+		fmt.Fprintf(&generated, "for(__u32 key=0;key<%d;key++){struct eo_candidate_input input={.request={.session_cookie=7,.attempt=2,.entries=%d,.index=key,.bank=1}};memcpy(input.data,image[key],288);assert(!eo_candidate_write_cell(&dispatch,&input.request,input.data,&cells[1][key]));}\n", len(program.Entries), len(program.Entries))
+		fmt.Fprintf(&generated, "assert(eo_seal_candidate(&dispatch,7,2)==EO_OK);assert(dispatch.candidate.required_known_mask==%d);assert(dispatch.candidate.sealed_role_writer_mask==%d);assert(dispatch.candidate.sealed_class==%d);assert(!work.busy&&!work.reader.owned&&!dispatch.authority_readers&&!dispatch.bank_readers[1]);}\n", required, writers, summary.ExecutionClass)
+	}
+	runOwnerSealFixture(t, generated.String())
 }

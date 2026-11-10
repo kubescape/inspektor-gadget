@@ -109,7 +109,6 @@ func TestSharedHostCancelsAndJoinsPreparation(t *testing.T) {
 type sharedTestBorrowedFD struct{ file *os.File }
 
 func (f sharedTestBorrowedFD) FD() int { return int(f.file.Fd()) }
-
 func TestSharedHostWaitsForBorrowedDescriptorClosure(t *testing.T) {
 	n, gc := sharedPreparedHost(t)
 	f, err := os.Open(t.TempDir())

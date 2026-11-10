@@ -20,14 +20,87 @@ shared receipt. This boundary defines no new wire ABI. Shared native integration
 physical Ready and kernel qualification remain unavailable or unproved; the
 legacy isolated matrix and lifetime-credit rules below do not qualify them.
 
-This package provides the native persistent owner, bounded whole-exec gate,
-publication coordinator and isolated tests for frozen policy-map revisions. The
-embedding supplies authenticated runtime leases and public event provenance;
-readiness requires the explicitly supported kernel/runtime environment.
+This package contains the **legacy per-binding `Owner` profile** and the unfinished
+shared-node `NodeEnforcer` replacement. The legacy profile provides the native
+persistent owner, bounded whole-exec gate, publication coordinator and isolated
+tests for frozen policy-map revisions. Its embedding supplies authenticated
+runtime leases and public event provenance; readiness requires the explicitly
+supported kernel/runtime environment. Its proofs do not qualify the shared-node
+replacement.
 
-## Current support and security limits
+## Shared-node implementation status and API contracts
 
-This is the **full persistent-owner profile**, not the
+`NodeEnforcer.Ready` **never reports Ready**: it returns a startup error when the
+host is absent, mismatched, incomplete or closing/closed, and otherwise returns
+`ErrSharedNativeUnavailable`. Routing, union evaluator adaptation, qualified
+history publication and required attachment receipts are not integrated.
+Protocol preparation and Go tests do not establish protected workloads.
+`se_publication_arm` is the only shared commit/withdrawal producer, and only from
+an authenticated `cgroup_kn_lock_live` barrier. A syscall receipt is not that
+producer. `se_arm_frame` is per-CPU scratch, not epoch authority. Shared exec
+reads `se_epoch_bank` through the kernel-owned `se_epoch_index`. `SE_ARM_BIND`
+reserves that index on an earlier barrier; commit only accepts an index that
+already names the cell. The unread `se_accepted_epochs` hash is not that
+catalogue. An isolated Clang 19 load of the arm, including index bind and bank lookup,
+was accepted by local kernel `7.1.13+parrot7-amd64`. That is not the admitted
+BTF/Clang 21.1.8 matrix, not Ready, reload integration, or kernel qualification.
+
+- Private shared-object preparation uploads compiler-owned content only. It
+  grants no root, snapshot or image qualification.
+- `fullpolicy.CompileSharedPolicyCompact` and
+  `fullpolicy.NewSharedSnapshotCompact` provide scalar/compact diagnostics, not
+  memory admission or activation guarantees. The Limited compiler and private
+  worker have conditional logical accounting, but complete producing-artifact
+  qualification remains unavailable; see the scope below.
+- The private operation context deliberately has `context.Cause(op) == op.Err()`;
+  it does not propagate a custom parent cause. Providers must not retain it beyond
+  the synchronous, joined operation. Joining retires logical ownership, not
+  allocator/GC or scheduler resources.
+
+### Conditional shared-worker qualification
+
+The private worker covers only a **never-staged, generation-zero binding**. It
+uses one joined operation for object compilation, union compilation and staging;
+it does not establish accepted history, general reload or activation.
+
+On the exact reviewed Go 1.27.3 Linux/amd64 source/tool/profile pins, the
+[conditional composition](../fullpolicy/qualification/worker_composition.go)
+derives these logical operation-owned terms:
+
+| Term | Bytes |
+|---|---:|
+| Bootstrap `B` | 536 |
+| Project phase maximum | 1,310,800 |
+| Selected dependency maximum | 1,454 |
+| Combined tail `T` | 1,312,254 |
+
+The fixed reservation would be `B + T = 1,312,790`; object and union compiler
+debits remain cumulative and separate. Package/library startup owners, including
+the carrier and warmed type caches, are not charged again per operation. These
+terms are not an allocator, stack, RSS or complete node-resource bound.
+
+**Complete worker evidence remains unavailable.** `deriveWorkerTail` still
+refuses, so the conditional calculation cannot issue a positive PREBUILD or
+carrier. Both producer phases generate fresh lowering and typed-Go sentinel
+checks bound to the selected snapshot, exports, profile/tools and runner
+identity. The typed check does not certify arbitrary unsafe or assembly writes;
+opaque-input disposition and final published-consumer/release provenance remain
+separate requirements. Diagnostic checks against older published consumer pins
+do not qualify the unpublished shared-runtime changes.
+
+The [qualification tooling](../fullpolicy/qualification/README.md) keeps runner
+source linkage `UNPROVEN` and native activation `NOT_QUALIFIED`. Approved
+signed-image digest verification remains the external release/deployment trust
+requirement; these tools do not establish it, and hashes alone are not
+authentication. No positive descriptor or Ready state follows from these local
+tools or their tests.
+
+The remaining sections describe the **legacy per-binding `Owner` profile**,
+including its lifecycle and historical isolated proofs, not `NodeEnforcer`.
+
+## Legacy per-binding Owner support and security limits
+
+This is the **legacy full persistent-owner profile**, not the
 [simple path-only engine](../README.md). It currently admits only the two exact
 custom **amd64** kernel artifacts in [KERNEL-MATRIX.md](KERNEL-MATRIX.md). Stock
 distribution kernels and arm64 are not supported by this profile. BPF LSM and
@@ -211,6 +284,78 @@ Closed-gate exec attempts need an explicit, observable operational failure polic
 never bypass authored enforcement while publication is underway. This can disrupt
 runtime helpers and even explicitly audited workloads during a reload. The gate
 library does not silently choose this product behavior or claim that it is wired.
+
+The opaque verdict candidate fails closed when a bounded TASK or WORK quota
+(`SE_PROFILE_TASK_QUOTA`, `SE_PROFILE_SCRATCH_QUOTA`), the deferred storage, or
+the source/target handoff is exhausted: Strict refuses the birth or exec and
+Audit leaves the child unevaluated. Building with
+`ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE` adds the
+`opaque_real_fail_closed_rates` counters (quota LIMIT, source refusal, missing
+target, evaluation WORK refusal, storage quarantine, other constructor
+failure), and `FailClosedRate` maps two snapshots to a degraded verdict for a
+threshold. Its seventh counter reports WORK start retry-bound exhaustions
+(`SE_PROFILE_WORK_RETRIES`, default min(16, WORK quota)),
+a subset of those refusals. Nothing wires this to `Ready`, which stays unavailable.
+
+The witness has explicit exclusions; these fail-closed outcomes are not counted
+in any class:
+
+- first-exec qualification faults (`terminal_fault` from
+  `real_owner_birth_qualify`);
+- pending-receipt quarantine (`real_owner_reader_begin_core` result `& 8`,
+  `real_owner_reader_quarantine_pending`);
+- `real_owner_child_open_parent` failure in `real_owner_child_finish`;
+- the deferred G019/G020 refusals: cross-generation, interpreter refusal and
+  migration relabel.
+
+A zero rate therefore does not prove that no exec failed closed. A future
+`Ready` gate must also cover these outcomes before its NotReady verdict can be
+trusted. Counting them changes the qualified objects and is a G019/G020 item.
+
+First-exec qualification (`real_owner_birth_qualify`) exists only under
+`ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC`, a test-named macro. It
+must be productized before G019/G020 can close; until then it is a blocker.
+
+The final-free physical-reuse fix (`se_of_withdraw_directory` in
+`lsm/task_free`) is part of every build of the candidate's final-free program,
+not of the rate witness: the object refuses to compile without it.
+
+User-approved G025 capacity thresholds:
+
+- **128/16 is the qualified default profile for the opaque candidate build**
+  (TASK/WORK quota per binding, two bindings; WORK start retries
+  min(16, WORK quota)). 64/8 and 256/32 are qualified alternatives; 256/32 has
+  no stack headroom. The candidate source has no default: the build passes
+  every value as `-D` flags, all with `-DSE_PROFILE_BINDINGS=2`:
+  - 64/8: `-DSE_PROFILE_TASKS=128 -DSE_PROFILE_TASK_QUOTA=64
+    -DSE_PROFILE_SCRATCH=16 -DSE_PROFILE_SCRATCH_QUOTA=8
+    -DSE_PROFILE_WORK_RETRIES=8`
+  - 128/16 (default): `-DSE_PROFILE_TASKS=256 -DSE_PROFILE_TASK_QUOTA=128
+    -DSE_PROFILE_SCRATCH=32 -DSE_PROFILE_SCRATCH_QUOTA=16`
+    (`SE_PROFILE_WORK_RETRIES` defaults to 16)
+  - 256/32: `-DSE_PROFILE_TASKS=512 -DSE_PROFILE_TASK_QUOTA=256
+    -DSE_PROFILE_SCRATCH=64 -DSE_PROFILE_SCRATCH_QUOTA=32
+    -DSE_PROFILE_WORK_RETRIES=16`
+
+  The in-repo product shared build profile is separate and unchanged by this
+  default.
+- **Steady-state gate** (test reaper at 2 ms): 0 Strict fail-closed refusals
+  and 0 Audit unevaluated children at a sustained 400 births/s per node,
+  3 streams, at least 10,000 paced births per exact kernel and class, at
+  128/16. 800/s and 1600/s are exploratory ceiling points only.
+- **Burst gate** (G019/G020, product reaper): 0 refusals for 1,000
+  back-to-back births at 3 and at 8 streams on both kernels. Sizing rule:
+  birth rate × credit-return latency < quota.
+
+Runtime reporting rule for a future `Ready` gate built on the witness
+(`FailClosedRateDegradedWindow`, `FailClosedRateNotReadyWindow` and their
+thresholds in `fail_closed_rate.go`):
+
+- **Degraded** on any fail-closed refusal (Strict) or unevaluated child
+  (Audit) within 60 s.
+- **NotReady** when the fail-closed rate is above 0.1% over 5 min.
+- An unreadable or missing witness, or a counter that moved backwards, is
+  **unknown**, never a zero rate.
 
 ## Verification
 

@@ -18,9 +18,12 @@ static int lookup_error, account_error, insert_error, delete_error,
 static unsigned inserts, deletes;
 static struct se_inode_identity id(__u64 address, __u64 birth, unsigned owner)
 {
-	return (struct se_inode_identity){ address, birth,
+	return (struct se_inode_identity){ address,
+					   birth,
 					   quotas[owner].scope_cookie,
-					   quotas[owner].generation };
+					   quotas[owner].generation,
+					   owner,
+					   0 };
 }
 static inline int se_inode_lookup(__u64 address, struct se_inode_row **out)
 {
@@ -35,7 +38,7 @@ static inline int se_inode_lookup(__u64 address, struct se_inode_row **out)
 	}
 	return SE_INODE_MISSING;
 }
-static inline int se_inode_account(__u64 scope, __u64 generation,
+static inline int se_inode_account(const struct se_inode_identity *identity,
 				   struct se_inode_quota **out)
 {
 	*out = 0;
@@ -46,8 +49,9 @@ static inline int se_inode_account(__u64 scope, __u64 generation,
 		return SE_INODE_OK;
 	}
 	for (unsigned i = 0; i < 2; i++) {
-		if (quotas[i].scope_cookie == scope &&
-		    quotas[i].generation == generation) {
+		if (i == identity->charge_slot &&
+		    quotas[i].scope_cookie == identity->charge_scope_cookie &&
+		    quotas[i].generation == identity->charge_generation) {
 			*out = &quotas[i];
 			return SE_INODE_OK;
 		}

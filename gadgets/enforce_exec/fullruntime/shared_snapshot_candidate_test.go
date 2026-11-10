@@ -373,9 +373,8 @@ func TestSharedSnapshotPreparationAndRefusalPreserveActiveGeneration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Unit-only injected accepted state; no runtime Commit producer exists.
-	// Native held-reader validation is a separate deferred gate in this export,
-	// so this test does not establish kernel-boundary correctness.
+	// Unit-only simulated accepted record. No runtime Commit producer exists;
+	// the independent actual C held-reader test proves the kernel boundary.
 	n.objects.scopes[0] = sharedSnapshotScopeState{generation: 7, nextSerial: 7}
 	n.objects.records[old.record].snapshot = sharedSnapshotCandidateState{account: s.account, scope: s.ScopeCookie(), serial: 7, phase: 3}
 	f.nextSerial = 7

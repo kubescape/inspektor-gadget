@@ -23,9 +23,11 @@ type sharedSnapshotIntent struct {
 	proposal  fullpolicy.SharedSnapshot
 }
 
-// The only producer of generation zero is successful BINDING_OPEN. No Commit
-// opcode exists, so production cannot advance accepted generation here. Only a
-// validated PREPARE receipt advances nextSerial; reclaim never rewinds it.
+// The only producer of generation zero is successful BINDING_OPEN. This worker
+// has no Commit opcode and must not advance accepted generation. Only
+// se_publication_arm may do that, from cgroup_kn_lock_live. A syscall receipt
+// is not commit or withdrawal. Only a validated PREPARE receipt advances
+// nextSerial; reclaim never rewinds it.
 type (
 	sharedSnapshotScopeState     struct{ generation, nextSerial uint64 }
 	sharedSnapshotCandidateState struct {

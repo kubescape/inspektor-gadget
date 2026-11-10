@@ -20,6 +20,7 @@ static void bpf_spin_unlock(struct bpf_spin_lock *l)
 	l->held = 0;
 }
 #include "shared_snapshot.h"
+static struct bpf_spin_lock authority_lock;
 static void prepared(struct se_shared_binding *b, struct se_shared_object *o,
 		     __u32 record)
 {
@@ -32,7 +33,7 @@ static void prepared(struct se_shared_binding *b, struct se_shared_object *o,
 				       .record = record,
 				       .kind = SE_COMMAND_PIN };
 	__u32 receipt;
-	assert(!se_ticket_command(b, o, &r, &receipt));
+	assert(!se_ticket_command(&authority_lock, b, o, &r, &receipt));
 	assert(!se_snapshot_prepared_locked(&b->state.records[record]));
 }
 
@@ -55,7 +56,8 @@ static void partial_and_overflow(void)
 				       .kind = SE_COMMAND_PIN };
 	for (__u32 i = 0; i < 3; i++) {
 		r.position = i;
-		assert(!se_ticket_command(&b, &objects[i], &r, &receipt));
+		assert(!se_ticket_command(&authority_lock, &b, &objects[i], &r,
+					  &receipt));
 	}
 	assert(se_snapshot_prepared_locked(&b.state.records[0]) < 0);
 	assert(!se_snapshot_retire_locked(&b.state.records[0]));
@@ -63,11 +65,13 @@ static void partial_and_overflow(void)
 	r.kind = SE_COMMAND_RELEASE;
 	for (__u32 i = 0; i < 3; i++) {
 		r.position = i;
-		assert(!se_ticket_command(&b, &objects[i], &r, &receipt));
+		assert(!se_ticket_command(&authority_lock, &b, &objects[i], &r,
+					  &receipt));
 		assert(!objects[i].state.pins);
 	}
 	r.position = 7;
-	assert(se_ticket_command(&b, &objects[7], &r, &receipt) < 0 &&
+	assert(se_ticket_command(&authority_lock, &b, &objects[7], &r,
+				 &receipt) < 0 &&
 	       !objects[7].state.pins);
 	assert(!se_snapshot_reclaim_locked(&b.state.records[0]));
 	b.state.next_serial = ~0ULL - 1;
@@ -79,15 +83,18 @@ static void partial_and_overflow(void)
 	r.position = 0;
 	r.kind = SE_COMMAND_PIN;
 	b.state.next_command = ~0ULL - 1;
-	assert(se_ticket_command(&b, &objects[0], &r, &receipt) < 0 &&
+	assert(se_ticket_command(&authority_lock, &b, &objects[0], &r,
+				 &receipt) < 0 &&
 	       !b.state.records[0].commands);
 	b.state.next_command = 0;
 	objects[0].state.pins = (__u32)~0U;
-	assert(se_ticket_command(&b, &objects[0], &r, &receipt) < 0 &&
+	assert(se_ticket_command(&authority_lock, &b, &objects[0], &r,
+				 &receipt) < 0 &&
 	       objects[0].state.pins == (__u32)~0U &&
 	       !b.state.records[0].commands);
 	objects[0].state.pins = 0;
-	assert(!se_ticket_command(&b, &objects[0], &r, &receipt));
+	assert(!se_ticket_command(&authority_lock, &b, &objects[0], &r,
+				  &receipt));
 }
 
 static void remove_readd(void)
@@ -115,7 +122,7 @@ static void remove_readd(void)
 				       .record = 0,
 				       .kind = SE_COMMAND_RELEASE };
 	__u32 receipt;
-	assert(!se_ticket_command(&b, &o, &r, &receipt));
+	assert(!se_ticket_command(&authority_lock, &b, &o, &r, &receipt));
 	assert(!se_snapshot_reclaim_locked(&b.state.records[0]));
 	prepared(&b, &o, 0);
 	assert(!se_binding_commit_preflight_locked(&b.state, 0,

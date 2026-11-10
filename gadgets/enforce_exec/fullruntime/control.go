@@ -39,6 +39,11 @@ const (
 	OwnerPhaseClear
 	OwnerRetire
 	OwnerReattest
+	OwnerSessionOpen
+	OwnerCandidateBegin
+	OwnerCandidateAbort
+	OwnerCandidateWrite
+	OwnerCandidateSeal
 )
 
 type ControlConfig struct {
@@ -64,12 +69,58 @@ type ControlRow struct {
 	Cookie                       uint64
 	TID, TGID, Flags, ValidRoles uint32
 }
+
+// DispatchDescriptor is a development-only kernel snapshot, not native write authority.
+type DispatchDescriptor struct {
+	Generation                                             uint64
+	ExecutionClass, ProgramBank, HistoryReserved, Reserved uint32
+	PolicyCount, RoleWriterMask                            uint32
+}
+type (
+	CandidateAddition struct{ UID, Epoch uint64 }
+	CandidateRecord   struct {
+		Attempt, ReceiptSerial, InventoryCount, Writers, WriteSequence uint64
+		PassID, PassStartSerial                                        uint64
+		Expected                                                       DispatchDescriptor
+		State, ProgramBank, HistoryReserved, SealedClass               uint32
+		Entries, RequiredKnownMask, AdditionCount, CertifiedKnownMask  uint32
+		SealedPolicyCount, SealedRoleWriterMask                        uint32
+		Additions                                                      [8]CandidateAddition
+	}
+)
+
+type DispatchRecord struct {
+	Lock, ScopeState                                             uint32
+	SessionCookie, Cgroup, Serial, LastAttempt                   uint64
+	Active                                                       DispatchDescriptor
+	ExecInflight, ForkInflight, IngressInflight, MutationWriters uint64
+	AuthorityReaders                                             uint64
+	BankReaders                                                  [2]uint64
+	IntegrityFault, CoverageUnknown                              uint64
+	Candidate                                                    CandidateRecord
+}
+type CandidateRequest struct {
+	SessionCookie, Attempt         uint64
+	Entries, Reserved, Index, Bank uint32
+}
+type CandidateInput struct {
+	Request CandidateRequest
+	Data    [288]byte
+}
+type SealWorkspace struct {
+	Busy, SessionCookie, Attempt uint64
+	Patterns, Instructions       uint32
+	Seen                         [256]uint64
+}
 type ControlResources struct {
-	TaskIDs, ZeroTask                            *ebpf.Map
-	GenerationFaults                             *ebpf.Map
-	Configuration, Commands, Health, Phase, Rows *ebpf.Map
-	Admin, Tasks, Work, Anchor, Births           *ebpf.Map
-	Program                                      *ebpf.Program
+	Epochs                                               *ebpf.Map
+	SealWork                                             *ebpf.Map
+	ProgramBank0, ProgramBank1, Dispatch, CandidateInput *ebpf.Map
+	TaskIDs, ZeroTask                                    *ebpf.Map
+	GenerationFaults                                     *ebpf.Map
+	Configuration, Commands, Health, Phase, Rows         *ebpf.Map
+	Admin, Tasks, Work, Anchor, Births                   *ebpf.Map
+	Program                                              *ebpf.Program
 }
 
 // ControlResourcesFromContext borrows the actual loaded handles. The native
@@ -87,6 +138,14 @@ func ControlResourcesFromContext(gc operators.GadgetContext) (ControlResources, 
 		}
 		*dst = m
 	}
+	// ABI2 has neither map. ABI-selected validation below requires both for ABI3.
+	for name, dst := range map[string]**ebpf.Map{
+		"eo_epochs": &r.Epochs, "eo_seal_work": &r.SealWork, "eo_dispatch": &r.Dispatch, "eo_candidate_input": &r.CandidateInput,
+		"eo_program_bank0": &r.ProgramBank0, "eo_program_bank1": &r.ProgramBank1,
+	} {
+		value, _ := gc.GetVar(operators.MapPrefix + name)
+		*dst, _ = value.(*ebpf.Map)
+	}
 	value, _ := gc.GetVar(operators.ProgramPrefix + "eo_command")
 	r.Program, _ = value.(*ebpf.Program)
 	if r.Program == nil {
@@ -101,7 +160,27 @@ func (r ControlResources) validate(abi uint32) error {
 	case OwnerABI:
 	case OwnerDevelopmentABI:
 		// Transitional Stage A layout, not the complete ADR resource profile.
-		taskSize, workSize = 904, 1352
+		taskSize, workSize = 1088, 2648
+
+		for _, row := range []struct {
+			name             string
+			m                *ebpf.Map
+			size, max, flags uint32
+		}{
+			{"dispatch", r.Dispatch, 400, 1, unix.BPF_F_RDONLY},
+			{"candidate input", r.CandidateInput, 320, 1, unix.BPF_F_RDONLY_PROG},
+			{"seal workspace", r.SealWork, 2080, 1, unix.BPF_F_RDONLY},
+			{"program bank 0", r.ProgramBank0, 296, 16384, unix.BPF_F_RDONLY},
+			{"program bank 1", r.ProgramBank1, 296, 16384, unix.BPF_F_RDONLY},
+		} {
+			if row.m == nil || row.m.FD() < 0 || row.m.Type() != ebpf.Array || row.m.KeySize() != 4 || row.m.ValueSize() != row.size || row.m.MaxEntries() != row.max || row.m.Flags() != row.flags {
+				return fmt.Errorf("invalid development owner %s map ABI", row.name)
+			}
+		}
+		if r.Epochs == nil || r.Epochs.FD() < 0 || r.Epochs.Type() != ebpf.Hash || r.Epochs.KeySize() != 8 || r.Epochs.ValueSize() != 8 || r.Epochs.MaxEntries() != 65536 || r.Epochs.Flags() != unix.BPF_F_NO_PREALLOC|unix.BPF_F_RDONLY {
+			return fmt.Errorf("invalid development owner accepted catalogue map ABI")
+		}
+
 	default:
 		return fmt.Errorf("unsupported owner map ABI")
 	}
@@ -401,6 +480,63 @@ func (c *OwnerControl) Call(ctx context.Context, command ControlCommand) (Contro
 		return nil
 	})
 	return h, err
+}
+
+// Dispatch returns one coherent kernel-owned descriptor and receipt snapshot.
+// The map is retained by the owner/program; no native code writes this record.
+func (c *OwnerControl) Dispatch() (DispatchRecord, error) {
+	var record DispatchRecord
+	if c.config.ABI != OwnerDevelopmentABI || c.resources.Dispatch == nil {
+		return record, fmt.Errorf("development dispatch unavailable")
+	}
+	err := c.resources.Dispatch.LookupWithFlags(uint32(0), &record, ebpf.LookupLock)
+	return record, err
+}
+
+func (c *OwnerControl) candidateCommand(operation uint32, input CandidateInput) (ControlCommand, error) {
+	if c.config.ABI != OwnerDevelopmentABI || input.Request.SessionCookie != c.config.Cookie || c.config.Cookie == 0 {
+		return ControlCommand{}, fmt.Errorf("development candidate scope mismatch")
+	}
+	switch operation {
+	case OwnerSessionOpen, OwnerCandidateBegin, OwnerCandidateAbort, OwnerCandidateWrite, OwnerCandidateSeal:
+	default:
+		return ControlCommand{}, fmt.Errorf("invalid development candidate operation")
+	}
+	if input.Request.Reserved != 0 || (operation != OwnerSessionOpen && input.Request.Attempt == 0) {
+		return ControlCommand{}, fmt.Errorf("invalid development candidate request")
+	}
+	return ControlCommand{Nonce: c.config.Cookie, Generation: input.Request.Attempt, Operation: operation}, nil
+}
+
+// CandidateCall keeps request, authenticated syscall, and coherent receipt on
+// the same qualified admin thread. It never acquires/closes the legacy gate.
+// A receipt is returned even on command failure for exact-identity reconciliation;
+// callers must not interpret a syscall errno alone as a commit acknowledgement.
+func (c *OwnerControl) CandidateCall(ctx context.Context, operation uint32, input CandidateInput) (DispatchRecord, error) {
+	var record DispatchRecord
+	command, err := c.candidateCommand(operation, input)
+	if err != nil {
+		return record, err
+	}
+	err = c.thread.do(ctx, func() error {
+		if err := c.resources.CandidateInput.Put(uint32(0), input); err != nil {
+			return err
+		}
+		if err := c.resources.Commands.Put(uint32(0), command); err != nil {
+			return err
+		}
+		result, runErr := c.resources.Program.Run(&ebpf.RunOptions{})
+		var receiptErr error
+		record, receiptErr = c.Dispatch()
+		if runErr != nil {
+			return errors.Join(runErr, receiptErr)
+		}
+		if result != 0 {
+			return errors.Join(fmt.Errorf("candidate command %d refused: result %d", operation, result), receiptErr)
+		}
+		return receiptErr
+	})
+	return record, err
 }
 
 func (c *OwnerControl) Rows(count uint32) ([]ControlRow, error) {

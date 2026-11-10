@@ -21,7 +21,6 @@ type operationParent struct {
 }
 
 func (p *operationParent) Done() <-chan struct{} { p.doneReads.Add(1); return p.Context.Done() }
-
 func (p *operationParent) AfterFunc(func()) func() bool {
 	p.registrations.Add(1)
 	return func() bool { return true }
@@ -189,7 +188,6 @@ type operationDelayedParent struct {
 }
 
 func (p *operationDelayedParent) Done() <-chan struct{} { return p.done }
-
 func (p *operationDelayedParent) Err() error {
 	select {
 	case <-p.done:

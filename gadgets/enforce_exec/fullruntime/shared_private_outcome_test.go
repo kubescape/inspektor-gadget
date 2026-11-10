@@ -19,12 +19,9 @@ type privateHostileError struct {
 func (e privateHostileError) Error() string { e.t.Error("foreign Error invoked"); return "hostile" }
 
 func (e privateHostileError) String() string { e.t.Error("foreign String invoked"); return "hostile" }
-
-func (e privateHostileError) Is(error) bool { e.t.Error("foreign Is invoked"); return false }
-
-func (e privateHostileError) As(any) bool { e.t.Error("foreign As invoked"); return false }
-
-func (e privateHostileError) Unwrap() error { e.t.Error("foreign Unwrap invoked"); return nil }
+func (e privateHostileError) Is(error) bool  { e.t.Error("foreign Is invoked"); return false }
+func (e privateHostileError) As(any) bool    { e.t.Error("foreign As invoked"); return false }
+func (e privateHostileError) Unwrap() error  { e.t.Error("foreign Unwrap invoked"); return nil }
 
 type privatePanicTransport struct {
 	sharedCommandFaultTransport
@@ -187,7 +184,6 @@ type privateDeadlineContext struct {
 }
 
 func (c *privateDeadlineContext) Done() <-chan struct{} { return c.done }
-
 func (c *privateDeadlineContext) Err() error {
 	select {
 	case <-c.done:

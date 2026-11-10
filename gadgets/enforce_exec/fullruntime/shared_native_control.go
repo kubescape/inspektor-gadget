@@ -134,6 +134,13 @@ func sharedControlResourcesFromContext(gc operators.GadgetContext) (sharedContro
 	if r.manifest == nil {
 		return r, fmt.Errorf("missing shared native resource manifest")
 	}
+	programPrefix := operators.ProgramPrefix
+	if _, recovered := r.manifest.Programs["se_rm_guardian"]; recovered {
+		if selected, _ := gc.GetVar(operators.NativeRecoveryTestRunKey); selected != true {
+			return r, fmt.Errorf("recovered loaded programs require trusted selection")
+		}
+		programPrefix = operators.NativeLoadedProgramPrefix
+	}
 	for name := range r.manifest.Maps {
 		value, _ = gc.GetVar(operators.MapPrefix + name)
 		m, _ := value.(*ebpf.Map)
@@ -143,7 +150,7 @@ func sharedControlResourcesFromContext(gc operators.GadgetContext) (sharedContro
 		r.maps[name] = m
 	}
 	for name := range r.manifest.Programs {
-		value, _ = gc.GetVar(operators.ProgramPrefix + name)
+		value, _ = gc.GetVar(programPrefix + name)
 		p, _ := value.(*ebpf.Program)
 		if p == nil {
 			return r, fmt.Errorf("missing shared program %s", name)
@@ -156,10 +163,16 @@ func sharedControlResourcesFromContext(gc operators.GadgetContext) (sharedContro
 
 func (r sharedControlResources) validate(profile SharedProfile) error {
 	fullImage := false
+	recovered := false
 	if r.manifest != nil {
 		_, fullImage = r.manifest.Maps["se_tasks"]
+		_, recovered = r.manifest.Programs["se_rm_guardian"]
 	}
-	if fullImage {
+	if recovered {
+		if err := validateSharedRecoveryImageGeometry(profile, r.manifest); err != nil {
+			return err
+		}
+	} else if fullImage {
 		if _, err := validateSharedImageResources(profile, r.manifest); err != nil {
 			return err
 		}
@@ -253,14 +266,16 @@ type sharedZeroTemplateMap interface {
 	Lookup(key, valueOut interface{}) error
 }
 
+type sharedZeroTemplateSpec struct {
+	name string
+	size int
+}
+
 // Freeze first, then inspect: a successful check cannot race a subsequent
-// userspace write. Task/invocation templates are also program-readonly. The
-// exact 16-byte metadata-marker .bss is inspected too; it grants no authority.
-func freezeSharedZeroTemplates(templates map[string]sharedZeroTemplateMap) error {
-	for _, spec := range []struct {
-		name string
-		size int
-	}{{"se_zero_tasks", sharedTaskValueBytes}, {"se_zero_invocations", sharedInvocationValueBytes}, {".bss", 16}} {
+// userspace write. Callers must separately prove the map inventory and freeze
+// before attaching any program that can consume the template.
+func freezeZeroTemplates(templates map[string]sharedZeroTemplateMap, specs []sharedZeroTemplateSpec) error {
+	for _, spec := range specs {
 		m := templates[spec.name]
 		if m == nil {
 			return fmt.Errorf("missing zero template %s", spec.name)
@@ -281,9 +296,32 @@ func freezeSharedZeroTemplates(templates map[string]sharedZeroTemplateMap) error
 	return nil
 }
 
+func freezeSharedZeroTemplates(templates map[string]sharedZeroTemplateMap) error {
+	return freezeZeroTemplates(templates, []sharedZeroTemplateSpec{
+		{"se_zero_tasks", sharedTaskValueBytes},
+		{"se_zero_invocations", sharedInvocationValueBytes},
+		{".bss", 16},
+	})
+}
+
+// Pool state maps are UAPI-readonly from creation. The two program-readable
+// zero templates are different: freeze, then inspect before any attachment.
+// This helper is not a product admission switch; the pool remains gated.
+func freezeSharedPoolZeroTemplates(templates map[string]sharedZeroTemplateMap) error {
+	return freezeZeroTemplates(templates, []sharedZeroTemplateSpec{
+		{"se_pool_task_zero", 1280},
+		{"se_pool_work_zero", 19456},
+	})
+}
+
 func newSharedControl(ctx context.Context, profile SharedProfile, r sharedControlResources) (*sharedControl, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if r.manifest != nil {
+		if _, recovered := r.manifest.Programs["se_rm_guardian"]; recovered {
+			return nil, fmt.Errorf("recovered image requires native S, not Go control thread: %w", ErrSharedNativeUnavailable)
+		}
 	}
 	if err := r.validate(profile); err != nil {
 		return nil, err

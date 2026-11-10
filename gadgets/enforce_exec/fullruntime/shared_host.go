@@ -40,8 +40,8 @@ func NewNodeEnforcer(config SharedNodeConfig) (*NodeEnforcer, error) {
 	if _, err := config.Profile.Validate(); err != nil {
 		return nil, err
 	}
-	if !config.ABI3Development || config.Image == "" {
-		return nil, fmt.Errorf("explicit shared development image and trusted opt-in required")
+	if err := validateSharedNodeSelection(config); err != nil {
+		return nil, err
 	}
 	return &NodeEnforcer{config: config, bindings: map[uint64]*BindingSession{}, host: &sharedHostState{}}, nil
 }
@@ -52,6 +52,9 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 	return func(gc *gadgetcontext.GadgetContext) {
 		gc.SetVar(sharedNodeKey, node)
 		gc.SetVar(operators.NativeOwnerRequiredKey, true)
+		if node != nil && node.config.RecoveryDevelopment {
+			gc.SetVar(operators.NativeRecoveryTestRunKey, true)
+		}
 		gc.SetVar(operators.NativeResourceValidatorKey, func(resources *operators.NativeResources) error {
 			if node == nil || node.host == nil {
 				return fmt.Errorf("missing host-owned shared node")
@@ -62,6 +65,30 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 }
 
 func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources) error {
+	if n.config.RecoveryDevelopment {
+		if err := validateSharedRecoveryImageGeometry(n.config.Profile, resources); err != nil {
+			return err
+		}
+		return fmt.Errorf("recovered native supervisor and link retention are not implemented: %w", ErrSharedNativeUnavailable)
+	}
+	if hasSharedOpaqueTaskMaps(resources) {
+		var err error
+		if _, hasWork := resources.Maps["se_opaque_work_accounts"]; hasWork {
+			_, err = validateSharedOpaqueOwnerResources(n.config.Profile, resources)
+		} else {
+			_, err = validateSharedOpaqueTaskResources(n.config.Profile, resources)
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("opaque TASK/WORK product hooks and source cleanup are incomplete: %w", ErrSharedNativeUnavailable)
+	}
+	if hasSharedPoolMaps(resources) {
+		if _, err := validateSharedPoolImageResources(n.config.Profile, resources); err != nil {
+			return err
+		}
+		return fmt.Errorf("fixed task/work pool product migration is incomplete: %w", ErrSharedNativeUnavailable)
+	}
 	if resources != nil {
 		if _, fullImage := resources.Maps["se_tasks"]; fullImage {
 			usage, err := validateSharedImageResources(n.config.Profile, resources)
@@ -95,7 +122,8 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	if owner, _ := gc.GetVar(ownerKey); owner != nil {
 		return nil, fmt.Errorf("shared and per-binding owner options are mutually exclusive")
 	}
-	if !node.config.ABI3Development || gc.ImageName() != node.config.Image || metadata.GetString("annotations.enforce-exec-owner-abi") != "3" || !metadata.GetBool("annotations.enforce-exec-owner-development") || metadata.GetString("annotations.enforce-exec-shared-profile") != "1" || metadata.GetBool("annotations.enforce-exec") || metadata.GetBool("annotations.enforce-exec-full") {
+	recoveryAnnotation := metadata.GetString("annotations.enforce-exec-shared-recovery")
+	if (node.config.RecoveryDevelopment && recoveryAnnotation != "1") || (!node.config.RecoveryDevelopment && recoveryAnnotation != "") || !node.config.ABI3Development || gc.ImageName() != node.config.Image || metadata.GetString("annotations.enforce-exec-owner-abi") != "3" || !metadata.GetBool("annotations.enforce-exec-owner-development") || metadata.GetString("annotations.enforce-exec-shared-profile") != "1" || metadata.GetBool("annotations.enforce-exec") || metadata.GetBool("annotations.enforce-exec-full") {
 		return nil, fmt.Errorf("shared image/native capability mismatch")
 	}
 	values := map[string]uint64{"images": node.config.Profile.Images, "image-quota": node.config.Profile.PerBinding.Images, "inode-facts": node.config.Profile.InodeFacts, "inode-quota": node.config.Profile.PerBinding.InodeFacts, "tasks": node.config.Profile.Tasks, "scratch": node.config.Profile.Scratch, "accepted-uids": node.config.Profile.AcceptedUIDs, "task-quota": node.config.Profile.PerBinding.Tasks, "scratch-quota": node.config.Profile.PerBinding.Scratch, "bindings": node.config.Profile.Bindings, "slots-256": node.config.Profile.PolicySlots[0], "slots-1024": node.config.Profile.PolicySlots[1], "slots-4096": node.config.Profile.PolicySlots[2], "slots-16384": node.config.Profile.PolicySlots[3]}

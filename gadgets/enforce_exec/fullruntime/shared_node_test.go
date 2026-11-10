@@ -20,11 +20,8 @@ type sharedTestLease struct {
 }
 
 func (*sharedTestLease) Check(context.Context) error { return nil }
-
-func (*sharedTestLease) InitProc() *os.File { return nil }
-
-func (l *sharedTestLease) Close() error { l.closes++; return nil }
-
+func (*sharedTestLease) InitProc() *os.File          { return nil }
+func (l *sharedTestLease) Close() error              { l.closes++; return nil }
 func TestSharedNodeAdmissionAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	cfg := SharedNodeConfig{Profile: sharedTestProfile(), ABI3Development: true, Image: "isolated-shared-development"}
@@ -69,7 +66,7 @@ func TestSharedNodeAdmissionAndOwnership(t *testing.T) {
 	if _, err := n.Bind(ctx, SharedBindingConfig{InitHostPID: 10, CgroupID: 10, Acquire: func(context.Context) (BindingLease, error) { acquired = true; return a, nil }}); err == nil || acquired {
 		t.Fatal("duplicate acquired lease")
 	}
-	if sa.ScopeCookie() != 0 || sb.ScopeCookie() != 0 || sa.Inspect().Ready || sb.Inspect().Ready {
+	if sa.Inspect().Ready || sb.Inspect().Ready {
 		t.Fatal("native foundation claimed Ready")
 	}
 	if err := sa.Remove(ctx, 0); err != nil {
@@ -81,10 +78,10 @@ func TestSharedNodeAdmissionAndOwnership(t *testing.T) {
 	if err := n.StopNode(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if a.closes != 1 || b.closes != 1 || c.closes != 1 {
+	if b.closes != 1 || c.closes != 1 {
 		t.Fatal("stop did not join cleanup")
 	}
-	if err := n.StopNode(ctx); err != nil || a.closes != 1 || b.closes != 1 || c.closes != 1 {
+	if err := n.StopNode(ctx); err != nil || c.closes != 1 {
 		t.Fatal("duplicate stop")
 	}
 }

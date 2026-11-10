@@ -7,16 +7,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
 var ErrSharedNativeUnavailable = errors.New("shared native collection/publication is not implemented")
 
 type SharedNodeConfig struct {
-	Profile         SharedProfile
-	ABI3Development bool
-	Image           string
+	Profile             SharedProfile
+	ABI3Development     bool
+	RecoveryDevelopment bool
+	Image               string
 }
+
+func validateSharedNodeSelection(config SharedNodeConfig) error {
+	if !config.ABI3Development || config.Image == "" {
+		return fmt.Errorf("explicit shared development image and trusted opt-in required")
+	}
+	recoveryImage := strings.HasSuffix(config.Image, ":abi3-recovery-development")
+	if recoveryImage != config.RecoveryDevelopment {
+		return fmt.Errorf("recovered image and trusted opt-in mismatch")
+	}
+	return nil
+}
+
 type SharedBindingConfig struct {
 	CgroupID uint64
 	// InitHostPID is supplied by the trusted runtime, never policy metadata.
@@ -77,8 +91,8 @@ func startSharedNode(ctx context.Context, config SharedNodeConfig, start func(co
 	if err != nil {
 		return nil, err
 	}
-	if !config.ABI3Development || config.Image == "" {
-		return nil, fmt.Errorf("explicit shared development image and trusted opt-in required")
+	if err := validateSharedNodeSelection(config); err != nil {
+		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
 		return nil, err

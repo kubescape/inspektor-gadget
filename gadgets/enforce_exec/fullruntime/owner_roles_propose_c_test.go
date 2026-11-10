@@ -42,6 +42,34 @@ func TestOwnerRoleProposalAndCompletionFaultScope(t *testing.T) {
 		t.Fatal("completion function boundary missing")
 	}
 	source = strings.Replace(source, "/* ACTUAL_COMPLETION */", string(header[end:finishEnd]), 1)
+	extract := func(path, begin, end string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		a, b := strings.Index(text, begin), strings.Index(text, end)
+		if a < 0 || b <= a {
+			t.Fatalf("missing actual boundary %s", begin)
+		}
+		return text[a+len(begin) : b]
+	}
+	for marker, body := range map[string]string{
+		"/* ACTUAL_DISPATCH_TYPES */":       extract("../full/owner_types.h", "/* EO_DISPATCH_TYPES_BEGIN */", "/* EO_DISPATCH_TYPES_END */"),
+		"/* ACTUAL_DISPATCH_TRANSITIONS */": extract("../full/owner_control.h", "/* EO_DISPATCH_TRANSITIONS_BEGIN */", "/* EO_DISPATCH_TRANSITIONS_END */"),
+		"/* ACTUAL_OBSERVATION_FAULT */":    extract("../full/owner_roles.h", "/* EO_EXEC_OBSERVATION_FAULT_BEGIN */", "/* EO_EXEC_OBSERVATION_FAULT_END */"),
+		"/* ACTUAL_ADMISSION */":            extract("../full/owner_roles.h", "/* EO_EXEC_ADMISSION_BEGIN */", "/* EO_EXEC_ADMISSION_END */"),
+	} {
+		source = strings.Replace(source, marker, body, 1)
+	}
+
+	validatorStart := strings.Index(string(header), "#ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT\n/* A separately verified pure predicate")
+	validatorEnd := strings.Index(string(header), "static __noinline int eo_stage_task_impl")
+	if validatorStart < 0 || validatorEnd <= validatorStart {
+		t.Fatal("actual role validator boundary missing")
+	}
+	source = strings.Replace(source, "/* ACTUAL_ROLE_VALIDATORS */", string(header[validatorStart:validatorEnd]), 1)
 	dir := t.TempDir()
 	file := filepath.Join(dir, "proposal.c")
 	binary := filepath.Join(dir, "proposal")
