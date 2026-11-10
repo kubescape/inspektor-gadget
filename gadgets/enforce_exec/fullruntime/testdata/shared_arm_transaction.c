@@ -52,22 +52,31 @@ static int state_proof(void *opaque, const struct se_arm_request *request,
 
 static struct se_arm_tx_ops ops(struct fixture *f)
 {
-	return (struct se_arm_tx_ops){ .ctx = f, .journal = journal,
-		.write_request = write_request, .trigger_a = trigger_a,
-		.state_proof = state_proof };
+	return (struct se_arm_tx_ops){ .ctx = f,
+				       .journal = journal,
+				       .write_request = write_request,
+				       .trigger_a = trigger_a,
+				       .state_proof = state_proof };
 }
 
 static struct se_arm_request request(void)
 {
-	return (struct se_arm_request){ .node_cookie = 4, .sequence = 8,
-		.scope = 9, .serial = 3, .expected_generation = 2,
-		.operation = SE_ARM_COMMIT, .count = 1 };
+	return (struct se_arm_request){ .node_cookie = 4,
+					.sequence = 8,
+					.scope = 9,
+					.serial = 3,
+					.expected_generation = 2,
+					.operation = SE_ARM_COMMIT,
+					.count = 1 };
 }
 
 static struct se_arm_receipt receipt(void)
 {
-	return (struct se_arm_receipt){ .node_cookie = 4, .sequence = 8,
-		.generation = 3, .serial = 3, .operation = SE_ARM_COMMIT };
+	return (struct se_arm_receipt){ .node_cookie = 4,
+					.sequence = 8,
+					.generation = 3,
+					.serial = 3,
+					.operation = SE_ARM_COMMIT };
 }
 
 static void happy_and_ambiguous(void)

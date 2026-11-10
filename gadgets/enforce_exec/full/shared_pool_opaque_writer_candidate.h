@@ -36,18 +36,17 @@
  * an unexpected fault cannot be converted to successful cleanup/refund. */
 #include "shared_pool_opaque_lookup_candidate.h"
 
-
 /* A caller-provided key pointer is not archive authority. Bind it to the
  * stable per-slot ARRAY value before any helper uses its opaque bytes. No
  * lookup is performed under a metadata spinlock. Exact charge ownership and
  * writable-FD custody remain separate obligations. */
 static inline int se_ow_archive_key_exact(const struct se_ol_meta *meta,
-					   const void *archived_key)
+					  const void *archived_key)
 {
 	__u32 slot = 0;
 	return meta && archived_key &&
-		se_ol_decode(meta->locator, &slot) == SE_OL_OK &&
-		SE_OW_ARCHIVE_LOOKUP(slot) == archived_key;
+	       se_ol_decode(meta->locator, &slot) == SE_OL_OK &&
+	       SE_OW_ARCHIVE_LOOKUP(slot) == archived_key;
 }
 
 static inline int se_ow_begin(struct se_ol_meta *meta, __u32 slot,
@@ -58,9 +57,8 @@ static inline int se_ow_begin(struct se_ol_meta *meta, __u32 slot,
 	bpf_spin_lock(&meta->lock);
 	int result = SE_OL_OK;
 	__u64 next = 0;
-	if (meta->phase != SE_OL_FREE || meta->cookie ||
-	    meta->reader_holds || meta->active_leases || meta->exclusive ||
-	    meta->exclusive_owner ||
+	if (meta->phase != SE_OL_FREE || meta->cookie || meta->reader_holds ||
+	    meta->active_leases || meta->exclusive || meta->exclusive_owner ||
 	    meta->reserved || meta->archive_ready || meta->account_scope ||
 	    meta->account_slot || meta->account_incarnation ||
 	    meta->work_refs || meta->native_refs || meta->cleanup_done ||
@@ -78,7 +76,8 @@ static inline int se_ow_begin(struct se_ol_meta *meta, __u32 slot,
 		meta->cookie = charged_cookie;
 		meta->phase = SE_OL_INITIALIZING;
 		meta->directory_state = SE_OL_NO_ENTRY;
-		meta->active_leases = 1; /* constructor lease, not a reader hold */
+		meta->active_leases =
+			1; /* constructor lease, not a reader hold */
 		*locator = next;
 	}
 	bpf_spin_unlock(&meta->lock);
@@ -108,11 +107,11 @@ static inline int se_ow_archive(struct se_ol_meta *meta, __u32 slot,
 	if (SE_OW_ARCHIVE_COPY(slot, opaque_key))
 		return SE_OL_CONTENDED;
 	bpf_spin_lock(&meta->lock);
-	exact = meta->phase == SE_OL_INITIALIZING &&
-		    meta->cookie == cookie && meta->active_leases == 1 &&
-		    meta->directory_state == SE_OL_NO_ENTRY &&
-		    meta->archive_ready == 2 && !meta->exclusive &&
-		    !meta->exclusive_owner && !meta->reserved;
+	exact = meta->phase == SE_OL_INITIALIZING && meta->cookie == cookie &&
+		meta->active_leases == 1 &&
+		meta->directory_state == SE_OL_NO_ENTRY &&
+		meta->archive_ready == 2 && !meta->exclusive &&
+		!meta->exclusive_owner && !meta->reserved;
 	if (exact)
 		meta->archive_ready = 1;
 	bpf_spin_unlock(&meta->lock);
@@ -143,14 +142,15 @@ static inline int se_ow_insert_zero(struct se_ol_meta *meta, __u64 cookie,
 		return SE_OL_CONTENDED;
 	int inserted = SE_OW_INSERT_ZERO(archived_key);
 	bpf_spin_lock(&meta->lock);
-	exact = meta->phase == SE_OL_INITIALIZING &&
-		meta->cookie == cookie && meta->active_leases == 1 &&
+	exact = meta->phase == SE_OL_INITIALIZING && meta->cookie == cookie &&
+		meta->active_leases == 1 &&
 		meta->directory_state == SE_OL_INSERT_INTENT &&
 		meta->archive_ready == 1 && !meta->exclusive &&
 		!meta->exclusive_owner && !meta->reserved;
 	if (exact)
 		meta->directory_state = inserted == SE_OL_OK ?
-			SE_OL_ZERO_OWNED : SE_OL_NO_ENTRY;
+						SE_OL_ZERO_OWNED :
+						SE_OL_NO_ENTRY;
 	bpf_spin_unlock(&meta->lock);
 	if (!exact)
 		return SE_OL_CORRUPT; /* charged, possibly inserted; retain intent */
@@ -183,8 +183,8 @@ static inline int se_ow_publish_zero(struct se_ol_meta *meta, __u64 cookie,
 		return SE_OL_CORRUPT;
 	/* Non-return receipt after successful CAS. Constructor lease pins meta. */
 	bpf_spin_lock(&meta->lock);
-	exact = meta->phase == SE_OL_INITIALIZING &&
-		meta->cookie == cookie && meta->locator == locator &&
+	exact = meta->phase == SE_OL_INITIALIZING && meta->cookie == cookie &&
+		meta->locator == locator &&
 		meta->directory_state == SE_OL_PUBLISH_INTENT &&
 		meta->active_leases == 1 && !meta->exclusive &&
 		!meta->exclusive_owner && !meta->reserved;
@@ -227,8 +227,7 @@ static inline int se_ow_finish_birth(struct se_ol_meta *meta, __u64 cookie)
  * succeeded without an ownership receipt, so it must remain fault-held.
  * PUBLISH_INTENT can be reconciled from a fresh original-key lookup after
  * the constructor lease is released. */
-static inline int se_ow_abort_constructor(struct se_ol_meta *meta,
-					  __u64 cookie)
+static inline int se_ow_abort_constructor(struct se_ol_meta *meta, __u64 cookie)
 {
 	if (!meta || !cookie)
 		return SE_OL_CORRUPT;
@@ -237,8 +236,7 @@ static inline int se_ow_abort_constructor(struct se_ol_meta *meta,
 		     meta->phase == SE_OL_PENDING_BIRTH) &&
 		    meta->cookie == cookie && meta->active_leases == 1 &&
 		    !meta->reader_holds && !meta->exclusive &&
-		    !meta->exclusive_owner &&
-		    !meta->reserved &&
+		    !meta->exclusive_owner && !meta->reserved &&
 		    (meta->directory_state == SE_OL_NO_ENTRY ||
 		     meta->directory_state == SE_OL_ZERO_OWNED ||
 		     meta->directory_state == SE_OL_PUBLISH_INTENT ||
@@ -258,17 +256,16 @@ static inline int se_ow_abort_constructor(struct se_ol_meta *meta,
  * policy authority. The exact aborted charge remains retained until the
  * reaper observes the archived key and chooses the matching cleanup path. */
 static inline int se_ow_reconcile_publish_intent(struct se_ol_meta *meta,
-						  __u64 cookie,
-						  const void *archived_key)
+						 __u64 cookie,
+						 const void *archived_key)
 {
 	if (!meta || !cookie || !archived_key ||
 	    !se_ow_archive_key_exact(meta, archived_key))
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->phase == SE_OL_ABORTED &&
-		    meta->cookie == cookie && !meta->active_leases &&
-		    !meta->reader_holds && !meta->exclusive &&
-		    !meta->exclusive_owner &&
+	int exact = meta->phase == SE_OL_ABORTED && meta->cookie == cookie &&
+		    !meta->active_leases && !meta->reader_holds &&
+		    !meta->exclusive && !meta->exclusive_owner &&
 		    meta->archive_ready == 1 && !meta->reserved &&
 		    meta->directory_state == SE_OL_PUBLISH_INTENT;
 	__u64 locator = meta->locator;
@@ -282,16 +279,15 @@ static inline int se_ow_reconcile_publish_intent(struct se_ol_meta *meta,
 	if (observed && observed != locator)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	exact = meta->phase == SE_OL_ABORTED &&
-		meta->cookie == cookie && meta->locator == locator &&
-		!meta->active_leases && !meta->reader_holds &&
-		!meta->exclusive && !meta->exclusive_owner &&
-		meta->archive_ready == 1 &&
+	exact = meta->phase == SE_OL_ABORTED && meta->cookie == cookie &&
+		meta->locator == locator && !meta->active_leases &&
+		!meta->reader_holds && !meta->exclusive &&
+		!meta->exclusive_owner && meta->archive_ready == 1 &&
 		!meta->reserved &&
 		meta->directory_state == SE_OL_PUBLISH_INTENT;
 	if (exact)
 		meta->directory_state = observed ? SE_OL_PUBLISHED :
-			SE_OL_ZERO_OWNED;
+						   SE_OL_ZERO_OWNED;
 	bpf_spin_unlock(&meta->lock);
 	return exact ? SE_OL_OK : SE_OL_CORRUPT;
 }
@@ -304,12 +300,10 @@ static inline int se_ow_mark_absent_deleted(struct se_ol_meta *meta,
 	if (!meta || !cookie)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->phase == SE_OL_ABORTED &&
-		    meta->cookie == cookie && !meta->active_leases &&
-		    !meta->reader_holds && !meta->exclusive &&
-		    !meta->exclusive_owner &&
-		    !meta->reserved &&
-		    meta->directory_state == SE_OL_NO_ENTRY;
+	int exact = meta->phase == SE_OL_ABORTED && meta->cookie == cookie &&
+		    !meta->active_leases && !meta->reader_holds &&
+		    !meta->exclusive && !meta->exclusive_owner &&
+		    !meta->reserved && meta->directory_state == SE_OL_NO_ENTRY;
 	if (exact) {
 		meta->phase = SE_OL_CLEANING;
 		meta->directory_state = SE_OL_DELETED;
@@ -328,10 +322,9 @@ static inline int se_ow_claim_aborted_zero(struct se_ol_meta *meta,
 	if (!meta || !cookie)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->phase == SE_OL_ABORTED &&
-		    meta->cookie == cookie && !meta->active_leases &&
-		    !meta->reader_holds && !meta->exclusive &&
-		    !meta->exclusive_owner &&
+	int exact = meta->phase == SE_OL_ABORTED && meta->cookie == cookie &&
+		    !meta->active_leases && !meta->reader_holds &&
+		    !meta->exclusive && !meta->exclusive_owner &&
 		    meta->archive_ready == 1 && !meta->reserved &&
 		    meta->directory_state == SE_OL_ZERO_OWNED;
 	if (exact) {
@@ -352,14 +345,13 @@ static inline int se_ow_claim_withdraw(struct se_ol_meta *meta, __u64 cookie)
 	if (!meta || !cookie)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	int exact = (meta->phase == SE_OL_DEAD ||
-		     meta->phase == SE_OL_CLEANING ||
-		     meta->phase == SE_OL_ABORTED) &&
-		    meta->cookie == cookie && meta->archive_ready == 1 &&
-		    meta->directory_state == SE_OL_PUBLISHED &&
-		    !meta->reader_holds && !meta->active_leases &&
-		    !meta->exclusive && !meta->exclusive_owner &&
-		    !meta->reserved;
+	int exact =
+		(meta->phase == SE_OL_DEAD || meta->phase == SE_OL_CLEANING ||
+		 meta->phase == SE_OL_ABORTED) &&
+		meta->cookie == cookie && meta->archive_ready == 1 &&
+		meta->directory_state == SE_OL_PUBLISHED &&
+		!meta->reader_holds && !meta->active_leases &&
+		!meta->exclusive && !meta->exclusive_owner && !meta->reserved;
 	if (exact) {
 		meta->phase = SE_OL_CLEANING;
 		meta->exclusive = 1;
@@ -372,8 +364,7 @@ static inline int se_ow_claim_withdraw(struct se_ol_meta *meta, __u64 cookie)
 
 /* Repeating this stage after locator->zero CAS is safe: the same archived
  * key and exact claim persist, and zero promotes to WITHDRAWN_ZERO. */
-static inline int se_ow_advance_withdraw(struct se_ol_meta *meta,
-					 __u64 cookie,
+static inline int se_ow_advance_withdraw(struct se_ol_meta *meta, __u64 cookie,
 					 const void *archived_key)
 {
 	if (!meta || !cookie || !archived_key ||
@@ -400,7 +391,8 @@ static inline int se_ow_advance_withdraw(struct se_ol_meta *meta,
 	if (observed == locator) {
 		__u64 previous = SE_OW_CAS(value, locator, 0);
 		if (previous != locator) {
-			SE_OW_ADVANCE_DIAG(3, locator, observed, previous, exact);
+			SE_OW_ADVANCE_DIAG(3, locator, observed, previous,
+					   exact);
 			return SE_OL_CONTENDED;
 		}
 	}
@@ -408,11 +400,9 @@ static inline int se_ow_advance_withdraw(struct se_ol_meta *meta,
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
 	exact = meta->cookie == cookie && meta->locator == locator &&
-		meta->exclusive == 1 &&
-		meta->exclusive_owner == locator &&
+		meta->exclusive == 1 && meta->exclusive_owner == locator &&
 		meta->directory_state == SE_OL_WITHDRAW_CLAIM &&
-		!meta->reader_holds && !meta->active_leases &&
-		!meta->reserved;
+		!meta->reader_holds && !meta->active_leases && !meta->reserved;
 	if (exact)
 		meta->directory_state = SE_OL_WITHDRAWN_ZERO;
 	bpf_spin_unlock(&meta->lock);
@@ -472,8 +462,7 @@ static inline int se_ow_zero_archive(struct se_ol_meta *meta, __u64 cookie)
 		     meta->phase == SE_OL_DEAD) &&
 		    meta->cookie == cookie && !meta->active_leases &&
 		    !meta->reader_holds && !meta->exclusive &&
-		    !meta->exclusive_owner &&
-		    !meta->reserved &&
+		    !meta->exclusive_owner && !meta->reserved &&
 		    meta->directory_state == SE_OL_DELETED;
 	__u64 locator = meta->locator;
 	int ready = meta->archive_ready;
@@ -489,8 +478,7 @@ static inline int se_ow_zero_archive(struct se_ol_meta *meta, __u64 cookie)
 	exact = meta->cookie == cookie && meta->locator == locator &&
 		meta->directory_state == SE_OL_DELETED &&
 		!meta->active_leases && !meta->reader_holds &&
-		!meta->exclusive && !meta->exclusive_owner &&
-		!meta->reserved;
+		!meta->exclusive && !meta->exclusive_owner && !meta->reserved;
 	if (exact) {
 		meta->archive_ready = 0;
 		meta->phase = SE_OL_ARCHIVE_ZEROED;

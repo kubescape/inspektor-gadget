@@ -3,7 +3,7 @@
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_REAPER_CHUNK_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_REAPER_CHUNK_CANDIDATE_H
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_SHARED_RECOVERY)
+	!defined(ENFORCE_EXEC_SHARED_RECOVERY)
 #error "opaque reaper chunk requires the recovered candidate"
 #endif
 
@@ -11,10 +11,9 @@
  * the copied request and cursor are merely bounds, never cleanup authority.
  * Eight tail-called chunks cover a 32/32 step without one verifier-sized
  * monolith. The common transport aborts on a missing continuation. */
-static __attribute__((noinline)) int se_pool_reap_chunk4(
-	const struct se_pool_request *accepted,
-	__u32 task_start, __u32 work_start,
-	struct se_pool_reap_progress *progress)
+static __attribute__((noinline)) int
+se_pool_reap_chunk4(const struct se_pool_request *accepted, __u32 task_start,
+		    __u32 work_start, struct se_pool_reap_progress *progress)
 {
 	if (!accepted || !progress ||
 	    accepted->task_budget != (SE_POOL_T < 32u ? SE_POOL_T : 32u) ||
@@ -23,13 +22,17 @@ static __attribute__((noinline)) int se_pool_reap_chunk4(
 	    progress->task_examined > accepted->task_budget ||
 	    progress->work_examined > accepted->work_budget ||
 	    progress->task_cursor !=
-		(__u32)(((__u64)task_start + progress->task_examined) % SE_POOL_T) ||
+		    (__u32)(((__u64)task_start + progress->task_examined) %
+			    SE_POOL_T) ||
 	    progress->work_cursor !=
-		(__u32)(((__u64)work_start + progress->work_examined) % SE_POOL_W) ||
+		    (__u32)(((__u64)work_start + progress->work_examined) %
+			    SE_POOL_W) ||
 	    (__u64)progress->task_reclaimed + progress->task_pending +
-		progress->task_faults > progress->task_examined ||
+			    progress->task_faults >
+		    progress->task_examined ||
 	    (__u64)progress->work_reclaimed + progress->work_pending +
-		progress->work_faults > progress->work_examined)
+			    progress->work_faults >
+		    progress->work_examined)
 		return SE_POOL_REAP_FAULT;
 	if (progress->task_examined == accepted->task_budget &&
 	    progress->work_examined == accepted->work_budget)
@@ -50,7 +53,8 @@ static __attribute__((noinline)) int se_pool_reap_chunk4(
 			progress->work_faults++;
 		progress->work_examined++;
 		progress->work_cursor = progress->work_cursor + 1 == SE_POOL_W ?
-			0 : progress->work_cursor + 1;
+						0 :
+						progress->work_cursor + 1;
 	}
 #ifdef __clang__
 #pragma unroll
@@ -67,7 +71,8 @@ static __attribute__((noinline)) int se_pool_reap_chunk4(
 			progress->task_faults++;
 		progress->task_examined++;
 		progress->task_cursor = progress->task_cursor + 1 == SE_POOL_T ?
-			0 : progress->task_cursor + 1;
+						0 :
+						progress->task_cursor + 1;
 	}
 	return SE_POOL_REAP_ACCEPT;
 }

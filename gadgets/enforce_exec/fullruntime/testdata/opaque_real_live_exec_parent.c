@@ -80,7 +80,8 @@ static int reap_exited(int block)
 {
 	int reaped = 0, status = 0;
 	pid_t pid;
-	while ((pid = waitpid(-1, &status, block && !reaped ? 0 : WNOHANG)) > 0) {
+	while ((pid = waitpid(-1, &status, block && !reaped ? 0 : WNOHANG)) >
+	       0) {
 		printf("FORKED:%d:%d\n", pid,
 		       WIFEXITED(status) ? WEXITSTATUS(status) : -1);
 		reaped++;
@@ -126,8 +127,8 @@ static void forkp(int n, int k, int64_t interval)
 				waited = 1;
 				waits++;
 			}
-			if (sigtimedwait(&chld, 0, timeout) < 0 && errno != EAGAIN &&
-			    errno != EINTR)
+			if (sigtimedwait(&chld, 0, timeout) < 0 &&
+			    errno != EAGAIN && errno != EINTR)
 				exit(80);
 		}
 		int64_t now = mono_ns();
@@ -336,16 +337,19 @@ int main(int argc, char **argv)
 		if (!strcmp(line, "DONE\n"))
 			return 0;
 		if (argc == 1 && !strcmp(line, "UIDS\n")) {
-			const char *enabled = getenv("IG_OPAQUE_EFFECTIVE_UID_DIVERGENCE");
+			const char *enabled =
+				getenv("IG_OPAQUE_EFFECTIVE_UID_DIVERGENCE");
 			if (!enabled || strcmp(enabled, "1") ||
-			    setresuid(1000, 0, 0) || getuid() != 1000 || geteuid() != 0)
+			    setresuid(1000, 0, 0) || getuid() != 1000 ||
+			    geteuid() != 0)
 				return 89;
 			printf("UIDS:%ld\n", (long)getpid());
 			fflush(stdout);
 			continue;
 		}
 		if (argc == 1 && !strcmp(line, "EXEC\n")) {
-			execl("/proc/self/exe", "opaque-real-parent", "after", (char *)0);
+			execl("/proc/self/exe", "opaque-real-parent", "after",
+			      (char *)0);
 			return 97;
 		}
 		if (argc == 1 && !strcmp(line, "SCRIPT\n")) {
@@ -397,13 +401,15 @@ int main(int argc, char **argv)
 				if (!have_saved &&
 				    sched_getaffinity(0, sizeof(saved), &saved))
 					err = errno;
-				else if (sched_setaffinity(0, sizeof(one), &one))
+				else if (sched_setaffinity(0, sizeof(one),
+							   &one))
 					err = errno;
 				else
 					have_saved = 1;
 			} else if (!have_saved) {
 				err = EINVAL;
-			} else if (sched_setaffinity(0, sizeof(saved), &saved)) {
+			} else if (sched_setaffinity(0, sizeof(saved),
+						     &saved)) {
 				err = errno;
 			}
 			printf("PINNED:%d:%d\n", cpu, err);
@@ -450,8 +456,8 @@ int main(int argc, char **argv)
 		if (fields == 2)
 			failing = 0;
 		if (fields >= 2) {
-			if (count < 1 || count > 8 || threads < 0 || threads > 8 ||
-			    failing < 0 || failing > 1)
+			if (count < 1 || count > 8 || threads < 0 ||
+			    threads > 8 || failing < 0 || failing > 1)
 				return 86;
 			pid_t kids[8];
 			int fork_errno[8];
@@ -476,7 +482,8 @@ int main(int argc, char **argv)
 				if (waitpid(kids[k], &status, 0) != kids[k])
 					return 93;
 				printf("FORKED:%d:%d\n", kids[k],
-				       WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+				       WIFEXITED(status) ? WEXITSTATUS(status) :
+							   -1);
 			}
 			if (failing && failed < 0) {
 				printf("FAILBIRTH:-1:%d\n", failed_errno);
@@ -485,7 +492,8 @@ int main(int argc, char **argv)
 				if (waitpid(failed, &status, 0) != failed)
 					return 93;
 				printf("FAILBIRTH:%d:%d\n", failed,
-				       WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+				       WIFEXITED(status) ? WEXITSTATUS(status) :
+							   -1);
 			}
 			printf("THREADED:%d:%d\n", created, err);
 			fflush(stdout);
@@ -529,7 +537,8 @@ int main(int argc, char **argv)
 				if (waitpid(kids[k], &status, 0) != kids[k])
 					return 93;
 				printf("FORKED:%d:%d\n", kids[k],
-				       WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+				       WIFEXITED(status) ? WEXITSTATUS(status) :
+							   -1);
 			}
 			fflush(stdout);
 			continue;
@@ -580,7 +589,9 @@ int main(int argc, char **argv)
 				return 95;
 			if (child == 0) {
 				if (!strcmp(line, "GRAND\n")) {
-					execl("/proc/self/exe", "opaque-real-parent", "grandparent", (char *)0);
+					execl("/proc/self/exe",
+					      "opaque-real-parent",
+					      "grandparent", (char *)0);
 					_exit(94);
 				}
 				_exit(exec_true_exit());
@@ -604,7 +615,8 @@ int main(int argc, char **argv)
 				kids[k] = fork();
 				fork_errno[k] = kids[k] < 0 ? errno : 0;
 				if (kids[k] == 0) {
-					if ((k & 1) && setresuid(1000, 1000, 1000))
+					if ((k & 1) &&
+					    setresuid(1000, 1000, 1000))
 						_exit(88);
 					_exit(exec_true_exit());
 				}
@@ -651,7 +663,8 @@ int main(int argc, char **argv)
 		 * places the child in the second cgroup in cgroup_can_fork. */
 		if (!strcmp(line, "MIGRATEB\n")) {
 			char procs[512];
-			const char *target = migrate_target(procs, sizeof(procs));
+			const char *target =
+				migrate_target(procs, sizeof(procs));
 			int fd = open(target, O_DIRECTORY | O_PATH | O_CLOEXEC);
 			if (fd < 0)
 				return 85;
@@ -703,7 +716,8 @@ int main(int argc, char **argv)
 					return 91;
 				int status = 0;
 				if (waitpid(held[i], &status, 0) != held[i] ||
-				    !WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM)
+				    !WIFSIGNALED(status) ||
+				    WTERMSIG(status) != SIGTERM)
 					return 90;
 			}
 			printf("REAPED:%d\n", live);

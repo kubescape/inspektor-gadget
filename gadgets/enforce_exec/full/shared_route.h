@@ -75,8 +75,8 @@ struct se_route_claim {
 /* This transition runs under the route spinlock. Keep its call boundary
  * lexical: stock Rocky 4.18 rejects BPF-to-BPF calls while locked. */
 static __attribute__((always_inline)) inline int
-se_route_open_locked(struct se_route_anchor *a, __u64 cgroup,
-		     __u64 scope, __u32 slot)
+se_route_open_locked(struct se_route_anchor *a, __u64 cgroup, __u64 scope,
+		     __u32 slot)
 {
 	if (a->phase != SE_ROUTE_FREE || a->early_claims || a->reserved ||
 #ifdef ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE
@@ -139,10 +139,9 @@ se_route_commit_publish_locked(struct se_route_anchor *a,
  */
 /* This is called with the route spinlock held. Older supported kernels do
  * not permit a BPF-to-BPF call from that lock region. */
-static __attribute__((always_inline)) inline int se_route_claim_locked(
-					struct se_route_anchor *a,
-					__u64 locator, __u64 cgroup,
-					struct se_route_claim *c)
+static __attribute__((always_inline)) inline int
+se_route_claim_locked(struct se_route_anchor *a, __u64 locator, __u64 cgroup,
+		      struct se_route_claim *c)
 {
 	if ((__u32)locator != a->payload_slot ||
 	    (__u32)(locator >> 32) != a->incarnation || !a->incarnation ||
@@ -169,7 +168,7 @@ static __attribute__((always_inline)) inline int se_route_claim_locked(
 }
 static __attribute__((always_inline)) inline int
 se_route_claim_valid(const struct se_route_anchor *a,
-				       const struct se_route_claim *c)
+		     const struct se_route_claim *c)
 {
 	return c->owned && !c->reserved && c->slot == a->payload_slot &&
 	       a->phase == SE_ROUTE_ACTIVE && a->early_claims &&
@@ -186,21 +185,26 @@ se_route_claim_valid(const struct se_route_anchor *a,
  * permitted. This does not consume the ordinary route claim. */
 static __attribute__((always_inline)) inline int
 se_route_source_pin_acquire_locked(struct se_route_anchor *a,
-	const struct se_route_claim *claim, __u64 physical, __u64 source_sequence,
-	struct se_source_mode_owner *owner, struct se_source_mode_token *token)
+				   const struct se_route_claim *claim,
+				   __u64 physical, __u64 source_sequence,
+				   struct se_source_mode_owner *owner,
+				   struct se_source_mode_token *token)
 {
-	if (!owner || !token || owner->owned || owner->reserved ||
-	    !physical || !source_sequence || source_sequence == ~0ULL ||
+	if (!owner || !token || owner->owned || owner->reserved || !physical ||
+	    !source_sequence || source_sequence == ~0ULL ||
 	    !se_route_claim_valid(a, claim) || a->reserved ||
 	    claim->owned != 1 || !claim->incarnation || !claim->scope ||
 	    !claim->generation || claim->execution_class < 1 ||
-	    claim->execution_class > 2 ||
-	    a->source_pins == (__u32)~0U || a->next_source_pin >= ~0ULL - 1)
+	    claim->execution_class > 2 || a->source_pins == (__u32)~0U ||
+	    a->next_source_pin >= ~0ULL - 1)
 		return -1;
 	struct se_source_mode_token next = {
-		.scope = claim->scope, .generation = claim->generation,
-		.physical = physical, .source_sequence = source_sequence,
-		.pin_sequence = ++a->next_source_pin, .slot = claim->slot,
+		.scope = claim->scope,
+		.generation = claim->generation,
+		.physical = physical,
+		.source_sequence = source_sequence,
+		.pin_sequence = ++a->next_source_pin,
+		.slot = claim->slot,
 		.incarnation = claim->incarnation,
 		.execution_class = claim->execution_class,
 	};
@@ -218,16 +222,19 @@ se_route_source_pin_acquire_locked(struct se_route_anchor *a,
  * do not participate: ordinary admission changes them while a source is live. */
 static __attribute__((always_inline)) inline int
 se_route_source_pin_release_locked(struct se_route_anchor *a,
-	struct se_source_mode_owner *owner, const struct se_source_mode_token *token,
-	__u64 physical, __u64 source_sequence)
+				   struct se_source_mode_owner *owner,
+				   const struct se_source_mode_token *token,
+				   __u64 physical, __u64 source_sequence)
 {
 	if (!owner || !token || owner->owned != 1 || owner->reserved ||
 	    token->reserved || !physical || !source_sequence ||
-	    token->physical != physical || token->source_sequence != source_sequence ||
-	    !token->pin_sequence || token->pin_sequence > a->next_source_pin ||
-	    !a->source_pins || a->phase != SE_ROUTE_ACTIVE || a->reserved ||
-	    token->slot != a->payload_slot || token->incarnation != a->incarnation ||
-	    token->scope != a->scope || token->generation != a->payload_generation ||
+	    token->physical != physical ||
+	    token->source_sequence != source_sequence || !token->pin_sequence ||
+	    token->pin_sequence > a->next_source_pin || !a->source_pins ||
+	    a->phase != SE_ROUTE_ACTIVE || a->reserved ||
+	    token->slot != a->payload_slot ||
+	    token->incarnation != a->incarnation || token->scope != a->scope ||
+	    token->generation != a->payload_generation ||
 	    token->execution_class < 1 || token->execution_class > 2 ||
 	    token->execution_class != a->execution_class ||
 	    owner->token.scope != token->scope ||
@@ -251,7 +258,7 @@ se_route_source_pin_release_locked(struct se_route_anchor *a,
  * missing receipts, elapsed time and zero WORK counts do not prove a drain. */
 static __attribute__((always_inline)) inline int
 se_route_source_latch_locked(struct se_route_anchor *a,
-	const struct se_route_claim *claim)
+			     const struct se_route_claim *claim)
 {
 	if (!se_route_claim_valid(a, claim))
 		return -1;
@@ -268,8 +275,9 @@ se_route_source_latch_locked(struct se_route_anchor *a,
  * class of whichever route the task currently occupies. */
 static __attribute__((always_inline)) inline int
 se_route_claim_source_locked(struct se_route_anchor *a,
-	const struct se_source_mode_owner *owner, __u64 physical,
-	__u64 source_sequence, __u32 frozen_class, struct se_route_claim *c)
+			     const struct se_source_mode_owner *owner,
+			     __u64 physical, __u64 source_sequence,
+			     __u32 frozen_class, struct se_route_claim *c)
 {
 	if (frozen_class < 1 || frozen_class > 2)
 		return SE_ROUTE_INVARIANT_FAULT;
@@ -302,9 +310,8 @@ se_route_claim_source_locked(struct se_route_anchor *a,
 #endif
 /* Final payload read precedes release. Failed lookup uses the owned class and
  * releases this lexical claim, never another persistent interpreter claim. */
-static __attribute__((always_inline)) inline int se_route_release_locked(
-					  struct se_route_anchor *a,
-					  struct se_route_claim *c)
+static __attribute__((always_inline)) inline int
+se_route_release_locked(struct se_route_anchor *a, struct se_route_claim *c)
 {
 	if (!se_route_claim_valid(a, c))
 		return -1;
@@ -332,8 +339,9 @@ static __attribute__((always_inline)) inline int se_route_transfer_locked(
 	a->early_claims--;
 	return 0;
 }
-static __attribute__((always_inline)) inline int se_route_withdraw_locked(struct se_route_anchor *a,
-					   struct se_binding_snapshots *b)
+static __attribute__((always_inline)) inline int
+se_route_withdraw_locked(struct se_route_anchor *a,
+			 struct se_binding_snapshots *b)
 {
 	if (a->phase != SE_ROUTE_ACTIVE || a->early_claims ||
 #ifdef ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE
@@ -355,7 +363,7 @@ static __attribute__((always_inline)) inline int se_route_withdraw_locked(struct
  * No helper, map delete, task lock or fallible call occurs in this block. */
 static __attribute__((always_inline)) inline int
 se_route_recycle_locked(struct se_route_anchor *a,
-					  const struct se_binding_snapshots *b)
+			const struct se_binding_snapshots *b)
 {
 	if (a->phase != SE_ROUTE_WITHDRAWN || a->early_claims || a->reserved ||
 #ifdef ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE

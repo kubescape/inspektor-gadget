@@ -10,9 +10,9 @@
  * TASK or WORK allocation authority: the caller must hold the exact reader
  * and WORK ticket through its last use of the view. Include after the shared
  * control maps and shared_policy_lookup.h. */
-static __always_inline int se_prepare_policy_view(
-	struct se_policy_view *view, __u64 scope,
-	const struct se_snapshot *snapshot, __u64 generation)
+static __always_inline int
+se_prepare_policy_view(struct se_policy_view *view, __u64 scope,
+		       const struct se_snapshot *snapshot, __u64 generation)
 {
 	if (!view)
 		return -1;
@@ -38,8 +38,7 @@ static __always_inline int se_prepare_policy_view(
 		if (i >= snapshot->count)
 			break;
 		const struct se_pin_ticket *ticket = &snapshot->tickets[i];
-		if (ticket->phase != SE_TICKET_HELD ||
-		    ticket->scope != scope ||
+		if (ticket->phase != SE_TICKET_HELD || ticket->scope != scope ||
 		    ticket->snapshot_serial != snapshot->serial ||
 		    ticket->position != i)
 			return -1;

@@ -38,9 +38,9 @@ struct {
 } opaque_initial_consumed SEC(".maps");
 
 SEC("lsm/task_prctl")
-int BPF_PROG(opaque_real_owner_initial_task_diagnostic,
-	     int option, unsigned long arg2, unsigned long arg3,
-	     unsigned long arg4, unsigned long arg5, int prior)
+int BPF_PROG(opaque_real_owner_initial_task_diagnostic, int option,
+	     unsigned long arg2, unsigned long arg3, unsigned long arg4,
+	     unsigned long arg5, int prior)
 {
 	(void)arg2;
 	(void)arg3;
@@ -72,8 +72,8 @@ int BPF_PROG(opaque_real_owner_initial_task_diagnostic,
 	int status = se_op_prepare_charged_child(&claim, &initial);
 	if (status == SE_OL_OK) {
 		struct task_struct *key = current;
-		status = se_op_publish_charged_child(&claim,
-			&opaque_real_live_seed_snapshot,
+		status = se_op_publish_charged_child(
+			&claim, &opaque_real_live_seed_snapshot,
 			&opaque_real_live_parent_roles, &key, &initial);
 	}
 	int released = real_owner_child_release_claim(&claim);

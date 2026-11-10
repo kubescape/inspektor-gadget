@@ -44,7 +44,8 @@
 #define SE_TASK_LOOKUP(key) bpf_map_lookup_elem(&se_tasks, &(key))
 #endif
 #ifndef SE_TASK_INSERT_NOEXIST
-#define SE_TASK_INSERT_NOEXIST(key, zero) bpf_map_update_elem(&se_tasks, &(key), zero, BPF_NOEXIST)
+#define SE_TASK_INSERT_NOEXIST(key, zero) \
+	bpf_map_update_elem(&se_tasks, &(key), zero, BPF_NOEXIST)
 #endif
 #ifndef SE_TASK_DELETE
 #define SE_TASK_DELETE(key) bpf_map_delete_elem(&se_tasks, &(key))
@@ -84,7 +85,8 @@ static inline int se_task_birth(__u64 address, __u32 slot, __u64 scope)
 	if (!cookie || cookie == ~0ULL)
 		return SE_TASK_ID_FATAL_CHARGED;
 	if (SE_TASK_INSERT_NOEXIST(address, zero_template_value)) {
-		SE_TASK_REFUND(slot, scope, cookie); /* only this unsuccessful attempt */
+		SE_TASK_REFUND(slot, scope,
+			       cookie); /* only this unsuccessful attempt */
 		task = SE_TASK_LOOKUP(address);
 		if (task) {
 			se_task_quarantine(task);

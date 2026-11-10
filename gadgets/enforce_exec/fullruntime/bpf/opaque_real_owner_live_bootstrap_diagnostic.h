@@ -39,8 +39,11 @@ opaque_real_live_gate(void)
  * authorize a product verdict; the real reader and WORK path must still
  * authenticate their own physical TASK, route and accepted-history cells. */
 static const struct er_work opaque_real_live_parent_roles = {
-	.authority_version = 1, .prepared = 1,
-	.rows = { { .uid = 1, .epoch = 1, .role = 1,
+	.authority_version = 1,
+	.prepared = 1,
+	.rows = { { .uid = 1,
+		    .epoch = 1,
+		    .role = 1,
 		    .knowledge = ER_ROLE_KNOWN } },
 };
 static const struct se_snapshot opaque_real_live_seed_snapshot = {
@@ -57,8 +60,7 @@ int opaque_real_live_bootstrap_control(struct __sk_buff *skb)
 	(void)skb;
 	const struct opaque_real_live_bootstrap_gate *gate =
 		opaque_real_live_gate();
-	if (!gate || gate->enabled != 1 ||
-	    gate->execution_class > 2 ||
+	if (!gate || gate->enabled != 1 || gate->execution_class > 2 ||
 	    !gate->cgroup || gate->scope != 10)
 		return -1;
 	__u32 execution_class = gate->execution_class == 2 ? 2 : 1;
@@ -90,7 +92,7 @@ int opaque_real_live_bootstrap_control(struct __sk_buff *skb)
 	cell->epoch = 1;
 	struct se_epoch_key epoch_key = { .scope = gate->scope, .uid = 1 };
 	if (bpf_map_update_elem(&se_epoch_index, &epoch_key, &zero,
-			BPF_NOEXIST))
+				BPF_NOEXIST))
 		return -1;
 	bpf_spin_lock(&route->lock);
 	route->incarnation = 1;
@@ -104,8 +106,10 @@ int opaque_real_live_bootstrap_control(struct __sk_buff *skb)
 	route->phase = SE_ROUTE_ACTIVE;
 	bpf_spin_unlock(&route->lock);
 	__u64 locator = se_route_locator(0, 1);
-	return bpf_map_update_elem(&se_route_index, &gate->cgroup,
-		&locator, BPF_NOEXIST) ? -1 : 0;
+	return bpf_map_update_elem(&se_route_index, &gate->cgroup, &locator,
+				   BPF_NOEXIST) ?
+		       -1 :
+		       0;
 }
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_ROUTE_MIGRATION_DIAGNOSTIC
@@ -164,8 +168,7 @@ int opaque_real_live_bootstrap_second_route(struct __sk_buff *skb)
 	cell->uid = 1;
 	cell->epoch = 1;
 	struct se_epoch_key epoch_key = { .scope = gate->scope, .uid = 1 };
-	if (bpf_map_update_elem(&se_epoch_index, &epoch_key, &one,
-			BPF_NOEXIST))
+	if (bpf_map_update_elem(&se_epoch_index, &epoch_key, &one, BPF_NOEXIST))
 		return -1;
 	bpf_spin_lock(&route->lock);
 	route->incarnation = 1;
@@ -179,8 +182,10 @@ int opaque_real_live_bootstrap_second_route(struct __sk_buff *skb)
 	route->phase = SE_ROUTE_ACTIVE;
 	bpf_spin_unlock(&route->lock);
 	__u64 locator = se_route_locator(1, 1);
-	return bpf_map_update_elem(&se_route_index, &gate->cgroup,
-		&locator, BPF_NOEXIST) ? -1 : 0;
+	return bpf_map_update_elem(&se_route_index, &gate->cgroup, &locator,
+				   BPF_NOEXIST) ?
+		       -1 :
+		       0;
 }
 #endif
 
@@ -226,8 +231,8 @@ int opaque_real_live_bootstrap_advance(struct __sk_buff *skb)
 	struct se_shared_object *object1 =
 		bpf_map_lookup_elem(&se_objects, &one);
 	if (!gate || gate->enabled != 1 || gate->scope != 10 || !request ||
-	    request->enabled != 1 || request->fault > 1 || !route ||
-	    !binding || !object0 || !object1)
+	    request->enabled != 1 || request->fault > 1 || !route || !binding ||
+	    !object0 || !object1)
 		return -1;
 	__u32 fault = request->fault;
 	int code = -1;
@@ -310,8 +315,8 @@ out:
 }
 #endif
 
-static __attribute__((noinline)) int opaque_real_live_seed_child(
-	struct task_struct *child)
+static __attribute__((noinline)) int
+opaque_real_live_seed_child(struct task_struct *child)
 {
 	struct se_route_claim claim = {};
 	if (se_route_admit(bpf_get_current_cgroup_id(), &claim) !=
@@ -322,11 +327,10 @@ static __attribute__((noinline)) int opaque_real_live_seed_child(
 	int published = 0;
 	if (prepared == SE_OL_OK) {
 		struct task_struct *key = child;
-		published =
-			se_op_publish_charged_child(&claim,
-				&opaque_real_live_seed_snapshot,
-				&opaque_real_live_parent_roles, &key,
-				&reservation) == SE_OL_OK;
+		published = se_op_publish_charged_child(
+				    &claim, &opaque_real_live_seed_snapshot,
+				    &opaque_real_live_parent_roles, &key,
+				    &reservation) == SE_OL_OK;
 	}
 	struct se_route_anchor *route = route_lookup(claim.slot);
 	if (route) {
@@ -339,8 +343,8 @@ static __attribute__((noinline)) int opaque_real_live_seed_child(
 }
 
 SEC("lsm/task_alloc")
-int BPF_PROG(opaque_real_live_bootstrap_birth,
-	     struct task_struct *child, unsigned long clone_flags, int prior)
+int BPF_PROG(opaque_real_live_bootstrap_birth, struct task_struct *child,
+	     unsigned long clone_flags, int prior)
 {
 	(void)clone_flags;
 	if (prior)
@@ -354,8 +358,8 @@ int BPF_PROG(opaque_real_live_bootstrap_birth,
 }
 
 SEC("lsm/bprm_check_security")
-int BPF_PROG(opaque_real_live_bootstrap_qualify,
-	     struct linux_binprm *bprm, int prior)
+int BPF_PROG(opaque_real_live_bootstrap_qualify, struct linux_binprm *bprm,
+	     int prior)
 {
 	(void)bprm;
 	if (prior)
@@ -403,8 +407,8 @@ int opaque_real_live_reap_work(struct __sk_buff *skb)
 		opaque_real_live_gate();
 	const struct opaque_real_live_work_reap_request *request =
 		bpf_map_lookup_elem(&opaque_real_live_work_reap_request, &zero);
-	if (!gate || gate->enabled != 1 || !request ||
-	    request->enabled != 1 || !request->cookie)
+	if (!gate || gate->enabled != 1 || !request || request->enabled != 1 ||
+	    !request->cookie)
 		return SE_OWK_STALE;
 	return se_owk_reap_step(request->slot, request->cookie);
 }
@@ -429,9 +433,8 @@ int opaque_real_live_reap_task(struct __sk_buff *skb)
 		opaque_real_live_gate();
 	const struct opaque_real_live_task_reap_request *request =
 		bpf_map_lookup_elem(&opaque_real_live_task_reap_request, &zero);
-	if (!gate || gate->enabled != 1 || !request ||
-	    request->enabled != 1 || !request->cookie ||
-	    request->slot >= SE_OL_TASKS)
+	if (!gate || gate->enabled != 1 || !request || request->enabled != 1 ||
+	    !request->cookie || request->slot >= SE_OL_TASKS)
 		return SE_OR_FAULT;
 	struct se_oc_charge *charge = charge_lookup(request->slot);
 	if (!charge || charge->cookie != request->cookie)

@@ -3,7 +3,8 @@
  */
 #ifndef ENFORCE_EXEC_SHARED_POLICY_LOOKUP_H
 #define ENFORCE_EXEC_SHARED_POLICY_LOOKUP_H
-#if defined(ENFORCE_EXEC_FULLPOLICY_EVALUATOR_H) || defined(ENFORCE_EXEC_FULLPOLICY_MATCHER_H)
+#if defined(ENFORCE_EXEC_FULLPOLICY_EVALUATOR_H) || \
+	defined(ENFORCE_EXEC_FULLPOLICY_MATCHER_H)
 #error "include shared_policy_lookup.h before evaluator.h and matcher.h"
 #endif
 
@@ -27,15 +28,20 @@ struct fe_policy;
 struct fe_rule;
 struct fe_string;
 static inline const struct fe_header *se_policy_header(struct se_policy_view *);
-static inline const struct fe_policy *se_policy_policy(struct se_policy_view *, unsigned int);
-static inline const struct fe_rule *se_policy_rule(struct se_policy_view *, unsigned int);
-static inline const struct fe_string *se_policy_container(struct se_policy_view *);
-static inline const struct fm_blob *se_policy_data(struct se_policy_view *, unsigned int);
+static inline const struct fe_policy *se_policy_policy(struct se_policy_view *,
+						       unsigned int);
+static inline const struct fe_rule *se_policy_rule(struct se_policy_view *,
+						   unsigned int);
+static inline const struct fe_string *
+se_policy_container(struct se_policy_view *);
+static inline const struct fm_blob *se_policy_data(struct se_policy_view *,
+						   unsigned int);
 #ifndef SE_POLICY_VIEW
 #define SE_POLICY_VIEW(ctx) ((struct se_policy_view *)(ctx))
 #endif
 #define FE_HEADER_LOOKUP(ctx) se_policy_header(SE_POLICY_VIEW(ctx))
-#define FE_POLICY_LOOKUP(ctx, index) se_policy_policy(SE_POLICY_VIEW(ctx), index)
+#define FE_POLICY_LOOKUP(ctx, index) \
+	se_policy_policy(SE_POLICY_VIEW(ctx), index)
 #define FE_RULE_LOOKUP(ctx, index) se_policy_rule(SE_POLICY_VIEW(ctx), index)
 #define FE_CONTAINER_LOOKUP(ctx) se_policy_container(SE_POLICY_VIEW(ctx))
 #define FM_BLOB_LOOKUP(ctx, key) se_policy_data(SE_POLICY_VIEW(ctx), key)
@@ -71,9 +77,10 @@ struct se_policy_view {
 static inline const struct fm_blob *
 se_policy_physical(void *context, fm_u32 slot, fm_u64 generation, fm_u32 key);
 
-static __attribute__((always_inline)) inline int se_policy_prepare(struct se_policy_view *v, void *physical,
-		fm_u64 scope, fm_u64 generation, const struct fe_string *container,
-		const struct se_policy_ref *refs, fm_u32 count)
+static __attribute__((always_inline)) inline int
+se_policy_prepare(struct se_policy_view *v, void *physical, fm_u64 scope,
+		  fm_u64 generation, const struct fe_string *container,
+		  const struct se_policy_ref *refs, fm_u32 count)
 {
 	if (!v)
 		return -1;
@@ -86,7 +93,8 @@ static __attribute__((always_inline)) inline int se_policy_prepare(struct se_pol
 	v->physical_context = physical;
 	v->scope_cookie = scope;
 	v->header = (struct fe_header){ .generation = generation,
-		.policies = count, .rule_base = 9 };
+					.policies = count,
+					.rule_base = 9 };
 	v->container = *container;
 	for (fm_u32 i = 0; i < 8; i++) {
 		if (i >= count)
@@ -100,7 +108,8 @@ static __attribute__((always_inline)) inline int se_policy_prepare(struct se_pol
 			physical, ref.slot, ref.generation, 0);
 		if (!h || h->generation || h->container || h->policies != 1 ||
 		    h->rule_base != 9 || h->rules > 256 ||
-		    h->rules > ref.entries - 10 || h->rules > 256 - v->header.rules)
+		    h->rules > ref.entries - 10 ||
+		    h->rules > 256 - v->header.rules)
 			return -1;
 		v->rule_counts[i] = h->rules;
 		v->header.rules += h->rules;
@@ -126,12 +135,15 @@ static inline const struct fe_header *se_policy_header(struct se_policy_view *v)
 {
 	return v && v->ready ? &v->header : 0;
 }
-static inline const struct fe_policy *se_policy_policy(struct se_policy_view *v, fm_u32 index)
+static inline const struct fe_policy *se_policy_policy(struct se_policy_view *v,
+						       fm_u32 index)
 {
 	return v && v->ready && index < 8 && index < v->header.policies ?
-		&v->policies[index] : 0;
+		       &v->policies[index] :
+		       0;
 }
-static inline const struct fe_string *se_policy_container(struct se_policy_view *v)
+static inline const struct fe_string *
+se_policy_container(struct se_policy_view *v)
 {
 	return v && v->ready ? &v->container : 0;
 }
@@ -140,7 +152,8 @@ static inline const struct fe_string *se_policy_container(struct se_policy_view 
 #else
 #define SE_STAGE_POLICY_INLINE
 #endif
-static SE_STAGE_POLICY_INLINE inline const struct fe_rule *se_policy_rule(struct se_policy_view *v, fm_u32 index)
+static SE_STAGE_POLICY_INLINE inline const struct fe_rule *
+se_policy_rule(struct se_policy_view *v, fm_u32 index)
 {
 	if (!v || !v->ready)
 		return 0;
@@ -157,24 +170,29 @@ static SE_STAGE_POLICY_INLINE inline const struct fe_rule *se_policy_rule(struct
 		}
 		const struct se_policy_ref *ref = &v->refs[i];
 		const struct fe_rule *r = (const void *)se_policy_physical(
-			v->physical_context, ref->slot, ref->generation, 9 + local);
+			v->physical_context, ref->slot, ref->generation,
+			9 + local);
 		if (!r || r->policy != 0)
 			return 0;
 		v->rule = *r;
-		v->rule.policy = i; /* ONLY this field changes; references stay local. */
+		v->rule.policy =
+			i; /* ONLY this field changes; references stay local. */
 		v->selected = i;
 		return &v->rule;
 	}
 	return 0;
 }
-static SE_STAGE_POLICY_INLINE inline const struct fm_blob *se_policy_data(struct se_policy_view *v, fm_u32 key)
+static SE_STAGE_POLICY_INLINE inline const struct fm_blob *
+se_policy_data(struct se_policy_view *v, fm_u32 key)
 {
-	if (!v || !v->ready || v->selected >= 8 || v->selected >= v->header.policies)
+	if (!v || !v->ready || v->selected >= 8 ||
+	    v->selected >= v->header.policies)
 		return 0;
 	const struct se_policy_ref *ref = &v->refs[v->selected];
 	if (key < 9 + v->rule_counts[v->selected] || key >= ref->entries)
 		return 0;
-	return se_policy_physical(v->physical_context, ref->slot, ref->generation, key);
+	return se_policy_physical(v->physical_context, ref->slot,
+				  ref->generation, key);
 }
 #undef SE_STAGE_POLICY_INLINE
 #endif

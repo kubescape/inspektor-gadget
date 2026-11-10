@@ -4,19 +4,20 @@
 #include <stdio.h>
 
 struct fm_blob;
-static const struct fm_blob *lookup_scalar(unsigned slot,
-					 unsigned long long cookie, unsigned key);
+static const struct fm_blob *
+lookup_scalar(unsigned slot, unsigned long long cookie, unsigned key);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	lookup_scalar((slot), (cookie), (key))
-#define FM_BLOB_LOOKUP(context, key) \
-	lookup_scalar(((const struct fm_global_token *)(context))->slot, \
-		      ((const struct fm_global_token *)(context))->cookie, (key))
+#define FM_BLOB_LOOKUP(context, key)                                       \
+	lookup_scalar(((const struct fm_global_token *)(context))->slot,   \
+		      ((const struct fm_global_token *)(context))->cookie, \
+		      (key))
 #include "../bpf/evaluator.h"
 
 static struct fm_blob programs[2][4];
 static unsigned instruction_lookups;
-static const struct fm_blob *lookup_scalar(unsigned slot,
-					 unsigned long long cookie, unsigned key)
+static const struct fm_blob *
+lookup_scalar(unsigned slot, unsigned long long cookie, unsigned key)
 {
 	if (slot >= 2 || cookie != 101 + slot || key >= 4)
 		return NULL;
@@ -29,9 +30,11 @@ static void program(unsigned slot, unsigned char rune)
 	struct fm_pattern *pattern = (void *)&programs[slot][1];
 	struct fm_instruction *consume = (void *)&programs[slot][2];
 	struct fm_instruction *match = (void *)&programs[slot][3];
-	*pattern = (struct fm_pattern){ .code_base = 2, .start = 0, .count = 2 };
-	*consume = (struct fm_instruction){ .op = FM_RUNE, .out = 1, .count = 1,
-					      .ranges = { rune, rune } };
+	*pattern =
+		(struct fm_pattern){ .code_base = 2, .start = 0, .count = 2 };
+	*consume = (struct fm_instruction){
+		.op = FM_RUNE, .out = 1, .count = 1, .ranges = { rune, rune }
+	};
 	*match = (struct fm_instruction){ .op = FM_MATCH };
 }
 int main(void)

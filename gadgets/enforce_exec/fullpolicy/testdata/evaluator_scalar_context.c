@@ -6,34 +6,44 @@
 #include <stdio.h>
 #include <string.h>
 struct fm_blob;
-static const struct fm_blob *lookup_scalar(unsigned int,
-	unsigned long long, unsigned int);
+static const struct fm_blob *lookup_scalar(unsigned int, unsigned long long,
+					   unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	lookup_scalar((slot), (cookie), (key))
-#define FM_BLOB_LOOKUP(context, key) \
-	lookup_scalar(((const struct fm_global_token *)(context))->slot, \
-		((const struct fm_global_token *)(context))->cookie, (key))
+#define FM_BLOB_LOOKUP(context, key)                                       \
+	lookup_scalar(((const struct fm_global_token *)(context))->slot,   \
+		      ((const struct fm_global_token *)(context))->cookie, \
+		      (key))
 #include "../bpf/evaluator.h"
 
 static struct fm_blob cells[2][16];
 static const struct fm_blob *lookup_scalar(fm_u32 slot, fm_u64 cookie,
-					    fm_u32 key)
+					   fm_u32 key)
 {
 	return slot < 2 && cookie == 101 + slot && key < 16 ?
-		&cells[slot][key] : 0;
+		       &cells[slot][key] :
+		       0;
 }
 static void seed_slot(fm_u32 slot, fm_u32 uid)
 {
 	struct fe_header header = {
-		.generation = 1, .policies = 1, .rule_base = 9,
+		.generation = 1,
+		.policies = 1,
+		.rule_base = 9,
 		.rules = 1,
 	};
 	struct fe_policy policy = {
-		.uid = 1, .root_role = 3, .mode = 2,
+		.uid = 1,
+		.root_role = 3,
+		.mode = 2,
 	};
 	struct fe_rule rule = {
-		.policy = 0, .mode = 2, .deny = 1,
-		.actor_image = -1, .target_image = -1, .stdin_pipe = -1,
+		.policy = 0,
+		.mode = 2,
+		.deny = 1,
+		.actor_image = -1,
+		.target_image = -1,
+		.stdin_pipe = -1,
 		.actor_path = { .base = 12, .count = 1 },
 		.uid = { .base = 10, .count = 1 },
 		.arg_contains = { .base = 11, .count = 1 },
@@ -47,18 +57,26 @@ static void seed_slot(fm_u32 slot, fm_u32 uid)
 	struct fm_pattern *pattern = (void *)&cells[slot][12];
 	struct fm_instruction *consume = (void *)&cells[slot][13];
 	struct fm_instruction *match = (void *)&cells[slot][14];
-	*pattern = (struct fm_pattern){ .code_base = 13, .start = 0,
-		.count = 2 };
-	*consume = (struct fm_instruction){ .op = FM_RUNE, .out = 1,
-		.count = 1, .ranges = { slot ? 'b' : 'a', slot ? 'b' : 'a' } };
+	*pattern =
+		(struct fm_pattern){ .code_base = 13, .start = 0, .count = 2 };
+	*consume = (struct fm_instruction){ .op = FM_RUNE,
+					    .out = 1,
+					    .count = 1,
+					    .ranges = { slot ? 'b' : 'a',
+							slot ? 'b' : 'a' } };
 	*match = (struct fm_instruction){ .op = FM_MATCH };
 }
 static void run(struct fm_global_token token, fm_u32 uid, char actor, int deny)
 {
 	struct fe_facts facts = {
-		.actor_image = -1, .target_image = -1, .stdin_pipe = -1,
-		.effective_uid = uid, .uid_known = 1,
-		.argc = 1, .argv_bytes = 4, .argv_complete = 1,
+		.actor_image = -1,
+		.target_image = -1,
+		.stdin_pipe = -1,
+		.effective_uid = uid,
+		.uid_known = 1,
+		.argc = 1,
+		.argv_bytes = 4,
+		.argv_complete = 1,
 	};
 	facts.actor_path.length = 1;
 	facts.actor_path.bytes[0] = actor;

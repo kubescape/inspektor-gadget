@@ -2,9 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_TASK_MOVEMENT_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_TASK_MOVEMENT_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) || \
-    !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY) || \
-    !defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE)
+#if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) ||            \
+	!defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY) || \
+	!defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE)
 #error "typed task movement is candidate-only"
 #endif
 
@@ -13,11 +13,12 @@
  * original charge or invents admission in the destination. No map helper or
  * route lock is held under the TASK metadata lock. The second begin rechecks
  * the lexical token after the route observation before mutating semantics. */
-SE_POOL_INLINE int se_pool_observe_task_movement(
-	struct se_pool_task_semantic_handle *handle, __u64 cgroup)
+SE_POOL_INLINE int
+se_pool_observe_task_movement(struct se_pool_task_semantic_handle *handle,
+			      __u64 cgroup)
 {
-	if (!handle || !cgroup || handle->locked ||
-	    handle->lease.held != 1 || !handle->meta || !handle->payload)
+	if (!handle || !cgroup || handle->locked || handle->lease.held != 1 ||
+	    !handle->meta || !handle->payload)
 		return SE_POOL_CORRUPT;
 	int status = se_pool_task_semantic_begin(handle);
 	if (status != SE_POOL_OK)

@@ -50,8 +50,8 @@ int opaque_argv_copy_primitive(__u64 *ctx)
 	__sync_fetch_and_add(&stats->calls, 1);
 	__u64 ret = 0, to = 0, n = 0;
 	if (bpf_get_func_ret(ctx, &ret) || ret ||
-	    bpf_get_func_arg(ctx, 0, &to) ||
-	    bpf_get_func_arg(ctx, 2, &n) || !to || !n)
+	    bpf_get_func_arg(ctx, 0, &to) || bpf_get_func_arg(ctx, 2, &n) ||
+	    !to || !n)
 		return 0;
 	__u64 index = __sync_fetch_and_add(&stats->full_copies, 1);
 	if (index >= COPY_SAMPLES) {
@@ -59,7 +59,8 @@ int opaque_argv_copy_primitive(__u64 *ctx)
 		return 0;
 	}
 	__u32 slot = index;
-	struct copy_sample *sample = bpf_map_lookup_elem(&argv_copy_samples, &slot);
+	struct copy_sample *sample =
+		bpf_map_lookup_elem(&argv_copy_samples, &slot);
 	if (!sample)
 		return 0;
 	__u32 size = n > COPY_BYTES ? COPY_BYTES : n;

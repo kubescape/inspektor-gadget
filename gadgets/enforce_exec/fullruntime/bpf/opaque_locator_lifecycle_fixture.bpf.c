@@ -10,49 +10,54 @@
 #endif
 #ifdef ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE
 #define FM_STAGE_INLINE_INSTRUCTION_WINDOW 1
-#if !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_EVAL_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_TAILCALL_FIXTURE) || \
-    !defined(FE_BOUNDED_LOOP_CANDIDATE)
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_EVAL_CANDIDATE) ||       \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_TAILCALL_FIXTURE) || \
+	!defined(FE_BOUNDED_LOOP_CANDIDATE)
 #error "staged fixture requires evaluator resolver, tail-call and bounded loops"
 #endif
 struct fm_blob;
 struct fm_global_token;
 struct se_policy_view;
-static __attribute__((always_inline)) inline struct se_policy_view *se_stage_view_from_token(
-	const struct fm_global_token *);
-static __attribute__((always_inline)) inline const struct fm_blob *se_stage_blob_from_token(
-	unsigned int, unsigned long long, unsigned int);
+static __attribute__((always_inline)) inline struct se_policy_view *
+se_stage_view_from_token(const struct fm_global_token *);
+static __attribute__((always_inline)) inline const struct fm_blob *
+se_stage_blob_from_token(unsigned int, unsigned long long, unsigned int);
 #define SE_POLICY_VIEW(ctx) \
 	se_stage_view_from_token((const struct fm_global_token *)(ctx))
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	se_stage_blob_from_token((slot), (cookie), (key))
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CANDIDATE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CANDIDATE)
 #error "reader catalogue fixture requires the opaque WORK catalogue"
 #endif
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_HANDOFF_DIAGNOSTIC) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_PARENT_SNAPSHOT_DIAGNOSTIC) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CANDIDATE))
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_HANDOFF_DIAGNOSTIC) &&    \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_PARENT_SNAPSHOT_DIAGNOSTIC) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CANDIDATE))
 #error "child WORK handoff diagnostic requires parent snapshot and catalogue"
 #endif
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_HANDOFF_DIAGNOSTIC) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_CANDIDATE))
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC) &&      \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_HANDOFF_DIAGNOSTIC) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_CANDIDATE))
 #error "child WORK tail-call diagnostic requires handoff and continuation"
 #endif
 #include "opaque_locator_writer_probe.bpf.c"
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC
-static __attribute__((noinline)) int opaque_lifecycle_abort_after_publish_zero(void);
-#define SE_OP_ABORT_AFTER_PUBLISH_ZERO() opaque_lifecycle_abort_after_publish_zero()
+static __attribute__((noinline)) int
+opaque_lifecycle_abort_after_publish_zero(void);
+#define SE_OP_ABORT_AFTER_PUBLISH_ZERO() \
+	opaque_lifecycle_abort_after_publish_zero()
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE
 #include "shared_pool_opaque_birth_candidate.h"
 /* Synthetic empty projection for lifecycle-only tests. This is not a
  * parent-derived canonical projection or a product inheritance authority. */
 static const struct er_work opaque_lifecycle_projected = {
-	.authority_version = 1, .prepared = 1,
-	.rows = { { .uid = 1, .epoch = 1, .role = 1,
+	.authority_version = 1,
+	.prepared = 1,
+	.rows = { { .uid = 1,
+		    .epoch = 1,
+		    .role = 1,
 		    .knowledge = ER_ROLE_KNOWN } },
 };
 static const struct se_snapshot opaque_lifecycle_inherit_snapshot = {
@@ -64,11 +69,11 @@ static const struct se_snapshot opaque_lifecycle_inherit_snapshot = {
 };
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_DEATH_FIXTURE) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_CANDIDATE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_CANDIDATE)
 #error "death fixture requires explicit WORK continuation candidate"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_TAILCALL_FIXTURE) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_DEATH_FIXTURE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_DEATH_FIXTURE)
 #error "tail-call fixture requires suspended-WORK death fallback"
 #endif
 #include "shared_pool_opaque_final_semantic_candidate.h"
@@ -82,20 +87,25 @@ static const struct se_snapshot opaque_lifecycle_inherit_snapshot = {
 #include "shared_pool_opaque_work_suspended_read_candidate.h"
 #endif
 #ifdef ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE
-static __attribute__((always_inline)) inline struct se_policy_view *se_stage_view_from_token(
-	const struct fm_global_token *token)
+static __attribute__((always_inline)) inline struct se_policy_view *
+se_stage_view_from_token(const struct fm_global_token *token)
 {
 #if defined(ENFORCE_EXEC_SUSPENDED_EVAL_READER_DIAGNOSTIC) && \
-    !defined(ENFORCE_EXEC_STAGE2_SOURCE_OBJECT)
+	!defined(ENFORCE_EXEC_STAGE2_SOURCE_OBJECT)
 	return token && !token->reserved ?
-		se_owk_suspended_view_from_token(token->slot, token->cookie) : 0;
+		       se_owk_suspended_view_from_token(token->slot,
+							token->cookie) :
+		       0;
 #else
 	return token && !token->reserved ?
-		se_owk_view_from_lexical_token(token->slot, token->cookie) : 0;
+		       se_owk_view_from_lexical_token(token->slot,
+						      token->cookie) :
+		       0;
 #endif
 }
-static __attribute__((always_inline)) inline const struct fm_blob *se_stage_blob_from_token(
-	unsigned int slot, unsigned long long cookie, unsigned int key)
+static __attribute__((always_inline)) inline const struct fm_blob *
+se_stage_blob_from_token(unsigned int slot, unsigned long long cookie,
+			 unsigned int key)
 {
 	struct fm_global_token token = { .slot = slot, .cookie = cookie };
 	return se_policy_data(se_stage_view_from_token(&token), key);
@@ -138,18 +148,21 @@ struct {
 #define SE_OBJECT_LOOKUP(key) \
 	bpf_map_lookup_elem(&opaque_lifecycle_policy_object, (key))
 #include "shared_policy_prepare.h"
-static __attribute__((always_inline)) inline const struct fm_blob *se_policy_physical(
-	void *context, fm_u32 slot, fm_u64 generation, fm_u32 key)
+static __attribute__((always_inline)) inline const struct fm_blob *
+se_policy_physical(void *context, fm_u32 slot, fm_u64 generation, fm_u32 key)
 {
 	__u32 zero = 0;
 	const struct se_shared_object *object =
 		bpf_map_lookup_elem(&opaque_lifecycle_policy_object, &zero);
 	return !context && !slot && object &&
-		object->state.phase == SE_OBJECT_READY &&
-		object->state.generation == generation &&
-		object->state.pins && key < object->state.length &&
-		key < OPAQUE_LIFECYCLE_POLICY_ENTRIES ?
-		bpf_map_lookup_elem(&opaque_lifecycle_policy_blobs, &key) : 0;
+			       object->state.phase == SE_OBJECT_READY &&
+			       object->state.generation == generation &&
+			       object->state.pins &&
+			       key < object->state.length &&
+			       key < OPAQUE_LIFECYCLE_POLICY_ENTRIES ?
+		       bpf_map_lookup_elem(&opaque_lifecycle_policy_blobs,
+					   &key) :
+		       0;
 }
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CANDIDATE
@@ -157,7 +170,7 @@ static __attribute__((always_inline)) inline const struct fm_blob *se_policy_phy
 #error "catalogue fixture requires the typed opaque WORK"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_CATALOGUE_CANDIDATE) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE)
 #error "map-backed catalogue diagnostic requires the retained reader path"
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE
@@ -288,11 +301,12 @@ struct {
 	__type(key, __u32);
 	__type(value, __u32);
 } opaque_lifecycle_child_work_fault SEC(".maps");
-static __attribute__((noinline)) int opaque_lifecycle_abort_after_publish_zero(void)
+static __attribute__((noinline)) int
+opaque_lifecycle_abort_after_publish_zero(void)
 {
 	__u32 zero = 0;
-	const __u32 *fault = bpf_map_lookup_elem(
-		&opaque_lifecycle_child_work_fault, &zero);
+	const __u32 *fault =
+		bpf_map_lookup_elem(&opaque_lifecycle_child_work_fault, &zero);
 	struct opaque_lifecycle_child_work_counts *counts =
 		bpf_map_lookup_elem(&opaque_lifecycle_child_work_counts, &zero);
 	/* The seed constructor precedes the counted charged source. */
@@ -323,8 +337,7 @@ int BPF_PROG(opaque_lifecycle_child_work_qualify_probe,
 	if (opened == SE_OL_OK) {
 		if (task->physical_cookie == owner.lease.cookie &&
 		    task->scope_cookie == gate->scope &&
-		    task->flags == SE_TASK_LIVE &&
-		    task->committed.version != 0)
+		    task->flags == SE_TASK_LIVE && task->committed.version != 0)
 			task->flags = SE_TASK_QUALIFIED;
 		se_op_task_semantic_end(&owner, &task);
 	}
@@ -337,8 +350,8 @@ int BPF_PROG(opaque_lifecycle_child_work_qualify_probe,
  * lifecycle links. It proves the BPF_F_RDONLY object can be initialized by
  * BPF code, not the selected authenticated command/publication protocol. */
 SEC("lsm/bprm_check_security")
-int BPF_PROG(opaque_lifecycle_seed_policy_object,
-	     struct linux_binprm *bprm, int prior)
+int BPF_PROG(opaque_lifecycle_seed_policy_object, struct linux_binprm *bprm,
+	     int prior)
 {
 	(void)bprm;
 	if (prior)
@@ -355,8 +368,8 @@ int BPF_PROG(opaque_lifecycle_seed_policy_object,
 		return -1;
 	bpf_spin_lock(&object->lock);
 	int empty = object->state.phase == SE_OBJECT_FREE &&
-		!object->state.generation && !object->state.pins &&
-		!object->state.length;
+		    !object->state.generation && !object->state.pins &&
+		    !object->state.length;
 	if (empty) {
 		object->state.generation = 1;
 		object->state.phase = SE_OBJECT_READY;
@@ -424,7 +437,8 @@ struct {
 	__type(value, struct opaque_lifecycle_counters);
 } opaque_lifecycle_counters SEC(".maps");
 
-static __always_inline struct opaque_lifecycle_counters *lifecycle_counters(void)
+static __always_inline struct opaque_lifecycle_counters *
+lifecycle_counters(void)
 {
 	__u32 zero = 0;
 	return bpf_map_lookup_elem(&opaque_lifecycle_counters, &zero);
@@ -433,9 +447,10 @@ static __always_inline struct opaque_lifecycle_counters *lifecycle_counters(void
 /* The first synthetically qualified parent has no predecessor by design.
  * Keep its exact normal-publication checks separate from the replacement
  * target's verifier graph; this is not a selectable product constructor. */
-static __attribute__((noinline)) int opaque_lifecycle_publish_seed_parent(
-	const struct se_route_claim *claim, struct se_oc_reservation *reservation,
-	const void *opaque_key)
+static __attribute__((noinline)) int
+opaque_lifecycle_publish_seed_parent(const struct se_route_claim *claim,
+				     struct se_oc_reservation *reservation,
+				     const void *opaque_key)
 {
 	int status = SE_OL_CORRUPT;
 	if (!claim || !claim->owned || claim->reserved || !reservation ||
@@ -443,15 +458,15 @@ static __attribute__((noinline)) int opaque_lifecycle_publish_seed_parent(
 	    claim->incarnation != reservation->incarnation ||
 	    claim->slot != reservation->account_slot ||
 	    !se_inherit_snapshot_matches(claim,
-		&opaque_lifecycle_inherit_snapshot,
-		&opaque_lifecycle_projected))
+					 &opaque_lifecycle_inherit_snapshot,
+					 &opaque_lifecycle_projected))
 		goto abort;
 	status = se_op_store_charged_child_roles(reservation,
-		&opaque_lifecycle_projected);
+						 &opaque_lifecycle_projected);
 	if (status != SE_OL_OK)
 		goto abort;
 	status = se_ow_archive(reservation->meta, reservation->task_slot,
-		reservation->cookie, opaque_key);
+			       reservation->cookie, opaque_key);
 	if (status != SE_OL_OK)
 		goto abort;
 	const __u64 *archive = archive_lookup(reservation->task_slot);
@@ -460,11 +475,11 @@ static __attribute__((noinline)) int opaque_lifecycle_publish_seed_parent(
 		goto abort;
 	}
 	status = se_ow_insert_zero(reservation->meta, reservation->cookie,
-		archive);
+				   archive);
 	if (status != SE_OL_OK)
 		goto abort;
 	status = se_ow_publish_zero(reservation->meta, reservation->cookie,
-		archive);
+				    archive);
 	if (status != SE_OL_OK)
 		goto abort;
 	status = se_op_finish_semantic_birth(reservation);
@@ -472,7 +487,8 @@ static __attribute__((noinline)) int opaque_lifecycle_publish_seed_parent(
 		return SE_OL_OK;
 abort:
 	return se_op_abort_semantic_birth(reservation) == SE_OL_OK ?
-		status : SE_OL_CORRUPT;
+		       status :
+		       SE_OL_CORRUPT;
 }
 
 SEC("lsm/task_alloc")
@@ -485,8 +501,8 @@ int BPF_PROG(opaque_lifecycle_task_alloc, struct task_struct *child,
 	__u32 zero = 0;
 	const struct opaque_lifecycle_gate *gate =
 		bpf_map_lookup_elem(&opaque_lifecycle_gate, &zero);
-	if (!gate || gate->enabled != 1 || !gate->cgroup_id ||
-	    !gate->scope || !gate->incarnation ||
+	if (!gate || gate->enabled != 1 || !gate->cgroup_id || !gate->scope ||
+	    !gate->incarnation ||
 	    bpf_get_current_cgroup_id() != gate->cgroup_id)
 		return 0;
 	/* This remains a synthetic fixture route, but the charged constructor
@@ -508,8 +524,9 @@ int BPF_PROG(opaque_lifecycle_task_alloc, struct task_struct *child,
 		route->execution_class = 2;
 		route->phase = SE_ROUTE_ACTIVE;
 	}
-	int admitted = se_route_claim_locked(route,
-		se_route_locator(0, gate->incarnation), gate->cgroup_id, &claim);
+	int admitted = se_route_claim_locked(
+		route, se_route_locator(0, gate->incarnation), gate->cgroup_id,
+		&claim);
 	bpf_spin_unlock(&route->lock);
 	if (admitted != SE_ROUTE_OWNED)
 		goto denied;
@@ -520,7 +537,7 @@ int BPF_PROG(opaque_lifecycle_task_alloc, struct task_struct *child,
 	/* The selected hook must derive and snapshot-check a real parent
 	 * projection here. This fixture supplies only its synthetic empty one. */
 	if (opaque_lifecycle_publish_seed_parent(&claim, &reservation,
-		&opaque_key) != SE_OL_OK)
+						 &opaque_key) != SE_OL_OK)
 		goto release_denied;
 	bpf_spin_lock(&route->lock);
 	int released = se_route_release_locked(route, &claim);
@@ -537,21 +554,19 @@ release_denied:
 	bpf_spin_lock(&route->lock);
 	(void)se_route_release_locked(route, &claim);
 	bpf_spin_unlock(&route->lock);
-denied:
-	{
-		struct opaque_lifecycle_counters *counters =
-			lifecycle_counters();
-		if (counters)
-			__sync_fetch_and_add(&counters->denied, 1);
-	}
+denied: {
+	struct opaque_lifecycle_counters *counters = lifecycle_counters();
+	if (counters)
+		__sync_fetch_and_add(&counters->denied, 1);
+}
 	return -1;
 }
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SEMANTIC_CANDIDATE
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_EVAL_CANDIDATE
-static __attribute__((noinline)) int opaque_lifecycle_policy_prepare(
-	struct se_invocation *work, __u64 scope)
+static __attribute__((noinline)) int
+opaque_lifecycle_policy_prepare(struct se_invocation *work, __u64 scope)
 {
 	__u32 zero = 0;
 	const struct se_snapshot *snapshot =
@@ -560,9 +575,10 @@ static __attribute__((noinline)) int opaque_lifecycle_policy_prepare(
 }
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CLASSIFY_CANDIDATE
-static __attribute__((noinline)) int opaque_lifecycle_catalogue_classify(
-	struct er_canonical_view *view, const struct se_pool_epoch_cache *cache,
-	const struct se_route_claim *claim)
+static __attribute__((noinline)) int
+opaque_lifecycle_catalogue_classify(struct er_canonical_view *view,
+				    const struct se_pool_epoch_cache *cache,
+				    const struct se_route_claim *claim)
 {
 	return se_pool_catalogue_classify(view, cache, claim);
 }
@@ -570,8 +586,8 @@ static __attribute__((noinline)) int opaque_lifecycle_catalogue_classify(
 /* One actual bprm callback owns the exact TASK lease and a stack WORK ticket.
  * The synthetic semantic write proves the typed pointer is usable only while
  * the ticket remains ACTIVE; it is not a policy decision. */
-static __attribute__((noinline)) int opaque_lifecycle_work_roundtrip(
-	struct se_ol_payload_handle *owner, __u64 scope)
+static __attribute__((noinline)) int
+opaque_lifecycle_work_roundtrip(struct se_ol_payload_handle *owner, __u64 scope)
 {
 	struct se_owk_ticket ticket = {};
 	__u32 slot = 0;
@@ -596,17 +612,18 @@ static __attribute__((noinline)) int opaque_lifecycle_work_roundtrip(
 		struct se_route_claim diagnostic_claim = {};
 		__u64 diagnostic_cgroup = bpf_get_current_cgroup_id();
 		bpf_spin_lock(&diagnostic_route->lock);
-		int admission = se_route_claim_locked(diagnostic_route,
+		int admission = se_route_claim_locked(
+			diagnostic_route,
 			se_route_locator(0, diagnostic_route->incarnation),
 			diagnostic_cgroup, &diagnostic_claim);
 		bpf_spin_unlock(&diagnostic_route->lock);
 		if (admission == SE_ROUTE_OWNED) {
-			int snapped = se_op_parent_snapshot_held(owner, &semantic,
-							 work, &diagnostic_claim);
+			int snapped = se_op_parent_snapshot_held(
+				owner, &semantic, work, &diagnostic_claim);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CANDIDATE
 			if (snapped == SE_OL_OK)
-				(void)se_op_parent_project_held(&semantic, work,
-							  &diagnostic_claim);
+				(void)se_op_parent_project_held(
+					&semantic, work, &diagnostic_claim);
 #else
 			(void)snapped;
 #endif
@@ -624,8 +641,7 @@ static __attribute__((noinline)) int opaque_lifecycle_work_roundtrip(
 	struct fm_global_token token = {};
 	if (se_owk_evaluator_token(&semantic, &token) != SE_OL_OK ||
 	    token.slot != ticket.work_slot || token.cookie != ticket.cookie ||
-	    se_owk_view_from_identity(token.slot, token.cookie) !=
-	    &work->view)
+	    se_owk_view_from_identity(token.slot, token.cookie) != &work->view)
 		goto fail;
 #ifdef ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE
 	/* Fact capture has ended. The raw argv copy buffer is dead and must not
@@ -658,13 +674,16 @@ static __attribute__((noinline)) int opaque_lifecycle_work_roundtrip(
 		goto fail;
 #endif
 	struct se_route_claim claim = {
-		.scope = scope, .generation = 1, .owned = 1,
+		.scope = scope,
+		.generation = 1,
+		.owned = 1,
 	};
 	if (se_owk_catalogue_fill(&semantic, &claim) != SE_OL_OK)
 		goto fail;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_CATALOGUE_CLASSIFY_CANDIDATE
 	if (opaque_lifecycle_catalogue_classify(&work->history.view,
-		&semantic.payload->catalogue, &claim) != 0 ||
+						&semantic.payload->catalogue,
+						&claim) != 0 ||
 	    work->history.view.accepted_mask != 1)
 		goto fail;
 #endif
@@ -713,8 +732,8 @@ fail:
  * separate program exists only to make the full TASK/WORK/child call chain
  * verifier-reachable with a default-zero isolated gate. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC
-static __attribute__((noinline)) int opaque_lifecycle_prepare_child_work(
-	__u64 cgroup_id)
+static __attribute__((noinline)) int
+opaque_lifecycle_prepare_child_work(__u64 cgroup_id)
 #else
 SEC("lsm/task_alloc")
 int BPF_PROG(opaque_lifecycle_child_work_handoff_probe,
@@ -738,8 +757,8 @@ int BPF_PROG(opaque_lifecycle_child_work_handoff_probe,
 		return -1;
 	struct se_route_claim claim = {};
 	bpf_spin_lock(&route->lock);
-	int admitted = se_route_claim_locked(route,
-		se_route_locator(0, route->incarnation),
+	int admitted = se_route_claim_locked(
+		route, se_route_locator(0, route->incarnation),
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC
 		cgroup_id,
 #else
@@ -765,10 +784,11 @@ int BPF_PROG(opaque_lifecycle_child_work_handoff_probe,
 		goto work_failure;
 	struct se_owk_semantic_handle semantic = {};
 	struct se_invocation *work = 0;
-	if (se_owk_semantic_open(&parent, &ticket, &semantic, &work) != SE_OL_OK)
+	if (se_owk_semantic_open(&parent, &ticket, &semantic, &work) !=
+	    SE_OL_OK)
 		goto work_failure;
 	if (se_op_parent_snapshot_held(&parent, &semantic, work, &claim) !=
-		SE_OL_OK ||
+		    SE_OL_OK ||
 	    se_op_parent_project_held(&semantic, work, &claim) != SE_OL_OK)
 		goto active_failure;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC
@@ -790,8 +810,9 @@ int BPF_PROG(opaque_lifecycle_child_work_handoff_probe,
 #else
 	struct task_struct *child_key = child;
 	int committed = se_op_construct_child_from_parent_work(
-		&semantic, &claim, &opaque_lifecycle_inherit_snapshot,
-		&child_key) == SE_OL_OK;
+				&semantic, &claim,
+				&opaque_lifecycle_inherit_snapshot,
+				&child_key) == SE_OL_OK;
 	/* Once published, denial cannot assume a later task_free; retain the
 	 * child even if WORK/claim cleanup faults. This is diagnostic only. */
 	(void)se_owk_semantic_done(&semantic, &work);
@@ -823,7 +844,8 @@ release_claim:
 	return -1;
 }
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC
-static __attribute__((noinline)) int opaque_lifecycle_child_work_missing_target(void)
+static __attribute__((noinline)) int
+opaque_lifecycle_child_work_missing_target(void)
 {
 	struct task_struct *parent_key = bpf_get_current_task_btf();
 	struct se_ol_payload_handle parent = {};
@@ -841,12 +863,13 @@ static __attribute__((noinline)) int opaque_lifecycle_force_route_loss(void)
 	if (!route)
 		return 0;
 	bpf_spin_lock(&route->lock);
-	int exact = route->phase == SE_ROUTE_ACTIVE &&
-		!route->early_claims && !route->reserved &&
-		route->scope == opaque_lifecycle_inherit_snapshot.scope &&
-		route->active_serial == opaque_lifecycle_inherit_snapshot.serial &&
-		route->payload_generation ==
-			opaque_lifecycle_inherit_snapshot.generation;
+	int exact = route->phase == SE_ROUTE_ACTIVE && !route->early_claims &&
+		    !route->reserved &&
+		    route->scope == opaque_lifecycle_inherit_snapshot.scope &&
+		    route->active_serial ==
+			    opaque_lifecycle_inherit_snapshot.serial &&
+		    route->payload_generation ==
+			    opaque_lifecycle_inherit_snapshot.generation;
 	if (exact) {
 		route->phase = SE_ROUTE_WITHDRAWN;
 		route->admission_serial++;
@@ -875,8 +898,8 @@ int BPF_PROG(opaque_lifecycle_child_work_handoff_probe,
 		bpf_map_lookup_elem(&opaque_lifecycle_child_work_counts, &zero);
 	if (counts)
 		__sync_fetch_and_add(&counts->source, 1);
-	const __u32 *fault = bpf_map_lookup_elem(
-		&opaque_lifecycle_child_work_fault, &zero);
+	const __u32 *fault =
+		bpf_map_lookup_elem(&opaque_lifecycle_child_work_fault, &zero);
 	if (fault && *fault == 1 && !opaque_lifecycle_force_route_loss())
 		return opaque_lifecycle_child_work_missing_target();
 	bpf_tail_call(ctx, &opaque_lifecycle_child_work_targets, 0);
@@ -887,20 +910,22 @@ int BPF_PROG(opaque_lifecycle_child_work_handoff_probe,
 }
 /* Scalar claim bytes can cross a BPF-to-BPF call; the route map pointer and
  * lock cannot. Reopen the fixed route element for each exact transition. */
-static __attribute__((noinline)) int opaque_lifecycle_claim_child_route(
-	__u64 cgroup_id, struct se_route_claim *claim)
+static __attribute__((noinline)) int
+opaque_lifecycle_claim_child_route(__u64 cgroup_id,
+				   struct se_route_claim *claim)
 {
 	struct se_route_anchor *route = route_lookup(0);
 	if (!route)
 		return 0;
 	bpf_spin_lock(&route->lock);
-	int admitted = se_route_claim_locked(route,
-		se_route_locator(0, route->incarnation), cgroup_id, claim);
+	int admitted = se_route_claim_locked(
+		route, se_route_locator(0, route->incarnation), cgroup_id,
+		claim);
 	bpf_spin_unlock(&route->lock);
 	return admitted == SE_ROUTE_OWNED;
 }
-static __attribute__((noinline)) int opaque_lifecycle_release_child_route(
-	struct se_route_claim *claim)
+static __attribute__((noinline)) int
+opaque_lifecycle_release_child_route(struct se_route_claim *claim)
 {
 	struct se_route_anchor *route = route_lookup(0);
 	if (!route)
@@ -923,22 +948,24 @@ static __attribute__((noinline)) int opaque_lifecycle_claimed_child_from_work(
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_TAIL_EARLY_SNAPSHOT_DIAGNOSTIC
 	/* Isolate the matcher before charge; this branch always denies. */
 	struct se_invocation *work = &semantic->payload->semantic;
-	int matched = se_inherit_snapshot_matches(&claim,
-		&opaque_lifecycle_inherit_snapshot, &work->inherited);
+	int matched = se_inherit_snapshot_matches(
+		&claim, &opaque_lifecycle_inherit_snapshot, &work->inherited);
 	struct opaque_lifecycle_counters *counts = lifecycle_counters();
 	if (matched && counts)
 		__sync_fetch_and_add(&counts->births, 1);
 #else
 	struct task_struct *child_key = child;
-	committed = se_op_construct_child_from_parent_work(semantic, &claim,
-		&opaque_lifecycle_inherit_snapshot, &child_key) == SE_OL_OK;
+	committed = se_op_construct_child_from_parent_work(
+			    semantic, &claim,
+			    &opaque_lifecycle_inherit_snapshot,
+			    &child_key) == SE_OL_OK;
 #endif
 	return opaque_lifecycle_release_child_route(&claim) && committed;
 }
 /* Counter/gate state stays in the tiny LSM wrapper, not in the live TASK
  * and WORK handle frame that later invokes charged child publication. */
-static __attribute__((noinline)) int opaque_lifecycle_finish_child_work(
-	struct task_struct *child, __u64 cgroup_id)
+static __attribute__((noinline)) int
+opaque_lifecycle_finish_child_work(struct task_struct *child, __u64 cgroup_id)
 {
 	struct task_struct *parent_key = bpf_get_current_task_btf();
 	struct se_ol_payload_handle parent = {};
@@ -981,8 +1008,8 @@ int BPF_PROG(opaque_lifecycle_child_work_target_probe,
 		bpf_map_lookup_elem(&opaque_lifecycle_child_work_counts, &zero);
 	if (counts)
 		__sync_fetch_and_add(&counts->target, 1);
-	int committed = opaque_lifecycle_finish_child_work(child,
-							gate->cgroup_id);
+	int committed =
+		opaque_lifecycle_finish_child_work(child, gate->cgroup_id);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_CHILD_TAIL_EARLY_SNAPSHOT_DIAGNOSTIC
 	return -1;
 #else
@@ -1031,12 +1058,14 @@ int BPF_PROG(opaque_lifecycle_exec, struct linux_binprm *bprm, int prior)
 		goto close;
 	}
 	struct se_exec_source source = {
-		.scope = gate->scope, .generation = 1,
-		.bprm = (__u64)bprm, .execution_class = 1,
-		.count = 1, .policies = {{ .uid = 1, .epoch = 1 }},
+		.scope = gate->scope,
+		.generation = 1,
+		.bprm = (__u64)bprm,
+		.execution_class = 1,
+		.count = 1,
+		.policies = { { .uid = 1, .epoch = 1 } },
 	};
-	int result = se_exec_reserve_locked(task,
-					   handle.lease.cookie, &source);
+	int result = se_exec_reserve_locked(task, handle.lease.cookie, &source);
 	if (result == 0)
 		reserved = 1;
 	else if (result < 0)
@@ -1117,8 +1146,8 @@ int BPF_PROG(opaque_lifecycle_exec_stage, struct linux_binprm *bprm, int prior)
 	if (ok) {
 		struct se_owk_semantic_handle semantic = {};
 		struct se_invocation *work = 0;
-		ok = se_owk_semantic_open(&owner, &ticket, &semantic,
-			&work) == SE_OL_OK;
+		ok = se_owk_semantic_open(&owner, &ticket, &semantic, &work) ==
+		     SE_OL_OK;
 #ifdef ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE
 		if (ok) {
 			struct fm_global_token *token =
@@ -1128,46 +1157,48 @@ int BPF_PROG(opaque_lifecycle_exec_stage, struct linux_binprm *bprm, int prior)
 			 * before loading the full matcher/evaluator successor graph. */
 #ifdef ENFORCE_EXEC_STAGE_BEGIN_ONLY_DIAGNOSTIC
 			ok = se_owk_evaluator_token(&semantic, token) ==
-				SE_OL_OK &&
-				work->observation.stage_cursor.state ==
-					FE_STAGE_ACTIVE;
+				     SE_OL_OK &&
+			     work->observation.stage_cursor.state ==
+				     FE_STAGE_ACTIVE;
 #elif defined(ENFORCE_EXEC_STAGE_ADVANCE_ONLY_DIAGNOSTIC)
 			ok = se_owk_evaluator_token(&semantic, token) ==
-				SE_OL_OK &&
-				work->observation.stage_cursor.state ==
-					FE_STAGE_ACTIVE &&
-				fe_stage_advance(token,
-					&work->observation.facts,
-					&work->observation.evaluator,
-					&work->observation.stage_cursor) == 0 &&
-				work->observation.stage_cursor.state ==
-					FE_STAGE_READY;
+				     SE_OL_OK &&
+			     work->observation.stage_cursor.state ==
+				     FE_STAGE_ACTIVE &&
+			     fe_stage_advance(
+				     token, &work->observation.facts,
+				     &work->observation.evaluator,
+				     &work->observation.stage_cursor) == 0 &&
+			     work->observation.stage_cursor.state ==
+				     FE_STAGE_READY;
 #else
 			ok = se_owk_evaluator_token(&semantic, token) ==
-				SE_OL_OK && token->slot == ticket.work_slot &&
-				token->cookie == ticket.cookie &&
-				work->observation.stage_cursor.state ==
-					FE_STAGE_ACTIVE &&
-				fe_stage_advance(token,
-					&work->observation.facts,
-					&work->observation.evaluator,
-					&work->observation.stage_cursor) == 0 &&
-				work->observation.stage_cursor.state ==
-					FE_STAGE_READY &&
-				fe_stage_finish(token,
-					&work->observation.evaluator,
-					&work->observation.stage_cursor) == 0 &&
-				work->observation.stage_cursor.state ==
-					FE_STAGE_FINISHED &&
-				work->observation.evaluator.decision.mode == 2 &&
-				!work->observation.evaluator.decision.deny &&
-				!work->observation.evaluator.decision.error;
+				     SE_OL_OK &&
+			     token->slot == ticket.work_slot &&
+			     token->cookie == ticket.cookie &&
+			     work->observation.stage_cursor.state ==
+				     FE_STAGE_ACTIVE &&
+			     fe_stage_advance(
+				     token, &work->observation.facts,
+				     &work->observation.evaluator,
+				     &work->observation.stage_cursor) == 0 &&
+			     work->observation.stage_cursor.state ==
+				     FE_STAGE_READY &&
+			     fe_stage_finish(token,
+					     &work->observation.evaluator,
+					     &work->observation.stage_cursor) ==
+				     0 &&
+			     work->observation.stage_cursor.state ==
+				     FE_STAGE_FINISHED &&
+			     work->observation.evaluator.decision.mode == 2 &&
+			     !work->observation.evaluator.decision.deny &&
+			     !work->observation.evaluator.decision.error;
 #endif
 		}
 #endif
 		if (ok)
 			ok = work->view.scope_cookie == gate->scope &&
-				se_owk_semantic_done(&semantic, &work) == SE_OL_OK;
+			     se_owk_semantic_done(&semantic, &work) == SE_OL_OK;
 		if (!ok && ticket.held)
 			(void)se_owk_done(&owner, &ticket);
 	}
@@ -1213,7 +1244,8 @@ int BPF_PROG(opaque_lifecycle_suspended_current_probe,
 /* Both the tail-call destination and its missing-target fallback use this
  * same exact current-TASK stage-2 closer. Its return is always a deny; no
  * evaluator result is trusted as a verdict by this diagnostic. */
-static __attribute__((noinline)) int opaque_lifecycle_close_suspended_stage(__u32 stage)
+static __attribute__((noinline)) int
+opaque_lifecycle_close_suspended_stage(__u32 stage)
 {
 	struct task_struct *physical = bpf_get_current_task_btf();
 	struct se_ol_payload_handle owner = {};
@@ -1272,24 +1304,25 @@ int BPF_PROG(opaque_lifecycle_suspended_eval_reader_diagnostic,
 	struct fm_global_token *token =
 		&work->observation.stage_workspace.token;
 	{
-		struct opaque_lifecycle_counters *counters = lifecycle_counters();
+		struct opaque_lifecycle_counters *counters =
+			lifecycle_counters();
 		if (counters)
 			__sync_fetch_and_add(&counters->diag_eval, 1);
 	}
 	if (token->slot == work->slot && token->cookie == work->cookie &&
 	    !token->reserved &&
 	    se_owk_suspended_view_from_token(token->slot, token->cookie) ==
-		&work->view)
+		    &work->view)
 		(void)fe_stage_advance(token, &work->observation.facts,
-			&work->observation.evaluator,
-			&work->observation.stage_cursor);
+				       &work->observation.evaluator,
+				       &work->observation.stage_cursor);
 #ifdef ENFORCE_EXEC_STAGE_COMMIT_FAILURE_DIAGNOSTIC
 #define SE_OWK_DIAG_COMMIT_SCOPE(work) ((work)->scope + 1)
 #else
 #define SE_OWK_DIAG_COMMIT_SCOPE(work) ((work)->scope)
 #endif
-	if (se_owk_commit_suspended_stage(payload,
-		SE_OWK_DIAG_COMMIT_SCOPE(work), 1) != SE_OL_OK) {
+	if (se_owk_commit_suspended_stage(
+		    payload, SE_OWK_DIAG_COMMIT_SCOPE(work), 1) != SE_OL_OK) {
 		/* A failed commit cannot abandon a reserved WORK. Release only
 		 * through the same physical TASK/account authentication, then
 		 * resume stage 1 and close. If commit already advanced stage 2,
@@ -1309,7 +1342,7 @@ int BPF_PROG(opaque_lifecycle_suspended_eval_reader_diagnostic,
 #endif
 
 #if defined(ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE) && \
-    defined(ENFORCE_EXEC_SUSPENDED_EVAL_STACK_PROBE)
+	defined(ENFORCE_EXEC_SUSPENDED_EVAL_STACK_PROBE)
 /* Never attach or select this diagnostic. It deliberately lacks WORK/TASK
  * authority and always denies; only its compiled evaluator stack is useful.
  * A real suspended reader must be added and proved before this can run. */
@@ -1328,8 +1361,8 @@ int BPF_PROG(opaque_lifecycle_suspended_eval_stack_probe,
 	struct fm_global_token *token =
 		&work->observation.stage_workspace.token;
 	if (fe_stage_advance(token, &work->observation.facts,
-		&work->observation.evaluator,
-		&work->observation.stage_cursor))
+			     &work->observation.evaluator,
+			     &work->observation.stage_cursor))
 		return -1;
 	return -1;
 }
@@ -1359,8 +1392,9 @@ int BPF_PROG(opaque_lifecycle_task_free, struct task_struct *physical)
 		struct se_task_state *task = &payload->semantic;
 		if (task->exec.owned) {
 			exec_clear = task->exec.bprm && task->exec.sequence &&
-				!se_exec_abort_locked(task, lease.cookie,
-					task->exec.bprm, task->exec.sequence);
+				     !se_exec_abort_locked(task, lease.cookie,
+							   task->exec.bprm,
+							   task->exec.sequence);
 			exec_aborted = exec_clear;
 		}
 		if (!exec_clear)
@@ -1368,7 +1402,8 @@ int BPF_PROG(opaque_lifecycle_task_free, struct task_struct *physical)
 #endif
 		if (meta->phase == SE_OL_DEAD && !meta->native_refs &&
 		    !meta->cleanup_error && exec_clear)
-			meta->cleanup_done |= SE_OL_EXEC_DONE | SE_OL_NATIVE_DONE;
+			meta->cleanup_done |= SE_OL_EXEC_DONE |
+					      SE_OL_NATIVE_DONE;
 		(void)se_of_semantic_end(&semantic, &payload);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_DEATH_FIXTURE
 		int work_death = se_owk_finish_suspended_death(&lease);
@@ -1376,7 +1411,8 @@ int BPF_PROG(opaque_lifecycle_task_free, struct task_struct *physical)
 			struct opaque_lifecycle_counters *death_counters =
 				lifecycle_counters();
 			if (death_counters)
-				__sync_fetch_and_add(&death_counters->work_death_closed, 1);
+				__sync_fetch_and_add(
+					&death_counters->work_death_closed, 1);
 		}
 		if (work_death == SE_OL_CORRUPT) {
 			bpf_spin_lock(&meta->lock);
@@ -1419,11 +1455,11 @@ int opaque_lifecycle_reap(struct __sk_buff *skb)
 	__u32 phase, directory;
 	bpf_spin_lock(&meta->lock);
 	int exact = meta->cookie == cookie &&
-		(meta->phase == SE_OL_DEAD ||
-		 meta->phase == SE_OL_ABORTED ||
-		 meta->phase == SE_OL_CLEANING ||
-		 meta->phase == SE_OL_ARCHIVE_ZEROED ||
-		 meta->phase == SE_OL_REFUND_PENDING);
+		    (meta->phase == SE_OL_DEAD ||
+		     meta->phase == SE_OL_ABORTED ||
+		     meta->phase == SE_OL_CLEANING ||
+		     meta->phase == SE_OL_ARCHIVE_ZEROED ||
+		     meta->phase == SE_OL_REFUND_PENDING);
 	phase = meta->phase;
 	directory = meta->directory_state;
 	bpf_spin_unlock(&meta->lock);
@@ -1442,8 +1478,8 @@ int opaque_lifecycle_reap(struct __sk_buff *skb)
 		return 0;
 	const __u64 *archive = archive_lookup(request->slot);
 	int result = SE_OL_CORRUPT;
-	if (phase == SE_OL_ARCHIVE_ZEROED ||
-	    phase == SE_OL_REFUND_PENDING || phase == SE_OL_FREE) {
+	if (phase == SE_OL_ARCHIVE_ZEROED || phase == SE_OL_REFUND_PENDING ||
+	    phase == SE_OL_FREE) {
 		if (phase == SE_OL_ARCHIVE_ZEROED)
 			(void)se_op_zero_payload(request->slot, cookie);
 		result = se_oc_refund_step(request->slot, cookie);

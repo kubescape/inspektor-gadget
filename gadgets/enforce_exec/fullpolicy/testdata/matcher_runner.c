@@ -14,8 +14,8 @@ static const struct fm_blob *lookup(void *, unsigned int);
 #if defined(FM_CANDIDATE_GLOBAL_TEST) || defined(FM_WORK_RUN_STATE_DIAGNOSTIC)
 static struct fixture *current_fixture;
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-static const struct fm_blob *lookup_scalar(unsigned int,
-		unsigned long long, unsigned int);
+static const struct fm_blob *lookup_scalar(unsigned int, unsigned long long,
+					   unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	lookup_scalar((slot), (cookie), (key))
 #else
@@ -30,8 +30,8 @@ static const struct fm_blob *lookup(void *context, unsigned int key)
 	return key < fixture->count ? &fixture->entries[key] : NULL;
 }
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-static const struct fm_blob *lookup_scalar(unsigned int slot,
-		unsigned long long cookie, unsigned int key)
+static const struct fm_blob *
+lookup_scalar(unsigned int slot, unsigned long long cookie, unsigned int key)
 {
 	return slot == 0 && cookie == 101 ? lookup(current_fixture, key) : NULL;
 }
@@ -81,30 +81,28 @@ int main(int argc, char **argv)
 	memset(scratch, 0xa5, sizeof(*scratch));
 	int result =
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-		fm_match_key(&run, pattern_key, input,
-			hex_length / 2, scratch);
+		fm_match_key(&run, pattern_key, input, hex_length / 2, scratch);
 #elif defined(FM_CANDIDATE_GLOBAL_TEST)
-		fm_match_key(&fixture, pattern_key, input,
-			hex_length / 2, scratch);
+		fm_match_key(&fixture, pattern_key, input, hex_length / 2,
+			     scratch);
 #else
 		fm_match(
-		&fixture,
-		(const struct fm_pattern *)&fixture.entries[pattern_key], input,
-		hex_length / 2, scratch);
+			&fixture,
+			(const struct fm_pattern *)&fixture.entries[pattern_key],
+			input, hex_length / 2, scratch);
 #endif
 	/* Reusing scratch after an error or match must produce the same answer. */
 	int again =
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-		fm_match_key(&run, pattern_key, input,
-			hex_length / 2, scratch);
+		fm_match_key(&run, pattern_key, input, hex_length / 2, scratch);
 #elif defined(FM_CANDIDATE_GLOBAL_TEST)
-		fm_match_key(&fixture, pattern_key, input,
-			hex_length / 2, scratch);
+		fm_match_key(&fixture, pattern_key, input, hex_length / 2,
+			     scratch);
 #else
 		fm_match(
-		&fixture,
-		(const struct fm_pattern *)&fixture.entries[pattern_key], input,
-		hex_length / 2, scratch);
+			&fixture,
+			(const struct fm_pattern *)&fixture.entries[pattern_key],
+			input, hex_length / 2, scratch);
 #endif
 	if (result != again)
 		return 3;

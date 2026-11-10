@@ -19,7 +19,8 @@ int main(void)
 	int dir_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	assert(dir_fd >= 0);
 	errno = 0;
-	assert(se_arm_s_open_trigger_fd(dir_fd, 1) == -1 && errno == EOPNOTSUPP);
+	assert(se_arm_s_open_trigger_fd(dir_fd, 1) == -1 &&
+	       errno == EOPNOTSUPP);
 	assert(!close(dir_fd));
 	assert(!rmdir(dir));
 	errno = 0;
@@ -35,8 +36,9 @@ int main(void)
 		    (unsigned long)fs.f_type == CGROUP2_SUPER_MAGIC &&
 		    !fstat(cg_dir, &st) && (uint64_t)st.st_ino < UINT64_MAX) {
 			errno = 0;
-			assert(se_arm_s_open_trigger_fd(cg_dir,
-				(uint64_t)st.st_ino + 1) == -1 && errno == EINVAL);
+			assert(se_arm_s_open_trigger_fd(
+				       cg_dir, (uint64_t)st.st_ino + 1) == -1 &&
+			       errno == EINVAL);
 		}
 		assert(!close(cg_dir));
 	}

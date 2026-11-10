@@ -2,9 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_REAPER_VISIT_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_REAPER_VISIT_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) || \
-    !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY) || \
-    !defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE)
+#if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) ||            \
+	!defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY) || \
+	!defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE)
 #error "reaper visit requires the typed pool candidate"
 #endif
 
@@ -46,7 +46,7 @@ static __attribute__((noinline)) int se_pool_reap_work_visit_slot(__u32 slot)
 		return SE_PW_FAULT;
 	bpf_spin_lock(&work->lock);
 	int stable = work->owner_task_slot == owner_slot &&
-		work->cookie == cookie;
+		     work->cookie == cookie;
 	bpf_spin_unlock(&work->lock);
 	if (!stable)
 		return SE_PW_CONTENDED;
@@ -77,7 +77,8 @@ static __attribute__((noinline)) int se_pool_reap_task_visit_slot(__u32 slot)
 	__u32 charge_state = charge->state;
 	bpf_spin_unlock(&route->lock);
 	if (charge_state == SE_POOL_CH_FREE)
-		return se_pool_task_refund_tail(route, bits, charge, meta, slot);
+		return se_pool_task_refund_tail(route, bits, charge, meta,
+						slot);
 	if (charge_state == SE_POOL_CH_BUILDING)
 		return SE_POOL_PENDING_CLEANUP;
 	if (charge_state != SE_POOL_CH_OWNED &&
@@ -91,8 +92,8 @@ static __attribute__((noinline)) int se_pool_reap_task_visit_slot(__u32 slot)
 	};
 	__u32 phase = meta->phase, flags = meta->flags;
 	int exact = se_pool_meta_valid(meta) && meta->slot == slot &&
-		meta->account_slot == account &&
-		se_pool_token_valid(&token);
+		    meta->account_slot == account &&
+		    se_pool_token_valid(&token);
 	bpf_spin_unlock(&meta->lock);
 	if (!exact)
 		return SE_POOL_CORRUPT;

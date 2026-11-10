@@ -2,9 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_READER_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_READER_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE) || \
-    !defined(SE_OC_ROUTE_LOOKUP)
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) ||           \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE) || \
+	!defined(SE_OC_ROUTE_LOOKUP)
 #error "opaque exec reader requires the exact TASK and original route candidates"
 #endif
 
@@ -40,7 +40,7 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_begin(
 	if (result != SE_OL_OK)
 		return result;
 	int reserved = se_exec_begin_snapshot_locked(task, owner->lease.cookie,
-						bprm, snapshot);
+						     bprm, snapshot);
 	__u64 invocation = reserved == 0 ? task->exec.sequence : 0;
 	se_op_task_semantic_end(owner, &task);
 	/* A repeated begin belongs to the original owner path, not a second
@@ -52,9 +52,10 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_begin(
 	if (!route)
 		goto abort;
 	bpf_spin_lock(&route->lock);
-	result = se_exec_reader_attach_locked(route, binding,
-		&((struct se_pool_task_wire *)owner->payload)->semantic,
-		claim, owner->lease.cookie, invocation);
+	result = se_exec_reader_attach_locked(
+		route, binding,
+		&((struct se_pool_task_wire *)owner->payload)->semantic, claim,
+		owner->lease.cookie, invocation);
 	bpf_spin_unlock(&route->lock);
 	if (result)
 		goto abort;
@@ -79,13 +80,13 @@ abort:
  * A copied current-cgroup tuple, invocation number, or map-stored token is
  * never sufficient. Absence of an owned transaction is STALE (new begin may
  * follow); a matching transaction without its original reader is CORRUPT. */
-static __attribute__((always_inline)) inline int se_op_exec_reader_recover(
-	struct se_ol_payload_handle *owner, struct se_binding_snapshots *binding,
-	__u64 bprm, __u64 *invocation_out)
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_recover(struct se_ol_payload_handle *owner,
+			  struct se_binding_snapshots *binding, __u64 bprm,
+			  __u64 *invocation_out)
 {
-	if (!owner || !binding || !bprm || !invocation_out ||
-	    *invocation_out || owner->lease.held != 1 ||
-	    !owner->lease.meta || !owner->payload)
+	if (!owner || !binding || !bprm || !invocation_out || *invocation_out ||
+	    owner->lease.held != 1 || !owner->lease.meta || !owner->payload)
 		return SE_OL_CORRUPT;
 	struct se_task_state *task = 0;
 	int result = se_op_task_semantic_begin(owner, &task);
@@ -100,16 +101,17 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_recover(
 	se_op_task_semantic_end(owner, &task);
 	if (!matching)
 		return SE_OL_STALE;
-	if (slot >= SE_OC_ACCOUNTS || binding->scope != scope ||
-	    !generation || !invocation)
+	if (slot >= SE_OC_ACCOUNTS || binding->scope != scope || !generation ||
+	    !invocation)
 		return SE_OL_CORRUPT;
 	struct se_route_anchor *route = SE_OC_ROUTE_LOOKUP(slot);
 	if (!route)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&route->lock);
-	int valid = se_exec_reader_authority_locked(route, binding,
-		&((struct se_pool_task_wire *)owner->payload)->semantic,
-		slot, scope, generation, owner->lease.cookie, invocation,
+	int valid = se_exec_reader_authority_locked(
+		route, binding,
+		&((struct se_pool_task_wire *)owner->payload)->semantic, slot,
+		scope, generation, owner->lease.cookie, invocation,
 		execution_class);
 	bpf_spin_unlock(&route->lock);
 	if (!valid)
@@ -123,9 +125,10 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_recover(
  * carrying known roles across an unobserved successful exec. Audit remains
  * nonblocking; a strict source must already have denied the exec. This is
  * not the normal success path or a replacement for WORK completion. */
-static __attribute__((always_inline)) inline int se_op_exec_reader_abort_quarantined(
-	struct se_ol_payload_handle *owner, struct se_binding_snapshots *binding,
-	__u64 bprm, __u64 invocation)
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_abort_quarantined(struct se_ol_payload_handle *owner,
+				    struct se_binding_snapshots *binding,
+				    __u64 bprm, __u64 invocation)
 {
 	/* Authentication of the route may fail before recovery can return its
 	 * invocation. Invalidate the exact live TASK history first, so an Audit
@@ -139,9 +142,9 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_abort_quarant
 	if (status != SE_OL_OK)
 		return status;
 	int exact = task->physical_cookie == owner->lease.cookie &&
-		task->exec.owned && task->exec.bprm == bprm &&
-		task->exec.sequence == invocation && task->reader.owned &&
-		task->reader_invocation == invocation;
+		    task->exec.owned && task->exec.bprm == bprm &&
+		    task->exec.sequence == invocation && task->reader.owned &&
+		    task->reader_invocation == invocation;
 	if (exact) {
 		se_exec_owned_fault_locked(task, bprm);
 		if (!(task->flags & SE_TASK_QUARANTINED)) {
@@ -154,8 +157,8 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_abort_quarant
 	if (!exact)
 		return SE_OL_CORRUPT;
 	__u64 recovered = 0;
-	if (se_op_exec_reader_recover(owner, binding, bprm,
-						&recovered) != SE_OL_OK ||
+	if (se_op_exec_reader_recover(owner, binding, bprm, &recovered) !=
+		    SE_OL_OK ||
 	    recovered != invocation)
 		return SE_OL_CORRUPT;
 	task = 0;
@@ -165,7 +168,7 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_abort_quarant
 	__u32 slot = task->scope_slot;
 	se_exec_owned_fault_locked(task, bprm);
 	int aborted = se_exec_abort_locked(task, owner->lease.cookie, bprm,
-						invocation);
+					   invocation);
 	if (!aborted) {
 		task->flags |= SE_TASK_QUARANTINED;
 	}
@@ -176,7 +179,8 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_abort_quarant
 	if (!route)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&route->lock);
-	int released = se_exec_reader_release_locked(binding,
+	int released = se_exec_reader_release_locked(
+		binding,
 		&((struct se_pool_task_wire *)owner->payload)->semantic,
 		owner->lease.cookie, invocation);
 	bpf_spin_unlock(&route->lock);
@@ -187,9 +191,10 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_abort_quarant
  * its WORK completion cannot run. Successful exec conservatively turns only
  * causal accepted rows UNKNOWN; failed exec changes no role. This is not a
  * normal-path evaluator or a substitute for its exact WORK completion. */
-static __attribute__((always_inline)) inline int se_op_exec_reader_finish_bounded(
-	struct se_ol_payload_handle *owner, struct se_binding_snapshots *binding,
-	__u64 bprm, __u64 invocation, int success)
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_finish_bounded(struct se_ol_payload_handle *owner,
+				 struct se_binding_snapshots *binding,
+				 __u64 bprm, __u64 invocation, int success)
 {
 	if (!owner || !binding || !bprm || !invocation ||
 	    owner->lease.held != 1 || !owner->lease.meta || !owner->payload)
@@ -213,10 +218,11 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_finish_bounde
 		return SE_OL_CORRUPT;
 	}
 	bpf_spin_lock(&route->lock);
-	int authority = se_exec_reader_authority_locked(route, binding,
-		&((struct se_pool_task_wire *)owner->payload)->semantic,
-		slot, scope, generation, owner->lease.cookie,
-		invocation, execution_class);
+	int authority = se_exec_reader_authority_locked(
+		route, binding,
+		&((struct se_pool_task_wire *)owner->payload)->semantic, slot,
+		scope, generation, owner->lease.cookie, invocation,
+		execution_class);
 	bpf_spin_unlock(&route->lock);
 	if (!authority) {
 		(void)se_op_task_owned_fault(owner, bprm);
@@ -226,14 +232,15 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_finish_bounde
 	if (result != SE_OL_OK)
 		return result;
 	int finished = se_exec_finish_bounded_locked(task, owner->lease.cookie,
-						bprm, invocation, success);
+						     bprm, invocation, success);
 	se_op_task_semantic_end(owner, &task);
 	if (finished < 0) {
 		(void)se_op_task_owned_fault(owner, bprm);
 		return SE_OL_CORRUPT;
 	}
 	bpf_spin_lock(&route->lock);
-	int released = se_exec_reader_release_locked(binding,
+	int released = se_exec_reader_release_locked(
+		binding,
 		&((struct se_pool_task_wire *)owner->payload)->semantic,
 		owner->lease.cookie, invocation);
 	bpf_spin_unlock(&route->lock);
@@ -251,9 +258,11 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_finish_bounde
  * and keep a new begin out until that receipt has been removed. A successful
  * return says the original transaction and reader are both settled; only then
  * may the caller delete the terminal receipt. */
-static __attribute__((always_inline)) inline int se_op_exec_reader_settle_success(
-	struct se_ol_payload_handle *owner, struct se_binding_snapshots *binding,
-	__u64 bprm, __u64 invocation, __u64 scope, __u64 generation)
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_settle_success(struct se_ol_payload_handle *owner,
+				 struct se_binding_snapshots *binding,
+				 __u64 bprm, __u64 invocation, __u64 scope,
+				 __u64 generation)
 {
 	if (!owner || !binding || !bprm || !invocation || !scope ||
 	    !generation || owner->lease.held != 1 || !owner->lease.cookie ||
@@ -268,33 +277,40 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_settle_succes
 	int owned = task->exec.owned;
 	int reader = task->reader.owned;
 	int exact = task->physical_cookie == owner->lease.cookie &&
-		task->scope_cookie == scope && task->exec.bprm == bprm &&
-		task->exec.sequence == invocation &&
-		task->exec.generation == generation &&
-		binding->scope == scope && binding->generation == generation &&
-		slot < SE_OC_ACCOUNTS &&
-		(reader ? task->reader_invocation == invocation :
-			!task->reader_invocation) &&
-		(!owned || reader);
+		    task->scope_cookie == scope && task->exec.bprm == bprm &&
+		    task->exec.sequence == invocation &&
+		    task->exec.generation == generation &&
+		    binding->scope == scope &&
+		    binding->generation == generation &&
+		    slot < SE_OC_ACCOUNTS &&
+		    (reader ? task->reader_invocation == invocation :
+			      !task->reader_invocation) &&
+		    (!owned || reader);
 	se_op_task_semantic_end(owner, &task);
 	if (!exact)
 		return SE_OL_CORRUPT;
 	if (owned)
 		return se_op_exec_reader_finish_bounded(owner, binding, bprm,
-			invocation, 1);
+							invocation, 1);
 	if (!reader)
 		return SE_OL_OK;
 	struct se_route_anchor *route = SE_OC_ROUTE_LOOKUP(slot);
 	if (!route)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&route->lock);
-	int authority = se_exec_reader_authority_locked(route, binding,
-		&((struct se_pool_task_wire *)owner->payload)->semantic,
-		slot, scope, generation, owner->lease.cookie, invocation,
+	int authority = se_exec_reader_authority_locked(
+		route, binding,
+		&((struct se_pool_task_wire *)owner->payload)->semantic, slot,
+		scope, generation, owner->lease.cookie, invocation,
 		execution_class);
-	int released = authority ? se_exec_reader_release_locked(binding,
-		&((struct se_pool_task_wire *)owner->payload)->semantic,
-		owner->lease.cookie, invocation) : -1;
+	int released =
+		authority ?
+			se_exec_reader_release_locked(
+				binding,
+				&((struct se_pool_task_wire *)owner->payload)
+					 ->semantic,
+				owner->lease.cookie, invocation) :
+			-1;
 	bpf_spin_unlock(&route->lock);
 	return released ? SE_OL_CORRUPT : SE_OL_OK;
 }
@@ -328,11 +344,11 @@ enum se_exec_reader_class {
 	SE_EXEC_READER_CONTINUE,
 	SE_EXEC_READER_TERMINAL,
 };
-static __attribute__((always_inline)) inline int se_op_exec_reader_classify(
-	struct se_ol_payload_handle *owner,
-	struct se_binding_snapshots *binding,
-	const struct se_exec_terminal_receipt *receipt,
-	__u64 physical, __u64 incoming_bprm)
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
+			   struct se_binding_snapshots *binding,
+			   const struct se_exec_terminal_receipt *receipt,
+			   __u64 physical, __u64 incoming_bprm)
 {
 	if (!owner || !binding || !physical)
 		return SE_EXEC_READER_RETAIN;
@@ -346,18 +362,18 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_classify(
 	__u32 execution_class = task->exec.execution_class;
 	int owned = task->exec.owned;
 	int exact = slot < SE_OC_ACCOUNTS && scope &&
-		task->physical_cookie == owner->lease.cookie &&
-		!owner->lease.meta->current_work_owned;
+		    task->physical_cookie == owner->lease.cookie &&
+		    !owner->lease.meta->current_work_owned;
 	int classification = SE_EXEC_READER_RETAIN;
 	if (exact && !receipt && incoming_bprm && !owned)
 		classification = SE_EXEC_READER_NEW;
 	if (exact && receipt && receipt->physical == physical &&
 	    receipt->cookie == owner->lease.cookie &&
-	    receipt->locator == owner->lease.locator &&
-	    receipt->bprm && receipt->bprm == task->exec.bprm &&
-	    receipt->invocation && receipt->invocation == invocation &&
-	    receipt->scope == scope && receipt->generation &&
-	    receipt->generation == generation && !receipt->reserved) {
+	    receipt->locator == owner->lease.locator && receipt->bprm &&
+	    receipt->bprm == task->exec.bprm && receipt->invocation &&
+	    receipt->invocation == invocation && receipt->scope == scope &&
+	    receipt->generation && receipt->generation == generation &&
+	    !receipt->reserved) {
 		if (receipt->phase == SE_EXEC_TERMINAL_REGISTERED && owned &&
 		    receipt->bprm == incoming_bprm)
 			classification = SE_EXEC_READER_CONTINUE;
@@ -374,49 +390,53 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_classify(
 	struct se_pool_task_wire *payload = owner->payload;
 	bpf_spin_lock(&route->lock);
 	int reader = payload->semantic.reader.owned;
-	int valid = route->incarnation == owner->lease.meta->account_incarnation;
+	int valid = route->incarnation ==
+		    owner->lease.meta->account_incarnation;
 	if (classification == SE_EXEC_READER_NEW || !reader) {
 		valid = valid && !owned && !reader &&
 			!payload->semantic.reader_invocation &&
 			classification != SE_EXEC_READER_CONTINUE;
 	} else {
-		valid = valid && se_exec_reader_authority_locked(route, binding,
-			&payload->semantic, slot, scope, generation,
-			owner->lease.cookie, invocation, execution_class);
+		valid = valid &&
+			se_exec_reader_authority_locked(
+				route, binding, &payload->semantic, slot, scope,
+				generation, owner->lease.cookie, invocation,
+				execution_class);
 	}
 	bpf_spin_unlock(&route->lock);
 	return valid ? classification : SE_EXEC_READER_RETAIN;
 }
 
-static __attribute__((always_inline)) inline int se_exec_terminal_dead_retirable(
-	const struct se_ol_meta *meta, const struct se_task_state *task,
-	const struct se_exec_terminal_receipt *receipt, __u64 physical,
-	__u64 cookie, __u64 locator, __u32 account_slot)
+static __attribute__((always_inline)) inline int
+se_exec_terminal_dead_retirable(const struct se_ol_meta *meta,
+				const struct se_task_state *task,
+				const struct se_exec_terminal_receipt *receipt,
+				__u64 physical, __u64 cookie, __u64 locator,
+				__u32 account_slot)
 {
 	return meta && task && receipt && physical && cookie && locator &&
-		account_slot < SE_OC_ACCOUNTS &&
-		receipt->physical == physical && receipt->cookie == cookie &&
-		receipt->locator == locator && receipt->bprm &&
-		receipt->invocation && receipt->scope && receipt->generation &&
-		!receipt->reserved &&
-		(receipt->phase == SE_EXEC_TERMINAL_REGISTERED ||
-		 receipt->phase == SE_EXEC_TERMINAL_SUCCESS ||
-		 receipt->phase == SE_EXEC_TERMINAL_FAILURE) &&
-		meta->phase == SE_OL_DEAD && meta->locator == locator &&
-		meta->cookie == cookie && !meta->active_leases &&
-		meta->directory_state == SE_OL_PUBLISHED &&
-		meta->archive_ready == 1 &&
-		meta->account_scope == receipt->scope &&
-		meta->account_slot == account_slot && !meta->cleanup_error &&
-		(meta->cleanup_done & SE_OL_EXEC_DONE) &&
-		(task->flags & SE_TASK_LIVE) &&
-		task->physical_cookie == cookie &&
-		task->scope_cookie == receipt->scope &&
-		task->scope_slot == account_slot &&
-		task->exec.bprm == receipt->bprm &&
-		task->exec.sequence == receipt->invocation &&
-		task->exec.generation == receipt->generation &&
-		!task->exec.owned;
+	       account_slot < SE_OC_ACCOUNTS && receipt->physical == physical &&
+	       receipt->cookie == cookie && receipt->locator == locator &&
+	       receipt->bprm && receipt->invocation && receipt->scope &&
+	       receipt->generation && !receipt->reserved &&
+	       (receipt->phase == SE_EXEC_TERMINAL_REGISTERED ||
+		receipt->phase == SE_EXEC_TERMINAL_SUCCESS ||
+		receipt->phase == SE_EXEC_TERMINAL_FAILURE) &&
+	       meta->phase == SE_OL_DEAD && meta->locator == locator &&
+	       meta->cookie == cookie && !meta->active_leases &&
+	       meta->directory_state == SE_OL_PUBLISHED &&
+	       meta->archive_ready == 1 &&
+	       meta->account_scope == receipt->scope &&
+	       meta->account_slot == account_slot && !meta->cleanup_error &&
+	       (meta->cleanup_done & SE_OL_EXEC_DONE) &&
+	       (task->flags & SE_TASK_LIVE) &&
+	       task->physical_cookie == cookie &&
+	       task->scope_cookie == receipt->scope &&
+	       task->scope_slot == account_slot &&
+	       task->exec.bprm == receipt->bprm &&
+	       task->exec.sequence == receipt->invocation &&
+	       task->exec.generation == receipt->generation &&
+	       !task->exec.owned;
 }
 
 #endif

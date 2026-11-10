@@ -49,11 +49,11 @@ static inline int se_of_record_death(struct task_struct *physical,
 	 * this physical task never owned it (its own constructor aborted),
 	 * so there is nothing to settle and nothing is written. */
 	else if ((meta->phase != SE_OL_LIVE &&
-		   meta->phase != SE_OL_PENDING_BIRTH) ||
-		  meta->directory_state != SE_OL_PUBLISHED || meta->exclusive)
+		  meta->phase != SE_OL_PENDING_BIRTH) ||
+		 meta->directory_state != SE_OL_PUBLISHED || meta->exclusive)
 		result = SE_OL_CONTENDED;
-	else if (!meta->cookie || meta->archive_ready != 1 ||
-		 meta->reserved || meta->exclusive_owner)
+	else if (!meta->cookie || meta->archive_ready != 1 || meta->reserved ||
+		 meta->exclusive_owner)
 		result = SE_OL_CORRUPT;
 	else if (meta->reader_holds == SE_OL_U32_MAX)
 		result = SE_OL_LIMIT;
@@ -71,9 +71,10 @@ static inline int se_of_record_death(struct task_struct *physical,
 	__u64 value = fresh ? se_ol_load_scalar(fresh) : 0;
 	bpf_spin_lock(&meta->lock);
 	if (meta->locator != observation.observed_locator ||
-	    meta->cookie != observation.held_cookie ||
-	    !meta->reader_holds || meta->reserved || meta->exclusive_owner)
-		result = SE_OL_CORRUPT; /* retain charged hold on contradiction */
+	    meta->cookie != observation.held_cookie || !meta->reader_holds ||
+	    meta->reserved || meta->exclusive_owner)
+		result =
+			SE_OL_CORRUPT; /* retain charged hold on contradiction */
 	else if (value != observation.observed_locator ||
 		 (meta->phase != SE_OL_LIVE &&
 		  meta->phase != SE_OL_PENDING_BIRTH) ||
@@ -94,10 +95,12 @@ static inline int se_of_record_death(struct task_struct *physical,
 		    !meta->current_work_cookie && !meta->current_work_slot)
 			meta->cleanup_done |= SE_OL_WORK_DONE;
 		*lease = (struct se_of_lease){
-			.meta = meta, .physical = physical,
+			.meta = meta,
+			.physical = physical,
 			.locator = observation.observed_locator,
 			.cookie = observation.held_cookie,
-			.slot = observation.slot, .held = 1,
+			.slot = observation.slot,
+			.held = 1,
 		};
 		result = SE_OL_OK;
 	}
@@ -122,15 +125,15 @@ static inline int se_of_complete_native_unheld(struct se_of_lease *lease,
 	struct se_ol_meta *meta = lease->meta;
 	bpf_spin_lock(&meta->lock);
 	int exact = meta->phase == SE_OL_DEAD &&
-		meta->locator == lease->locator &&
-		meta->cookie == lease->cookie && meta->active_leases &&
-		meta->directory_state == SE_OL_PUBLISHED &&
-		meta->archive_ready == 1 && !meta->reserved &&
-		!meta->exclusive && !meta->exclusive_owner &&
-		!meta->cleanup_error;
+		    meta->locator == lease->locator &&
+		    meta->cookie == lease->cookie && meta->active_leases &&
+		    meta->directory_state == SE_OL_PUBLISHED &&
+		    meta->archive_ready == 1 && !meta->reserved &&
+		    !meta->exclusive && !meta->exclusive_owner &&
+		    !meta->cleanup_error;
 	int result;
-	if (!exact || (meta->native_refs &&
-		       (meta->cleanup_done & SE_OL_NATIVE_DONE)))
+	if (!exact ||
+	    (meta->native_refs && (meta->cleanup_done & SE_OL_NATIVE_DONE)))
 		result = SE_OL_CORRUPT;
 	else if (meta->native_refs)
 		result = SE_OL_CONTENDED;
@@ -205,10 +208,11 @@ static inline int se_of_withdraw_directory(struct se_of_lease *lease,
 	/* Stage 1: se_ow_claim_withdraw. */
 	bpf_spin_lock(&meta->lock);
 	int exact = meta->phase == SE_OL_DEAD && meta->cookie == cookie &&
-		meta->locator == locator && meta->archive_ready == 1 &&
-		meta->directory_state == SE_OL_PUBLISHED &&
-		!meta->reader_holds && meta->active_leases == 1 &&
-		!meta->exclusive && !meta->exclusive_owner && !meta->reserved;
+		    meta->locator == locator && meta->archive_ready == 1 &&
+		    meta->directory_state == SE_OL_PUBLISHED &&
+		    !meta->reader_holds && meta->active_leases == 1 &&
+		    !meta->exclusive && !meta->exclusive_owner &&
+		    !meta->reserved;
 	if (exact) {
 		meta->exclusive = 1;
 		meta->exclusive_owner = meta->locator;
@@ -266,8 +270,8 @@ static inline int se_of_withdraw_directory(struct se_of_lease *lease,
 static inline int se_of_release(struct se_of_lease *lease,
 				struct task_struct *physical)
 {
-	if (!lease || lease->held != 1 || lease->locked || !lease->meta || !physical ||
-	    lease->physical != physical)
+	if (!lease || lease->held != 1 || lease->locked || !lease->meta ||
+	    !physical || lease->physical != physical)
 		return SE_OL_CORRUPT;
 	/* The held, callback-local lease already retains the exact metadata
 	 * pointer. A second map lookup adds no authority and produces a nullable
@@ -278,11 +282,11 @@ static inline int se_of_release(struct se_of_lease *lease,
 		return SE_OL_CORRUPT;
 	struct se_ol_meta *meta = lease->meta;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->locator == lease->locator &&
-		    meta->cookie == lease->cookie &&
-		    (meta->phase == SE_OL_DEAD ||
-		     meta->phase == SE_OL_CLEANING) &&
-		    meta->active_leases && !meta->reserved;
+	int exact =
+		meta->locator == lease->locator &&
+		meta->cookie == lease->cookie &&
+		(meta->phase == SE_OL_DEAD || meta->phase == SE_OL_CLEANING) &&
+		meta->active_leases && !meta->reserved;
 	if (exact) {
 		meta->active_leases--;
 		lease->held = 0;

@@ -23,12 +23,11 @@ static inline int se_ow_hold_replacement(struct se_ol_observation *observation)
 	int result = SE_OL_OK;
 	if (meta->locator != observation->observed_locator)
 		result = SE_OL_STALE;
-	else if ((meta->phase != SE_OL_DEAD &&
-		  meta->phase != SE_OL_CLEANING) ||
+	else if ((meta->phase != SE_OL_DEAD && meta->phase != SE_OL_CLEANING) ||
 		 meta->directory_state != SE_OL_PUBLISHED || meta->exclusive)
 		result = SE_OL_CONTENDED;
-	else if (!meta->cookie || meta->reserved ||
-		 meta->exclusive_owner || meta->archive_ready != 1)
+	else if (!meta->cookie || meta->reserved || meta->exclusive_owner ||
+		 meta->archive_ready != 1)
 		result = SE_OL_CORRUPT;
 	else if (meta->reader_holds == SE_OL_U32_MAX)
 		result = SE_OL_LIMIT;
@@ -45,10 +44,10 @@ static inline int se_ow_hold_replacement(struct se_ol_observation *observation)
 /* Successful claim consumes exactly this actor's sole reader hold into an
  * exclusive successor-locator owner. A failed original-key/archive relookup
  * releases the hold; structural damage to held metadata does not. */
-static __attribute__((noinline)) int se_ow_claim_replacement(struct se_ol_meta *new_meta,
-					  __u64 new_cookie,
-					  struct se_ol_observation *observation,
-					  const void *archived_key)
+static __attribute__((noinline)) int
+se_ow_claim_replacement(struct se_ol_meta *new_meta, __u64 new_cookie,
+			struct se_ol_observation *observation,
+			const void *archived_key)
 {
 	if (!new_meta || !new_cookie || !observation ||
 	    observation->stage != SE_OL_HELD || !observation->meta ||
@@ -86,14 +85,13 @@ static __attribute__((noinline)) int se_ow_claim_replacement(struct se_ol_meta *
 	bpf_spin_lock(&old->lock);
 	int result = SE_OL_OK;
 	if (old->locator != observation->observed_locator ||
-	    old->cookie != observation->held_cookie ||
-	    !old->reader_holds || old->reserved || old->exclusive_owner)
-		result = SE_OL_CORRUPT; /* held identity contradiction: retain */
-	else if ((old->phase != SE_OL_DEAD &&
-		   old->phase != SE_OL_CLEANING) ||
-		  old->directory_state != SE_OL_PUBLISHED ||
-		  old->exclusive || old->active_leases ||
-		  old->reader_holds != 1) {
+	    old->cookie != observation->held_cookie || !old->reader_holds ||
+	    old->reserved || old->exclusive_owner)
+		result =
+			SE_OL_CORRUPT; /* held identity contradiction: retain */
+	else if ((old->phase != SE_OL_DEAD && old->phase != SE_OL_CLEANING) ||
+		 old->directory_state != SE_OL_PUBLISHED || old->exclusive ||
+		 old->active_leases || old->reader_holds != 1) {
 		old->reader_holds--; /* only this actor's hold */
 		observation->stage = SE_OL_RELEASED;
 		result = SE_OL_CONTENDED;
@@ -109,8 +107,9 @@ static __attribute__((noinline)) int se_ow_claim_replacement(struct se_ol_meta *
 
 /* Cancellation is permitted only before the scalar replacement CAS is
  * attempted. A post-attempt fault keeps the exact old/new charges pinned. */
-static inline int se_ow_cancel_replacement_claim(
-	struct se_ol_observation *observation, __u64 new_locator)
+static inline int
+se_ow_cancel_replacement_claim(struct se_ol_observation *observation,
+			       __u64 new_locator)
 {
 	if (!observation || observation->stage != SE_OL_EXCLUSIVE ||
 	    !observation->meta || !new_locator)
@@ -121,8 +120,7 @@ static inline int se_ow_cancel_replacement_claim(
 		    old->cookie == observation->held_cookie &&
 		    old->directory_state == SE_OL_PUBLISHED &&
 		    old->exclusive == 1 &&
-		    old->exclusive_owner == new_locator &&
-		    !old->reserved;
+		    old->exclusive_owner == new_locator && !old->reserved;
 	if (exact) {
 		old->exclusive = 0;
 		old->exclusive_owner = 0;
@@ -136,9 +134,10 @@ static inline int se_ow_cancel_replacement_claim(
  * metadata receipts. The old exclusive owner stays pinned until the new
  * PENDING_BIRTH state is recorded; old cleanup never deletes a successor's
  * key. The caller still must finish/abort its charged constructor. */
-static __attribute__((noinline)) int se_ow_publish_replacement(
-	struct se_ol_meta *new_meta, __u64 new_cookie,
-	struct se_ol_observation *observation, const void *archived_key)
+static __attribute__((noinline)) int
+se_ow_publish_replacement(struct se_ol_meta *new_meta, __u64 new_cookie,
+			  struct se_ol_observation *observation,
+			  const void *archived_key)
 {
 	if (!new_meta || !new_cookie || !observation ||
 	    observation->stage != SE_OL_EXCLUSIVE || !observation->meta ||
@@ -160,11 +159,9 @@ static __attribute__((noinline)) int se_ow_publish_replacement(
 	bpf_spin_lock(&old->lock);
 	exact = old->locator == observation->observed_locator &&
 		old->cookie == observation->held_cookie &&
-		old->exclusive == 1 &&
-		old->exclusive_owner == new_locator &&
-		old->directory_state == SE_OL_PUBLISHED &&
-		!old->reader_holds && !old->active_leases &&
-		!old->reserved;
+		old->exclusive == 1 && old->exclusive_owner == new_locator &&
+		old->directory_state == SE_OL_PUBLISHED && !old->reader_holds &&
+		!old->active_leases && !old->reserved;
 	bpf_spin_unlock(&old->lock);
 	if (!exact)
 		return SE_OL_CORRUPT;

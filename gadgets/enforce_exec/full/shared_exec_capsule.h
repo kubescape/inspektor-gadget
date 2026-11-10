@@ -66,15 +66,17 @@
 #include "shared_route.h"
 
 #define SE_CAP_FREE 0
-#define SE_CAP_OPEN 1     /* covered begin, class not yet frozen */
-#define SE_CAP_FROZEN 2   /* original class frozen at first selected admission */
+#define SE_CAP_OPEN 1 /* covered begin, class not yet frozen */
+#define SE_CAP_FROZEN 2 /* original class frozen at first selected admission */
 #define SE_CAP_RETIRING 3 /* pin release in progress outside the capsule lock */
 
-#define SE_CAP_F_CHECK 1U     /* AT_EXECVE_CHECK: never a successful exec */
-#define SE_CAP_F_PINNED 2U    /* pin intent: set at freeze BEFORE acquiring the
+#define SE_CAP_F_CHECK 1U /* AT_EXECVE_CHECK: never a successful exec */
+#define SE_CAP_F_PINNED \
+	2U /* pin intent: set at freeze BEFORE acquiring the
 			       * original-route pin; owner.owned under the
 			       * route lock remains the only release truth */
-#define SE_CAP_F_UNCOVERED 4U /* frozen without a covered begin: no terminal
+#define SE_CAP_F_UNCOVERED \
+	4U /* frozen without a covered begin: no terminal
 			       * guarantee, so no pin is ever taken */
 #define SE_CAP_F_PIN_FAILED 8U /* pin intent abandoned: acquire failed */
 
@@ -102,13 +104,13 @@ struct se_cap_view {
 #define SE_CAP_MINE_OPEN 1
 #define SE_CAP_MINE_FROZEN 2
 #define SE_CAP_UNCOVERED 3 /* FREE: no covered begin observed */
-#define SE_CAP_STALE 4     /* another finished exec's capsule; retire first */
-#define SE_CAP_BUSY 5      /* RETIRING: violates serialization premise */
+#define SE_CAP_STALE 4 /* another finished exec's capsule; retire first */
+#define SE_CAP_BUSY 5 /* RETIRING: violates serialization premise */
 
 /* Begin/terminal results. */
 #define SE_CAP_OK 0
 #define SE_CAP_NEED_RETIRE 1 /* previous finished exec still recorded */
-#define SE_CAP_FOREIGN 2     /* not this exec: losing waiter/wrong/duplicate */
+#define SE_CAP_FOREIGN 2 /* not this exec: losing waiter/wrong/duplicate */
 #define SE_CAP_FAULT 3
 
 static __attribute__((always_inline)) inline void
@@ -120,7 +122,8 @@ se_cap_view_locked(const struct se_exec_capsule *c, struct se_cap_view *v)
 	v->phase = c->phase;
 	v->flags = c->flags;
 	v->execution_class = c->execution_class;
-	v->slot = c->owner.token.slot; /* hint only; revalidated under route lock */
+	v->slot = c->owner.token
+			  .slot; /* hint only; revalidated under route lock */
 }
 
 static __attribute__((always_inline)) inline int
@@ -353,8 +356,10 @@ se_cap_retire(struct se_exec_capsule *c, const struct se_cap_view *v)
 	int bad = 0;
 	if (v->flags & SE_CAP_F_PINNED) {
 		__u32 slot = v->slot;
-		struct se_route_anchor *a = slot < SE_ROUTE_CAPACITY ?
-			SE_ROUTE_ANCHOR_LOOKUP(&slot) : 0;
+		struct se_route_anchor *a =
+			slot < SE_ROUTE_CAPACITY ?
+				SE_ROUTE_ANCHOR_LOOKUP(&slot) :
+				0;
 		if (!a) {
 			/* Corrupt owner slot: no route lock can guard it. */
 			c->owner.owned = 0;
@@ -425,8 +430,8 @@ static __attribute__((always_inline)) inline void
 se_cap_drop_claim(struct se_route_claim *claim)
 {
 	__u32 slot = claim->slot;
-	struct se_route_anchor *a = slot < SE_ROUTE_CAPACITY ?
-		SE_ROUTE_ANCHOR_LOOKUP(&slot) : 0;
+	struct se_route_anchor *a =
+		slot < SE_ROUTE_CAPACITY ? SE_ROUTE_ANCHOR_LOOKUP(&slot) : 0;
 	if (!a)
 		return;
 	bpf_spin_lock(&a->lock);
@@ -450,8 +455,9 @@ se_cap_degrade(__u64 cgroup, struct se_route_claim *claim, __u32 *frozen_class)
 		se_cap_drop_claim(claim);
 		r = cls == 2 ? SE_ROUTE_STRICT_FAULT : SE_ROUTE_AUDIT_FAULT;
 	}
-	*frozen_class = r == SE_ROUTE_AUDIT_FAULT ? 1 :
-			r == SE_ROUTE_STRICT_FAULT ? 2 : 0;
+	*frozen_class = r == SE_ROUTE_AUDIT_FAULT  ? 1 :
+			r == SE_ROUTE_STRICT_FAULT ? 2 :
+						     0;
 	return r;
 }
 
@@ -489,8 +495,10 @@ se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
 		if (!(v.flags & SE_CAP_F_PINNED))
 			return fault;
 		__u32 slot = v.slot;
-		struct se_route_anchor *a = slot < SE_ROUTE_CAPACITY ?
-			SE_ROUTE_ANCHOR_LOOKUP(&slot) : 0;
+		struct se_route_anchor *a =
+			slot < SE_ROUTE_CAPACITY ?
+				SE_ROUTE_ANCHOR_LOOKUP(&slot) :
+				0;
 		if (!a)
 			return fault;
 		bpf_spin_lock(&a->lock);
@@ -502,9 +510,10 @@ se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
 		return r;
 	}
 	int r = se_route_admit(cgroup, claim);
-	__u32 cls = r == SE_ROUTE_OWNED ? claim->execution_class :
-		    r == SE_ROUTE_AUDIT_FAULT ? 1 :
-		    r == SE_ROUTE_STRICT_FAULT ? 2 : 0;
+	__u32 cls = r == SE_ROUTE_OWNED	       ? claim->execution_class :
+		    r == SE_ROUTE_AUDIT_FAULT  ? 1 :
+		    r == SE_ROUTE_STRICT_FAULT ? 2 :
+						 0;
 	if (!cls)
 		return r; /* unselected or invariant: no policy admission */
 	*frozen_class = cls;
@@ -513,19 +522,21 @@ se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
 		/* Pin only an owned claim; a first-admission fault freezes the
 		 * class without a payload pin. */
 		bpf_spin_lock(&c->lock);
-		freeze_err = se_cap_freeze_locked(c, task, bprm, v.sequence, cls,
-					      r == SE_ROUTE_OWNED);
+		freeze_err = se_cap_freeze_locked(c, task, bprm, v.sequence,
+						  cls, r == SE_ROUTE_OWNED);
 		bpf_spin_unlock(&c->lock);
 		if (!freeze_err && r == SE_ROUTE_OWNED) {
 			__u32 slot = claim->slot;
-			struct se_route_anchor *a = slot < SE_ROUTE_CAPACITY ?
-				SE_ROUTE_ANCHOR_LOOKUP(&slot) : 0;
+			struct se_route_anchor *a =
+				slot < SE_ROUTE_CAPACITY ?
+					SE_ROUTE_ANCHOR_LOOKUP(&slot) :
+					0;
 			struct se_source_mode_token token = {};
 			int pinned = -1;
 			if (a) {
 				bpf_spin_lock(&a->lock);
-				pinned = se_route_source_pin_acquire_locked(a,
-					claim, task, v.sequence, &c->owner,
+				pinned = se_route_source_pin_acquire_locked(
+					a, claim, task, v.sequence, &c->owner,
 					&token);
 				bpf_spin_unlock(&a->lock);
 			}
@@ -541,7 +552,7 @@ se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
 		__u64 sequence = SE_CAP_NEXT_SEQUENCE();
 		bpf_spin_lock(&c->lock);
 		freeze_err = se_cap_freeze_uncovered_locked(c, task, bprm,
-							sequence, cls);
+							    sequence, cls);
 		bpf_spin_unlock(&c->lock);
 		if (!freeze_err)
 			SE_CAP_STAT(SE_CAP_STAT_FROZEN_UNCOVERED);

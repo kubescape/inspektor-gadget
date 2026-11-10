@@ -3,13 +3,13 @@
 #ifndef ENFORCE_EXEC_SHARED_EXEC_H
 #define ENFORCE_EXEC_SHARED_EXEC_H
 #if defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_DEVELOPMENT) || \
-     !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY))
+	(!defined(ENFORCE_EXEC_POOL_DEVELOPMENT) ||       \
+	 !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY))
 #error "typed pool semantic view is candidate-only"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-     defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE))
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
+	 defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE))
 #error "typed opaque TASK semantic view requires its exclusive locator candidate"
 #endif
 /* Include after the shared policy view and canonical ledger. The adapter owns
@@ -39,7 +39,7 @@ struct se_task_stage {
  * quarantines this record and preserves its ledger; it cannot relabel A as B. */
 struct se_task_state {
 #if defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE) || \
-    defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE)
+	defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE)
 	/* Selected pool semantics cannot carry a second BTF spinlock. The
 	 * fixed metadata value owns synchronization; the prefix is typed data. */
 	__u32 reserved_lock;
@@ -245,14 +245,13 @@ se_exec_reader_release_locked(struct se_binding_snapshots *binding,
  * catalogue lookup; this predicate does not create another lease. */
 static __attribute__((always_inline)) inline int
 se_exec_reader_authority_locked(const struct se_route_anchor *route,
-	const struct se_binding_snapshots *binding,
-	const struct se_task_state *task, __u32 slot, __u64 scope,
-	__u64 generation, __u64 cookie, __u64 invocation,
-	__u32 execution_class)
+				const struct se_binding_snapshots *binding,
+				const struct se_task_state *task, __u32 slot,
+				__u64 scope, __u64 generation, __u64 cookie,
+				__u64 invocation, __u32 execution_class)
 {
-	if (!route || !binding || !task || !scope || !generation ||
-	    !cookie || !invocation ||
-	    execution_class < 1 || execution_class > 2 ||
+	if (!route || !binding || !task || !scope || !generation || !cookie ||
+	    !invocation || execution_class < 1 || execution_class > 2 ||
 	    route->reserved || !route->incarnation || !route->cgroup_identity ||
 	    route->phase != SE_ROUTE_ACTIVE || route->payload_slot != slot ||
 	    route->scope != scope || route->payload_generation != generation ||
@@ -280,8 +279,9 @@ se_exec_reader_authority_locked(const struct se_route_anchor *route,
 }
 /* Failed setup/exec cleanup is task-locked and exact; caller subsequently
  * refunds the matching reader (if attached) under the anchor lock. */
-static __attribute__((always_inline)) inline int se_exec_abort_locked(struct se_task_state *task, __u64 cookie,
-				       __u64 bprm, __u64 invocation)
+static __attribute__((always_inline)) inline int
+se_exec_abort_locked(struct se_task_state *task, __u64 cookie, __u64 bprm,
+		     __u64 invocation)
 {
 	if (task->physical_cookie != cookie || !task->exec.owned ||
 	    task->exec.bprm != bprm || task->exec.sequence != invocation)
@@ -300,8 +300,8 @@ static inline void se_exec_fault_locked(struct se_exec_transaction *tx)
 /* Pure TASK-locked mutations shared by the legacy value lock and the exact
  * opaque metadata-lock bracket. Neither helper acquires a map reference,
  * chooses a verdict, or treats a task pointer as identity authority. */
-static __attribute__((always_inline)) inline void se_exec_owned_fault_locked(
-	struct se_task_state *task, __u64 bprm)
+static __attribute__((always_inline)) inline void
+se_exec_owned_fault_locked(struct se_task_state *task, __u64 bprm)
 {
 	if (task->exec.owned && task->exec.bprm == bprm)
 		se_exec_fault_locked(&task->exec);
@@ -311,8 +311,8 @@ static __attribute__((always_inline)) inline void se_exec_owned_fault_locked(
 			task->eligibility_version++;
 	}
 }
-static __attribute__((always_inline)) inline void se_exec_note_prior_deny_locked(
-	struct se_task_state *task, __u64 bprm)
+static __attribute__((always_inline)) inline void
+se_exec_note_prior_deny_locked(struct se_task_state *task, __u64 bprm)
 {
 	if (task->exec.owned && task->exec.bprm == bprm) {
 		task->exec.known_deny = 1;
@@ -353,7 +353,7 @@ static inline int se_exec_propose_locked(struct se_exec_transaction *tx,
 	    (FE_AUDIT_GLOBAL_SUPPRESS | FE_AUDIT_UNCERTAIN_FALLBACK))
 		tx->global_unknown = 1;
 	for (__u32 i = 0, bound = se_policy_bound(tx->policy_count);
-		     i < bound && i < 8; i++) {
+	     i < bound && i < 8; i++) {
 		__u64 role = d->known_role_witnesses[i] ?
 				     d->known_role_witnesses[i] :
 				     d->proposed_roles[i];
@@ -383,10 +383,9 @@ static inline int se_exec_propose_locked(struct se_exec_transaction *tx,
  * transaction bytes are rechecked before the accepted-only patch publisher. */
 /* Older admitted kernels reject BPF-to-BPF calls under a spinlock. Keep the
  * entire snapshot copy in the caller's lock-held instruction frame. */
-static __attribute__((always_inline)) inline void se_exec_snapshot_locked(
-					   const struct se_task_state *task,
-					   __u64 authority,
-					   struct se_exec_work *work)
+static __attribute__((always_inline)) inline void
+se_exec_snapshot_locked(const struct se_task_state *task, __u64 authority,
+			struct se_exec_work *work)
 {
 	work->physical_cookie = task->physical_cookie;
 	work->scope_cookie = task->scope_cookie;
@@ -405,8 +404,8 @@ struct se_exec_role_fill {
 	__u32 present, done;
 	int error;
 };
-static __attribute__((always_inline)) inline int se_exec_role_fill_step(
-	__u32 idx, struct se_exec_role_fill *c)
+static __attribute__((always_inline)) inline int
+se_exec_role_fill_step(__u32 idx, struct se_exec_role_fill *c)
 {
 	struct se_exec_work *work = c->work;
 	struct fe_facts *facts = c->facts;
@@ -423,8 +422,8 @@ static __attribute__((always_inline)) inline int se_exec_role_fill_step(
 	if (j == 0)
 		c->present = 0;
 	const struct er_row *r = &work->view.work.rows[j];
-	if ((work->view.accepted_mask & (1U << j)) &&
-	    r->uid == p->uid && r->epoch == p->epoch) {
+	if ((work->view.accepted_mask & (1U << j)) && r->uid == p->uid &&
+	    r->epoch == p->epoch) {
 		c->present++;
 		if (er_role_known(r)) {
 			__u32 n = facts->role_count;
@@ -432,7 +431,8 @@ static __attribute__((always_inline)) inline int se_exec_role_fill_step(
 				c->error = 2;
 				return 1;
 			}
-			facts->roles[n & 7] = (struct fe_role){ r->uid, r->role };
+			facts->roles[n & 7] =
+				(struct fe_role){ r->uid, r->role };
 			facts->role_count = n + 1;
 		}
 	}
@@ -453,13 +453,13 @@ static int se_exec_role_fill_cb(__u32 idx, void *raw)
 /* Consume only a view already classified under a retained, complete catalogue
  * claim. The typed pool path supplies its explicit-scope classifier; the
  * legacy wrapper below preserves the selected current-invocation behavior. */
-static inline int se_exec_fill_roles_preclassified(
-	struct se_exec_work *work, struct fe_facts *facts)
+static inline int se_exec_fill_roles_preclassified(struct se_exec_work *work,
+						   struct fe_facts *facts)
 {
 	facts->role_count = 0;
 	if (work->transaction.eligibility_version !=
-		    work->eligibility_version || work->view.work.error ||
-	    !work->view.work.prepared)
+		    work->eligibility_version ||
+	    work->view.work.error || !work->view.work.prepared)
 		return -1;
 	if (work->flags != SE_TASK_QUALIFIED)
 		return 0;
@@ -489,8 +489,8 @@ static inline int se_exec_fill_roles(struct se_exec_work *work,
 		return -1;
 	return se_exec_fill_roles_preclassified(work, facts);
 }
-static inline int se_exec_completion_prepare_preclassified(
-	struct se_exec_work *work, int success)
+static inline int
+se_exec_completion_prepare_preclassified(struct se_exec_work *work, int success)
 {
 	struct se_exec_transaction *tx = &work->transaction;
 	if (!tx->owned ||
@@ -501,7 +501,7 @@ static inline int se_exec_completion_prepare_preclassified(
 	__u32 count = 0;
 	if (success && !tx->known_deny) {
 		for (__u32 i = 0, bound = se_policy_bound(tx->policy_count);
-			     i < bound && i < 8; i++) {
+		     i < bound && i < 8; i++) {
 			int unknown = !!(tx->uncertain & (1U << i));
 			if (!unknown && !(tx->grants & (1U << i)))
 				continue;
@@ -571,9 +571,9 @@ static inline int se_exec_complete_locked(struct se_task_state *task,
  * Known proposals lose precision to UNKNOWN; nonwriters/provisional cells stay.
  * Return -1 for stale ownership, otherwise ownership is consumed (1=quarantine).
  */
-static __attribute__((always_inline)) inline int se_exec_finish_bounded_locked(struct se_task_state *task,
-						__u64 cookie, __u64 bprm,
-						__u64 invocation, int success)
+static __attribute__((always_inline)) inline int
+se_exec_finish_bounded_locked(struct se_task_state *task, __u64 cookie,
+			      __u64 bprm, __u64 invocation, int success)
 {
 	struct se_exec_transaction *tx = &task->exec;
 	if (task->physical_cookie != cookie || !tx->owned || tx->bprm != bprm ||
@@ -588,7 +588,7 @@ static __attribute__((always_inline)) inline int se_exec_finish_bounded_locked(s
 	__u32 targets = 0;
 	if (success && !tx->known_deny && !invalid) {
 		for (__u32 i = 0, bound = se_policy_bound(tx->policy_count);
-			     i < bound && i < 8; i++) {
+		     i < bound && i < 8; i++) {
 			if (!(mask & (1U << i)))
 				continue;
 			const struct se_exec_policy *p = &tx->policies[i];

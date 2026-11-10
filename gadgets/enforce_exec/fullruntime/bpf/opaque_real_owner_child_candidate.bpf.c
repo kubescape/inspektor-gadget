@@ -35,70 +35,71 @@
 /* The constructor's inline boundaries are verifier-budget diagnostics until
  * this complete real-map path has passed admitted-kernel qualification. */
 #define ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC 1
-#if (defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_CLOSE_FAULT_DIAGNOSTIC) || \
+#if (defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_CLOSE_FAULT_DIAGNOSTIC) ||       \
      defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_TASK_CLOSE_FAULT_DIAGNOSTIC)) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "post-publication close fault injection requires disposable bootstrap"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_CLOSE_FAULT_DIAGNOSTIC) && \
-    defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_TASK_CLOSE_FAULT_DIAGNOSTIC)
+	defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_TASK_CLOSE_FAULT_DIAGNOSTIC)
 #error "inject only one post-publication close fault"
 #endif
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) || \
-     defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE) &&  \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) || \
+	 defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
 #error "native-config gate requires recovered control and no synthetic bootstrap"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_BEGIN_PROBE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_BEGIN_PROBE)
 #error "reader lifecycle probe requires the begin probe"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE))
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE))
 #error "staged policy bridge requires exact reader and failure-terminal probes"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE))
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE) ||          \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE))
 #error "success-source completion requires WORK completion and terminal producer"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_SOURCE_COMPLETION_DIAGNOSTIC) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE))
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE) ||          \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE))
 #error "failure-source completion requires WORK completion and exact failure frames"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC) || \
-    defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_SOURCE_COMPLETION_DIAGNOSTIC)
-static __attribute__((noinline)) int real_owner_work_completion_shape(__u64 key);
+	defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_SOURCE_COMPLETION_DIAGNOSTIC)
+static __attribute__((noinline)) int
+real_owner_work_completion_shape(__u64 key);
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_TERMINAL_DRAIN_DIAGNOSTIC
-#if !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_BEGIN_PROBE)
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE) ||      \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE) || \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_BEGIN_PROBE)
 #error "source terminal drain requires WORK completion and reader lifecycle"
 #endif
 static __attribute__((noinline)) int real_owner_source_terminal_drain(void);
-static __attribute__((noinline)) int real_owner_reader_quarantine_pending(
-	__u64 physical);
+static __attribute__((noinline)) int
+real_owner_reader_quarantine_pending(__u64 physical);
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE)
 #error "same-bprm continuation requires the exact policy bridge"
 #endif
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_STAGE_BEGIN_DIAGNOSTIC) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE))
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) &&     \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_STAGE_BEGIN_DIAGNOSTIC) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE))
 #error "real-policy verdict requires staged evaluation and exact reader catalogue"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) && \
-    defined(ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC)
+	defined(ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC)
 #error "verdict candidate has no proved pre-dispatch interpreter class recovery"
 #endif
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_POLICY_TASK_CLOSE_FAULT_DIAGNOSTIC) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_POLICY_TASK_CLOSE_FAULT_DIAGNOSTIC) &&  \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
 #error "policy close injection requires guarded verdict and disposable bootstrap"
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_STAGE_BEGIN_DIAGNOSTIC
@@ -136,10 +137,10 @@ struct se_policy_view;
 #define REAL_OWNER_STAGE_VIEW_INLINE
 #define REAL_OWNER_STAGE_BLOB_INLINE
 #endif
-static REAL_OWNER_STAGE_VIEW_INLINE inline struct se_policy_view *real_owner_stage_view(
-	const struct fm_global_token *);
-static REAL_OWNER_STAGE_BLOB_INLINE inline const struct fm_blob *real_owner_stage_blob(
-	unsigned int, unsigned long long, unsigned int);
+static REAL_OWNER_STAGE_VIEW_INLINE inline struct se_policy_view *
+real_owner_stage_view(const struct fm_global_token *);
+static REAL_OWNER_STAGE_BLOB_INLINE inline const struct fm_blob *
+real_owner_stage_blob(unsigned int, unsigned long long, unsigned int);
 #define SE_POLICY_VIEW(ctx) \
 	real_owner_stage_view((const struct fm_global_token *)(ctx))
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
@@ -173,7 +174,8 @@ struct {
 	__type(value, struct se_ow_advance_observation);
 } se_ow_advance_observation SEC(".maps");
 static __always_inline void se_ow_advance_observe(__u32 stage, __u64 locator,
-	__u64 observed, __u64 previous, __u32 exact)
+						  __u64 observed,
+						  __u64 previous, __u32 exact)
 {
 	__u32 zero = 0;
 	struct se_ow_advance_observation *o =
@@ -192,7 +194,7 @@ static __always_inline void se_ow_advance_observe(__u32 stage, __u64 locator,
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_ABORT_INJECTOR_DIAGNOSTIC
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "abort injection requires successful-birth disposable bootstrap"
 #endif
 /* Test-only fault edge: every Nth published-zero child constructor takes the
@@ -223,8 +225,8 @@ static __always_inline void real_owner_abort_count(__u32 index)
 static __always_inline int real_owner_abort_inject(void)
 {
 	__u32 zero = 0;
-	const __u32 *every = bpf_map_lookup_elem(&opaque_real_abort_every,
-						 &zero);
+	const __u32 *every =
+		bpf_map_lookup_elem(&opaque_real_abort_every, &zero);
 	__u64 *seen = bpf_map_lookup_elem(&opaque_real_abort_counts, &zero);
 	__u32 n = every ? *every : 0;
 	if (!n || !seen || __sync_add_and_fetch(seen, 1) % n)
@@ -258,9 +260,9 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
 /* G025 step 7: a second disposable route of the opposite class on a second
  * cgroup, for migration. Admission must go through the source capsule. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_ROUTE_MIGRATION_DIAGNOSTIC
-#if !defined(ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC) || \
-    SE_PROFILE_BINDINGS < 2
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE) ||           \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC) || \
+	SE_PROFILE_BINDINGS < 2
 #error "route migration requires the source capsule, disposable bootstrap and two bindings"
 #endif
 #endif
@@ -268,7 +270,7 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
  * binding commit primitives, during churn. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_RELOAD_DIAGNOSTIC
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "generation advance requires the source capsule and disposable bootstrap"
 #endif
 #endif
@@ -277,11 +279,11 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
  * override shrinks only these maps so every insert refusal is exercised. */
 #ifdef SE_TEST_DEFERRED_STORAGE_ENTRIES
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_DEFERRED_STORAGE_WITNESS_DIAGNOSTIC) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "shrunken deferred storage requires its witness and disposable bootstrap"
 #endif
 #if SE_TEST_DEFERRED_STORAGE_ENTRIES < 1 || \
-    SE_TEST_DEFERRED_STORAGE_ENTRIES > SE_PROFILE_TASKS
+	SE_TEST_DEFERRED_STORAGE_ENTRIES > SE_PROFILE_TASKS
 #error "deferred storage override must be 1..SE_PROFILE_TASKS"
 #endif
 #define SE_DEFERRED_STORAGE_ENTRIES SE_TEST_DEFERRED_STORAGE_ENTRIES
@@ -291,17 +293,17 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
 /* Independent test-only per-map overrides (G025 step 4b): shrinking only the
  * terminal receipts while birth receipts stay full size makes the terminal
  * receipt insert refusal reachable. Each defaults to the shared size. */
-#if defined(SE_TEST_TERMINAL_RECEIPT_ENTRIES) || \
-    defined(SE_TEST_BIRTH_RECEIPT_ENTRIES) || \
-    defined(SE_TEST_FAILURE_FRAME_ENTRIES)
+#if defined(SE_TEST_TERMINAL_RECEIPT_ENTRIES) ||  \
+	defined(SE_TEST_BIRTH_RECEIPT_ENTRIES) || \
+	defined(SE_TEST_FAILURE_FRAME_ENTRIES)
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_DEFERRED_STORAGE_WITNESS_DIAGNOSTIC) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "per-map deferred storage overrides require the witness and disposable bootstrap"
 #endif
 #endif
 #ifdef SE_TEST_TERMINAL_RECEIPT_ENTRIES
 #if SE_TEST_TERMINAL_RECEIPT_ENTRIES < 1 || \
-    SE_TEST_TERMINAL_RECEIPT_ENTRIES > SE_PROFILE_TASKS
+	SE_TEST_TERMINAL_RECEIPT_ENTRIES > SE_PROFILE_TASKS
 #error "terminal receipt override must be 1..SE_PROFILE_TASKS"
 #endif
 #define SE_TERMINAL_RECEIPT_ENTRIES SE_TEST_TERMINAL_RECEIPT_ENTRIES
@@ -310,7 +312,7 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
 #endif
 #ifdef SE_TEST_BIRTH_RECEIPT_ENTRIES
 #if SE_TEST_BIRTH_RECEIPT_ENTRIES < 1 || \
-    SE_TEST_BIRTH_RECEIPT_ENTRIES > SE_PROFILE_TASKS
+	SE_TEST_BIRTH_RECEIPT_ENTRIES > SE_PROFILE_TASKS
 #error "birth receipt override must be 1..SE_PROFILE_TASKS"
 #endif
 #define SE_BIRTH_RECEIPT_ENTRIES SE_TEST_BIRTH_RECEIPT_ENTRIES
@@ -319,7 +321,7 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
 #endif
 #ifdef SE_TEST_FAILURE_FRAME_ENTRIES
 #if SE_TEST_FAILURE_FRAME_ENTRIES < 1 || \
-    SE_TEST_FAILURE_FRAME_ENTRIES > SE_PROFILE_TASKS
+	SE_TEST_FAILURE_FRAME_ENTRIES > SE_PROFILE_TASKS
 #error "failure frame override must be 1..SE_PROFILE_TASKS"
 #endif
 #define SE_FAILURE_FRAME_ENTRIES SE_TEST_FAILURE_FRAME_ENTRIES
@@ -327,10 +329,10 @@ static __attribute__((noinline)) void real_owner_replace_failure(__u32 site)
 #define SE_FAILURE_FRAME_ENTRIES SE_DEFERRED_STORAGE_ENTRIES
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_DEFERRED_STORAGE_WITNESS_DIAGNOSTIC
-#if !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) ||   \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC) || \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE) ||  \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "deferred storage witness requires the verdict, birth and failure-frame disposable build"
 #endif
 /* Test-only insert-refusal witness, read by the attached verdict test.
@@ -347,15 +349,15 @@ struct {
 } opaque_real_deferred_storage_refusals SEC(".maps");
 static __always_inline void real_owner_storage_refused(__u32 index)
 {
-	__u64 *count = bpf_map_lookup_elem(&opaque_real_deferred_storage_refusals,
-					   &index);
+	__u64 *count = bpf_map_lookup_elem(
+		&opaque_real_deferred_storage_refusals, &index);
 	if (count)
 		__sync_fetch_and_add(count, 1);
 }
 #define SE_DEFERRED_STORAGE_REFUSED(index) real_owner_storage_refused(index)
 #else
 #define SE_DEFERRED_STORAGE_REFUSED(index) \
-	do {                                \
+	do {                               \
 	} while (0)
 #endif
 /* G025 decision 3: fail-closed rate witness. Default-off candidate, not a
@@ -391,20 +393,19 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } opaque_real_fail_closed_rates SEC(".maps");
-static __attribute__((noinline)) void real_owner_fail_closed_rate(
-	__u32 index)
+static __attribute__((noinline)) void real_owner_fail_closed_rate(__u32 index)
 {
 	__u32 key = index < REAL_OWNER_RATE_CLASSES ? index :
-		REAL_OWNER_RATE_CONSTRUCT;
-	__u64 *count = bpf_map_lookup_elem(&opaque_real_fail_closed_rates,
-					   &key);
+						      REAL_OWNER_RATE_CONSTRUCT;
+	__u64 *count =
+		bpf_map_lookup_elem(&opaque_real_fail_closed_rates, &key);
 	if (count)
 		__sync_fetch_and_add(count, 1);
 }
 #define SE_FAIL_CLOSED_RATE(index) real_owner_fail_closed_rate(index)
 #else
 #define SE_FAIL_CLOSED_RATE(index) \
-	do {                         \
+	do {                       \
 	} while (0)
 #endif
 /* WORK start retries per lost bit race (each loss is a sibling's charge).
@@ -417,10 +418,11 @@ static __attribute__((noinline)) void real_owner_fail_closed_rate(
 #define SE_PROFILE_WORK_RETRIES \
 	(SE_PROFILE_SCRATCH_QUOTA < 16 ? SE_PROFILE_SCRATCH_QUOTA : 16)
 #endif
-_Static_assert(SE_PROFILE_WORK_RETRIES >= 1 &&
-	       SE_PROFILE_WORK_RETRIES <= SE_PROFILE_SCRATCH_QUOTA &&
-	       SE_PROFILE_WORK_RETRIES <= 16,
-	       "WORK start retries must be 1..min(WORK quota, 16): the verifier's pending-jump bound");
+_Static_assert(
+	SE_PROFILE_WORK_RETRIES >= 1 &&
+		SE_PROFILE_WORK_RETRIES <= SE_PROFILE_SCRATCH_QUOTA &&
+		SE_PROFILE_WORK_RETRIES <= 16,
+	"WORK start retries must be 1..min(WORK quota, 16): the verifier's pending-jump bound");
 /* G025 decision 2: the TASK and WORK quotas are the build-profile parameters
  * SE_PROFILE_TASK_QUOTA and SE_PROFILE_SCRATCH_QUOTA (WORK). The opaque
  * owner partitions each pool exactly per binding; the WORK account is one
@@ -428,14 +430,15 @@ _Static_assert(SE_PROFILE_WORK_RETRIES >= 1 &&
  * credit. Only 64/8, 128/16 and 256/32 (two bindings) have been measured
  * against the 512-byte combined stack: requalify before widening. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
-_Static_assert((__u64)SE_PROFILE_BINDINGS * SE_PROFILE_TASK_QUOTA ==
-		       SE_PROFILE_TASKS &&
-	       (__u64)SE_PROFILE_BINDINGS * SE_PROFILE_SCRATCH_QUOTA ==
-		       SE_PROFILE_SCRATCH,
-	       "verdict TASK/WORK pools must be partitioned exactly per binding");
-_Static_assert(SE_PROFILE_TASK_QUOTA >= 1 && SE_PROFILE_TASK_QUOTA <= 256 &&
-	       SE_PROFILE_SCRATCH_QUOTA >= 1 && SE_PROFILE_SCRATCH_QUOTA <= 32,
-	       "verdict quota profile outside the measured TASK 1..256 / WORK 1..32 range");
+_Static_assert(
+	(__u64)SE_PROFILE_BINDINGS *SE_PROFILE_TASK_QUOTA == SE_PROFILE_TASKS &&
+		(__u64)SE_PROFILE_BINDINGS * SE_PROFILE_SCRATCH_QUOTA ==
+			SE_PROFILE_SCRATCH,
+	"verdict TASK/WORK pools must be partitioned exactly per binding");
+_Static_assert(
+	SE_PROFILE_TASK_QUOTA >= 1 && SE_PROFILE_TASK_QUOTA <= 256 &&
+		SE_PROFILE_SCRATCH_QUOTA >= 1 && SE_PROFILE_SCRATCH_QUOTA <= 32,
+	"verdict quota profile outside the measured TASK 1..256 / WORK 1..32 range");
 #endif
 /* Test-only recovered-control composition. The physical admin registry
  * replaces TASK_STORAGE, but its guardian/admin protocol and native owner
@@ -455,13 +458,13 @@ _Static_assert(SE_PROFILE_TASK_QUOTA >= 1 && SE_PROFILE_TASK_QUOTA <= 256 &&
 /* The loader must install the matching static-class wrapper in each graph
  * and freeze every map before linking the source. No mutable map data or
  * receipt lookup is allowed to choose a failure verdict after dispatch. */
-#define REAL_OWNER_CLASS_GRAPH(name) \
-struct { \
-	__uint(type, BPF_MAP_TYPE_PROG_ARRAY); \
-	__uint(max_entries, 1); \
-	__type(key, __u32); \
-	__type(value, __u32); \
-} name SEC(".maps")
+#define REAL_OWNER_CLASS_GRAPH(name)                   \
+	struct {                                       \
+		__uint(type, BPF_MAP_TYPE_PROG_ARRAY); \
+		__uint(max_entries, 1);                \
+		__type(key, __u32);                    \
+		__type(value, __u32);                  \
+	} name SEC(".maps")
 REAL_OWNER_CLASS_GRAPH(opaque_real_policy_audit);
 REAL_OWNER_CLASS_GRAPH(opaque_real_policy_strict);
 REAL_OWNER_CLASS_GRAPH(opaque_real_prepare_audit);
@@ -536,8 +539,8 @@ struct {
 	__type(key, __u32);
 	__type(value, __u32);
 } opaque_real_owner_rule_uid_expect SEC(".maps");
-static __attribute__((noinline)) void real_owner_rule_progress(
-	__u32 stage, int result)
+static __attribute__((noinline)) void real_owner_rule_progress(__u32 stage,
+							       int result)
 {
 	__u32 zero = 0;
 	struct opaque_real_owner_rule_progress *progress =
@@ -566,14 +569,17 @@ static __attribute__((noinline)) void real_owner_rule_progress(
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_STAGE_BEGIN_DIAGNOSTIC
 #define SE_OWK_CURRENT_TASK() bpf_get_current_task_btf()
 #include "shared_pool_opaque_work_suspended_read_candidate.h"
-static REAL_OWNER_STAGE_VIEW_INLINE inline struct se_policy_view *real_owner_stage_view(
-	const struct fm_global_token *token)
+static REAL_OWNER_STAGE_VIEW_INLINE inline struct se_policy_view *
+real_owner_stage_view(const struct fm_global_token *token)
 {
 	return token && !token->reserved ?
-		se_owk_suspended_view_from_token(token->slot, token->cookie) : 0;
+		       se_owk_suspended_view_from_token(token->slot,
+							token->cookie) :
+		       0;
 }
-static REAL_OWNER_STAGE_BLOB_INLINE inline const struct fm_blob *real_owner_stage_blob(
-	unsigned int slot, unsigned long long cookie, unsigned int key)
+static REAL_OWNER_STAGE_BLOB_INLINE inline const struct fm_blob *
+real_owner_stage_blob(unsigned int slot, unsigned long long cookie,
+		      unsigned int key)
 {
 	struct fm_global_token token = { .slot = slot, .cookie = cookie };
 	return se_policy_data(real_owner_stage_view(&token), key);
@@ -674,7 +680,6 @@ static __attribute__((noinline)) void real_owner_birth_outcome(__u32 index)
 #endif
 #include "shared_pool_opaque_final_semantic_candidate.h"
 
-
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
 /* Plain, bounded diagnostic mailbox. The tracing callback cannot access a
  * map whose values contain spinlocks on stock Rocky 4.18. This receipt is
@@ -691,10 +696,11 @@ struct {
  * failed exec's outer frame supplies independent identity; the success
  * tracepoint supplies the live receipt's identity and bprm. Only the first
  * REGISTERED -> terminal CAS can win. This does not grant cleanup authority. */
-static __always_inline int real_owner_terminal_transition(
-	struct se_exec_terminal_receipt *receipt, __u64 physical, __u64 bprm,
-	__u64 cookie, __u64 locator, __u64 invocation, __u64 scope,
-	__u64 generation, __u32 terminal)
+static __always_inline int
+real_owner_terminal_transition(struct se_exec_terminal_receipt *receipt,
+			       __u64 physical, __u64 bprm, __u64 cookie,
+			       __u64 locator, __u64 invocation, __u64 scope,
+			       __u64 generation, __u32 terminal)
 {
 	if (!receipt || !physical || !bprm || !cookie || !locator ||
 	    !invocation || !scope || !generation || receipt->reserved ||
@@ -706,8 +712,9 @@ static __always_inline int real_owner_terminal_transition(
 	    receipt->generation != generation)
 		return 0;
 	return __sync_val_compare_and_swap(&receipt->phase,
-		SE_EXEC_TERMINAL_REGISTERED, terminal) ==
-		SE_EXEC_TERMINAL_REGISTERED;
+					   SE_EXEC_TERMINAL_REGISTERED,
+					   terminal) ==
+	       SE_EXEC_TERMINAL_REGISTERED;
 }
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PENDING_RECEIPT_DIAGNOSTIC
 /* Test-only injection of a mismatched receipt before the real bprm source.
@@ -736,25 +743,29 @@ struct {
 static __attribute__((noinline)) int real_pending_receipt_inject(void)
 {
 	__u32 zero = 0;
-	const struct opaque_real_pending_selector *selected = bpf_map_lookup_elem(
-		&opaque_real_pending_selector, &zero);
+	const struct opaque_real_pending_selector *selected =
+		bpf_map_lookup_elem(&opaque_real_pending_selector, &zero);
 	__u64 physical = (__u64)bpf_get_current_task_btf();
 	if (!selected || selected->physical != physical)
 		selected = bpf_map_lookup_elem(&opaque_real_pending_history,
-			&physical);
+					       &physical);
 	if (!selected || !physical || selected->physical != physical ||
-	    !selected->cgroup || selected->cgroup != bpf_get_current_cgroup_id() ||
+	    !selected->cgroup ||
+	    selected->cgroup != bpf_get_current_cgroup_id() ||
 	    !selected->stale_cookie || !selected->stale_locator)
 		return 0;
 	struct se_exec_terminal_receipt receipt = {
-		.physical = physical, .bprm = 1,
+		.physical = physical,
+		.bprm = 1,
 		.cookie = selected->stale_cookie,
 		.locator = selected->stale_locator,
-		.invocation = 1, .scope = 10, .generation = 1,
+		.invocation = 1,
+		.scope = 10,
+		.generation = 1,
 		.phase = SE_EXEC_TERMINAL_REGISTERED,
 	};
 	(void)bpf_map_update_elem(&se_exec_terminal_receipts, &physical,
-		&receipt, BPF_NOEXIST);
+				  &receipt, BPF_NOEXIST);
 	return 0;
 }
 SEC("tc")
@@ -762,8 +773,8 @@ int opaque_real_pending_receipt_cleanup(struct __sk_buff *skb)
 {
 	(void)skb;
 	__u32 zero = 0;
-	const struct opaque_real_pending_selector *selected = bpf_map_lookup_elem(
-		&opaque_real_pending_selector, &zero);
+	const struct opaque_real_pending_selector *selected =
+		bpf_map_lookup_elem(&opaque_real_pending_selector, &zero);
 	if (!selected || !selected->physical || !selected->stale_cookie ||
 	    !selected->stale_locator)
 		return 1;
@@ -775,7 +786,9 @@ int opaque_real_pending_receipt_cleanup(struct __sk_buff *skb)
 	    receipt->phase != SE_EXEC_TERMINAL_REGISTERED)
 		return 2;
 	return bpf_map_delete_elem(&se_exec_terminal_receipts,
-		&selected->physical) ? 3 : 0;
+				   &selected->physical) ?
+		       3 :
+		       0;
 }
 #endif
 #endif
@@ -905,14 +918,16 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 		return -1;
 	if (seed_rules > 1 && 11 + seed_rules > 256)
 		seed_object = config->slots[0];
-	if (se_object_range(config, seed_object, &seed_class_size, &seed_base) ||
+	if (se_object_range(config, seed_object, &seed_class_size,
+			    &seed_base) ||
 	    se_object_capacity(seed_class_size) < 11 + seed_rules ||
 	    seed_base > 0xffffU)
 		return -1;
 	__u32 base_zero = seed_base, base_one = seed_base + 1;
 	__u32 base_nine = seed_base + 9, base_ten = seed_base + 10;
 #else
-	__u32 seed_rules = 1, seed_object = 0, seed_class_size = 0, seed_base = 0;
+	__u32 seed_rules = 1, seed_object = 0, seed_class_size = 0,
+	      seed_base = 0;
 	__u32 base_zero = 0, base_one = 1, base_nine = 9, base_ten = 10;
 #endif
 	struct se_shared_object *object =
@@ -922,10 +937,10 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 	struct se_arena_cell *policy_cell =
 		bpf_map_lookup_elem(&se_arena, &base_one);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
-	struct se_arena_cell *rule_cell = bpf_map_lookup_elem(&se_arena,
-		&base_nine);
-	struct se_arena_cell *uid_cell = bpf_map_lookup_elem(&se_arena,
-		&base_ten);
+	struct se_arena_cell *rule_cell =
+		bpf_map_lookup_elem(&se_arena, &base_nine);
+	struct se_arena_cell *uid_cell =
+		bpf_map_lookup_elem(&se_arena, &base_ten);
 	const __u32 *expected_uid =
 		bpf_map_lookup_elem(&opaque_real_owner_rule_uid_expect, &zero);
 #endif
@@ -934,8 +949,8 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 	/* Route, snapshot, object, policy and rule classes stay equal; the
 	 * bootstrap control seeded the route/snapshot from the same gate. */
-	const __u32 *fallback_value =
-		bpf_map_lookup_elem(&opaque_real_policy_verdict_fallback, &zero);
+	const __u32 *fallback_value = bpf_map_lookup_elem(
+		&opaque_real_policy_verdict_fallback, &zero);
 	__u32 seed_class = gate ? gate->execution_class : 0;
 	__u32 seed_fallback = fallback_value ? *fallback_value : ~0U;
 	/* Explicit class only: the route/snapshot were seeded from this gate. */
@@ -947,8 +962,8 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 		return -1;
 #endif
 	if (!gate || gate->enabled != 1 || gate->scope != 10 ||
-	    !se_profile_matches(config) ||
-	    !object || !header_cell || !policy_cell || !binding ||
+	    !se_profile_matches(config) || !object || !header_cell ||
+	    !policy_cell || !binding ||
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
 	    !rule_cell || !uid_cell || !expected_uid ||
 #endif
@@ -977,8 +992,8 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 	rule->uid.count = 1;
 	((struct fm_blob *)uid_cell)->words[0] = *expected_uid;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
-	const __u32 *set_role_value =
-		bpf_map_lookup_elem(&opaque_real_policy_verdict_set_role, &zero);
+	const __u32 *set_role_value = bpf_map_lookup_elem(
+		&opaque_real_policy_verdict_set_role, &zero);
 	__u32 seed_set_role = set_role_value ? *set_role_value : 0;
 	if (seed_rules == 1)
 		rule->set_role = seed_set_role;
@@ -988,18 +1003,20 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 		__u32 match_cell = 9 + seed_rules, miss_cell = 10 + seed_rules;
 		__u32 match_abs = seed_base + match_cell;
 		__u32 miss_abs = seed_base + miss_cell;
-		struct se_arena_cell *match = bpf_map_lookup_elem(&se_arena,
-			&match_abs);
-		struct se_arena_cell *miss = bpf_map_lookup_elem(&se_arena,
-			&miss_abs);
+		struct se_arena_cell *match =
+			bpf_map_lookup_elem(&se_arena, &match_abs);
+		struct se_arena_cell *miss =
+			bpf_map_lookup_elem(&se_arena, &miss_abs);
 		if (!match || !miss)
 			return -1;
 		((struct fm_blob *)match)->words[0] = *expected_uid;
 		((struct fm_blob *)miss)->words[0] = 4242;
 		struct real_owner_seed_rules ctx = { .rules = seed_rules,
-			.base = seed_base, .set_role = seed_set_role,
-			.mode = seed_class, .match_cell = match_cell,
-			.miss_cell = miss_cell };
+						     .base = seed_base,
+						     .set_role = seed_set_role,
+						     .mode = seed_class,
+						     .match_cell = match_cell,
+						     .miss_cell = miss_cell };
 		bpf_loop(256, real_owner_seed_rule, &ctx, 0);
 		if (ctx.error || ctx.written != seed_rules)
 			return -1;
@@ -1030,9 +1047,9 @@ int opaque_real_owner_policy_seed_diagnostic(struct __sk_buff *skb)
 	ticket->phase = SE_TICKET_HELD;
 	return 0;
 }
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) && \
-    (defined(ENFORCE_EXEC_POOL_OPAQUE_ROUTE_MIGRATION_DIAGNOSTIC) || \
-     defined(ENFORCE_EXEC_POOL_OPAQUE_RELOAD_DIAGNOSTIC))
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) &&   \
+	(defined(ENFORCE_EXEC_POOL_OPAQUE_ROUTE_MIGRATION_DIAGNOSTIC) || \
+	 defined(ENFORCE_EXEC_POOL_OPAQUE_RELOAD_DIAGNOSTIC))
 /* G025 steps 7/8, test-only second policy in fixed 256-cell object 1, with
  * one rule for the expected uid. binding 1 tickets it into the second
  * route's ACTIVE snapshot (migration); binding 0 leaves it READY and
@@ -1059,8 +1076,8 @@ int opaque_real_owner_second_policy_seed(struct __sk_buff *skb)
 		bpf_map_lookup_elem(&se_configuration, &zero);
 	const __u32 *expected_uid =
 		bpf_map_lookup_elem(&opaque_real_owner_rule_uid_expect, &zero);
-	const __u32 *set_role_value =
-		bpf_map_lookup_elem(&opaque_real_policy_verdict_set_role, &zero);
+	const __u32 *set_role_value = bpf_map_lookup_elem(
+		&opaque_real_policy_verdict_set_role, &zero);
 	if (!want || want->enabled != 1 || want->execution_class < 1 ||
 	    want->execution_class > 2 || want->fallback > 2 ||
 	    want->binding > 1 || !config || !expected_uid ||
@@ -1070,7 +1087,8 @@ int opaque_real_owner_second_policy_seed(struct __sk_buff *skb)
 		return -1;
 	__u32 header_index = base, policy_index = base + 1;
 	__u32 rule_index = base + 9, uid_index = base + 10;
-	struct se_shared_object *object = bpf_map_lookup_elem(&se_objects, &one);
+	struct se_shared_object *object =
+		bpf_map_lookup_elem(&se_objects, &one);
 	struct se_arena_cell *header_cell =
 		bpf_map_lookup_elem(&se_arena, &header_index);
 	struct se_arena_cell *policy_cell =
@@ -1079,8 +1097,8 @@ int opaque_real_owner_second_policy_seed(struct __sk_buff *skb)
 		bpf_map_lookup_elem(&se_arena, &rule_index);
 	struct se_arena_cell *uid_cell =
 		bpf_map_lookup_elem(&se_arena, &uid_index);
-	struct se_shared_binding *binding = want->binding ?
-		bpf_map_lookup_elem(&se_bindings, &one) : 0;
+	struct se_shared_binding *binding =
+		want->binding ? bpf_map_lookup_elem(&se_bindings, &one) : 0;
 	if (!object || !header_cell || !policy_cell || !rule_cell ||
 	    !uid_cell || object->state.phase != SE_OBJECT_FREE)
 		return -1;
@@ -1138,13 +1156,14 @@ int opaque_real_owner_second_policy_seed(struct __sk_buff *skb)
 /* Keep recovered-admin capture's lock frame out of the charged source
  * constructor's older-kernel call chain. The callee relooks the original
  * recovery maps; no map-value pointer crosses this boundary. */
-static __attribute__((noinline)) int real_owner_child_recovery_capture(
-	struct task_struct *child, unsigned long clone_flags, int prior)
+static __attribute__((noinline)) int
+real_owner_child_recovery_capture(struct task_struct *child,
+				  unsigned long clone_flags, int prior)
 {
 	return se_rm_capture(child, clone_flags, prior);
 }
-static __attribute__((noinline)) void real_owner_child_recovery_close(
-	struct task_struct *physical)
+static __attribute__((noinline)) void
+real_owner_child_recovery_close(struct task_struct *physical)
 {
 	se_rm_close(physical);
 }
@@ -1167,12 +1186,12 @@ static __always_inline int real_owner_image_configured(void)
 {
 	__u32 zero = 0;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE
-	const struct se_node_config *config = bpf_map_lookup_elem(
-		&se_configuration, &zero);
+	const struct se_node_config *config =
+		bpf_map_lookup_elem(&se_configuration, &zero);
 	return se_profile_matches(config);
 #else
-	const __u32 *armed = bpf_map_lookup_elem(&opaque_real_owner_child_gate,
-		&zero);
+	const __u32 *armed =
+		bpf_map_lookup_elem(&opaque_real_owner_child_gate, &zero);
 	return armed && *armed == 1;
 #endif
 }
@@ -1217,26 +1236,24 @@ static __always_inline int real_owner_failure_scope(void)
 {
 	__u64 cgroup = bpf_get_current_cgroup_id();
 	return real_owner_image_configured() && cgroup &&
-		se_opaque_real_route_index(&cgroup) != 0;
+	       se_opaque_real_route_index(&cgroup) != 0;
 }
-static __always_inline int real_owner_failure_frame_ready(__u64 key,
-	__u64 bprm)
+static __always_inline int real_owner_failure_frame_ready(__u64 key, __u64 bprm)
 {
-	struct se_failure_outer_frame *outer = bpf_map_lookup_elem(
-		&se_failure_outer_frames, &key);
-	struct se_failure_handler_frame *handler = bpf_map_lookup_elem(
-		&se_failure_handler_frames, &key);
-	return outer && handler && key && bprm &&
-		outer->physical == key && outer->depth == 1 &&
-		!outer->uncertain && !outer->bprm &&
-		handler->bprm == bprm && handler->depth == 1 &&
-		!handler->uncertain;
+	struct se_failure_outer_frame *outer =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
+	struct se_failure_handler_frame *handler =
+		bpf_map_lookup_elem(&se_failure_handler_frames, &key);
+	return outer && handler && key && bprm && outer->physical == key &&
+	       outer->depth == 1 && !outer->uncertain && !outer->bprm &&
+	       handler->bprm == bprm && handler->depth == 1 &&
+	       !handler->uncertain;
 }
-static __always_inline int real_owner_failure_bind_receipt(
-	const struct se_exec_terminal_receipt *receipt)
+static __always_inline int
+real_owner_failure_bind_receipt(const struct se_exec_terminal_receipt *receipt)
 {
-	if (!receipt || !real_owner_failure_frame_ready(receipt->physical,
-			receipt->bprm))
+	if (!receipt ||
+	    !real_owner_failure_frame_ready(receipt->physical, receipt->bprm))
 		return -1;
 	struct se_failure_outer_frame *outer = bpf_map_lookup_elem(
 		&se_failure_outer_frames, &receipt->physical);
@@ -1258,8 +1275,8 @@ int BPF_KPROBE(opaque_real_owner_failure_outer_enter)
 	if (!real_owner_failure_scope())
 		return 0;
 	__u64 key = (__u64)bpf_get_current_task_btf();
-	struct se_failure_outer_frame *old = bpf_map_lookup_elem(
-		&se_failure_outer_frames, &key);
+	struct se_failure_outer_frame *old =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
 	if (old) {
 		old->uncertain = 1;
 		if (old->depth < 255)
@@ -1268,24 +1285,24 @@ int BPF_KPROBE(opaque_real_owner_failure_outer_enter)
 	}
 	struct se_failure_outer_frame frame = { .physical = key, .depth = 1 };
 	if (key && bpf_map_update_elem(&se_failure_outer_frames, &key, &frame,
-			BPF_NOEXIST))
+				       BPF_NOEXIST))
 		SE_DEFERRED_STORAGE_REFUSED(1);
 	return 0;
 }
 SEC("kprobe/search_binary_handler")
 int BPF_KPROBE(opaque_real_owner_failure_handler_enter,
-	struct linux_binprm *bprm)
+	       struct linux_binprm *bprm)
 {
 	if (!real_owner_failure_scope())
 		return 0;
 	__u64 key = (__u64)bpf_get_current_task_btf();
-	struct se_failure_outer_frame *outer = bpf_map_lookup_elem(
-		&se_failure_outer_frames, &key);
+	struct se_failure_outer_frame *outer =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
 	if (!outer || outer->uncertain || outer->depth != 1 ||
 	    outer->physical != key || !bprm)
 		return 0;
-	struct se_failure_handler_frame *old = bpf_map_lookup_elem(
-		&se_failure_handler_frames, &key);
+	struct se_failure_handler_frame *old =
+		bpf_map_lookup_elem(&se_failure_handler_frames, &key);
 	if (old) {
 		old->uncertain = outer->uncertain = 1;
 		if (old->depth < 255)
@@ -1293,10 +1310,11 @@ int BPF_KPROBE(opaque_real_owner_failure_handler_enter,
 		return 0;
 	}
 	struct se_failure_handler_frame frame = {
-		.bprm = (__u64)bprm, .depth = 1,
+		.bprm = (__u64)bprm,
+		.depth = 1,
 	};
 	if (bpf_map_update_elem(&se_failure_handler_frames, &key, &frame,
-		BPF_NOEXIST))
+				BPF_NOEXIST))
 		SE_DEFERRED_STORAGE_REFUSED(2);
 	return 0;
 }
@@ -1305,13 +1323,14 @@ int BPF_KRETPROBE(opaque_real_owner_failure_handler_exit, int ret)
 {
 	(void)ret;
 	__u64 key = (__u64)bpf_get_current_task_btf();
-	struct se_failure_handler_frame *frame = bpf_map_lookup_elem(
-		&se_failure_handler_frames, &key);
+	struct se_failure_handler_frame *frame =
+		bpf_map_lookup_elem(&se_failure_handler_frames, &key);
 	if (frame) {
 		if (frame->depth > 1)
 			frame->depth--;
 		else
-			(void)bpf_map_delete_elem(&se_failure_handler_frames, &key);
+			(void)bpf_map_delete_elem(&se_failure_handler_frames,
+						  &key);
 	}
 	return 0;
 }
@@ -1319,8 +1338,8 @@ SEC("kretprobe/do_execveat_common.isra.38")
 int BPF_KRETPROBE(opaque_real_owner_failure_outer_exit, int ret)
 {
 	__u64 key = (__u64)bpf_get_current_task_btf();
-	struct se_failure_outer_frame *frame = bpf_map_lookup_elem(
-		&se_failure_outer_frames, &key);
+	struct se_failure_outer_frame *frame =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
 	if (!frame)
 		return 0;
 	if (frame->depth > 1) {
@@ -1334,12 +1353,12 @@ int BPF_KRETPROBE(opaque_real_owner_failure_outer_exit, int ret)
 	    frame->physical == key && frame->bprm && frame->cookie &&
 	    frame->locator && frame->invocation && frame->scope &&
 	    frame->generation) {
-		struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-			&se_exec_terminal_receipts, &key);
-		(void)real_owner_terminal_transition(receipt, key,
-			frame->bprm, frame->cookie, frame->locator,
-			frame->invocation, frame->scope, frame->generation,
-			SE_EXEC_TERMINAL_FAILURE);
+		struct se_exec_terminal_receipt *receipt =
+			bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
+		(void)real_owner_terminal_transition(
+			receipt, key, frame->bprm, frame->cookie,
+			frame->locator, frame->invocation, frame->scope,
+			frame->generation, SE_EXEC_TERMINAL_FAILURE);
 	}
 	(void)bpf_map_delete_elem(&se_failure_handler_frames, &key);
 	(void)bpf_map_delete_elem(&se_failure_outer_frames, &key);
@@ -1349,21 +1368,22 @@ int BPF_KRETPROBE(opaque_real_owner_failure_outer_exit, int ret)
 /* End this producer's lexical frame before entering lock-bearing completion.
  * The independent outer tuple authenticates the receipt; the inner handler
  * frame has already returned and cannot be required here. */
-static __attribute__((noinline)) int real_owner_failure_fexit_publish(
-	__u64 key, __u64 bprm)
+static __attribute__((noinline)) int
+real_owner_failure_fexit_publish(__u64 key, __u64 bprm)
 {
-	const struct se_failure_outer_frame *frame = bpf_map_lookup_elem(
-		&se_failure_outer_frames, &key);
+	const struct se_failure_outer_frame *frame =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
 	if (!key || !bprm || !frame || frame->depth != 1 || frame->uncertain ||
 	    frame->physical != key || frame->bprm != bprm || !frame->cookie ||
 	    !frame->locator || !frame->invocation || !frame->scope ||
 	    !frame->generation)
 		return 0;
-	struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &key);
-	return real_owner_terminal_transition(receipt, key, bprm,
-		frame->cookie, frame->locator, frame->invocation, frame->scope,
-		frame->generation, SE_EXEC_TERMINAL_FAILURE);
+	struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
+	return real_owner_terminal_transition(receipt, key, bprm, frame->cookie,
+					      frame->locator, frame->invocation,
+					      frame->scope, frame->generation,
+					      SE_EXEC_TERMINAL_FAILURE);
 }
 
 /* Exact-AL2023 diagnostic, not a selected product source. The enclosing
@@ -1371,8 +1391,7 @@ static __attribute__((noinline)) int real_owner_failure_fexit_publish(
  * fexit and a kretprobe on the same function is assumed. kernel_execve lacks
  * that outer frame and is deliberately not certified by this variant. */
 SEC("fexit/bprm_execve")
-int BPF_PROG(opaque_real_owner_failure_fexit_probe,
-	     struct linux_binprm *bprm)
+int BPF_PROG(opaque_real_owner_failure_fexit_probe, struct linux_binprm *bprm)
 {
 	__u64 raw = 0;
 	if (bpf_get_func_ret(ctx, &raw) || (__s32)raw >= 0)
@@ -1387,8 +1406,8 @@ int BPF_PROG(opaque_real_owner_failure_fexit_probe,
 #endif
 #endif
 
-static __attribute__((noinline)) int real_owner_child_release_claim(
-	struct se_route_claim *claim)
+static __attribute__((noinline)) int
+real_owner_child_release_claim(struct se_route_claim *claim)
 {
 	struct se_route_anchor *route = route_lookup(claim->slot);
 	if (!route)
@@ -1408,8 +1427,8 @@ static __attribute__((noinline)) int real_owner_child_release_claim(
 
 /* Isolate the short-lived observation/lease frame while keeping TASK open's
  * internal lexical checks inline in this one BPF function. */
-static __attribute__((noinline)) int real_owner_child_open_parent(
-	struct se_ol_payload_handle *parent)
+static __attribute__((noinline)) int
+real_owner_child_open_parent(struct se_ol_payload_handle *parent)
 {
 	__u64 parent_key = (__u64)bpf_get_current_task_btf();
 	return se_ol_task_open(&parent_key, parent);
@@ -1418,8 +1437,9 @@ static __attribute__((noinline)) int real_owner_child_open_parent(
 /* Source frame: prepare a canonical parent projection under the real route
  * claim, then suspend the exact WORK. No pointer, claim or stack address
  * crosses the tail call. The WORK retains its TASK owner reference. */
-static __attribute__((noinline)) int real_owner_child_start_work(
-	struct se_ol_payload_handle *parent, struct se_owk_ticket *ticket)
+static __attribute__((noinline)) int
+real_owner_child_start_work(struct se_ol_payload_handle *parent,
+			    struct se_owk_ticket *ticket)
 {
 	if (se_owk_bind_owner(parent) != SE_OL_OK)
 		return -1;
@@ -1427,7 +1447,7 @@ static __attribute__((noinline)) int real_owner_child_start_work(
 	 * ours) and our pin was rolled back. Each lost attempt still consumes a
 	 * sequence cookie and task->next_work_sequence (SE_OWK_COOKIE_LIMIT). */
 	int began = SE_OL_CONTENDED;
-	#pragma clang loop unroll(disable)
+#pragma clang loop unroll(disable)
 	for (__u32 attempt = 0; attempt < SE_PROFILE_WORK_RETRIES; attempt++) {
 		__u32 work_slot = 0;
 		if (se_owk_choose(parent, &work_slot) != SE_OL_OK)
@@ -1449,9 +1469,9 @@ static __attribute__((noinline)) int real_owner_child_start_work(
 	return 0;
 }
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE
-static __attribute__((noinline)) int real_owner_policy_prepare(
-	struct se_invocation *work, __u64 scope, __u64 generation,
-	const struct se_snapshot *snapshot)
+static __attribute__((noinline)) int
+real_owner_policy_prepare(struct se_invocation *work, __u64 scope,
+			  __u64 generation, const struct se_snapshot *snapshot)
 {
 	return se_prepare_policy_view(&work->view, scope, snapshot, generation);
 }
@@ -1459,8 +1479,8 @@ static __attribute__((noinline)) int real_owner_policy_prepare(
 /* The source has already consumed its lexical TASK/WORK handles. The current
  * physical TASK and suspended WORK must be reauthenticated by this target
  * before calling here; the scalar token is not an entry capability. */
-static __attribute__((noinline)) int real_owner_policy_stage_begin(
-	struct se_owk_payload *payload)
+static __attribute__((noinline)) int
+real_owner_policy_stage_begin(struct se_owk_payload *payload)
 {
 	struct se_invocation *work = &payload->semantic;
 	struct fm_global_token *token =
@@ -1468,25 +1488,25 @@ static __attribute__((noinline)) int real_owner_policy_stage_begin(
 	if (token->reserved || token->slot != work->slot ||
 	    token->cookie != work->cookie ||
 	    real_owner_stage_view(token) != &work->view)
-	#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
 		return -1;
-	#else
+#else
 		return 0;
-	#endif
+#endif
 	int began = fe_stage_begin((void *)token, &work->observation.facts,
-		&work->observation.evaluator,
-		&work->observation.stage_cursor);
+				   &work->observation.evaluator,
+				   &work->observation.stage_cursor);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
 	if (began)
 		return -2;
 	return work->observation.stage_cursor.state >= FE_STAGE_ACTIVE ? 1 : -3;
 #else
 	return began == 0 &&
-		work->observation.stage_cursor.state >= FE_STAGE_ACTIVE;
+	       work->observation.stage_cursor.state >= FE_STAGE_ACTIVE;
 #endif
 }
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC) && \
-    defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE)
+	defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE)
 /* Rule advances per rule-program invocation. While the cursor stays ACTIVE
  * the rule program re-enters itself through its class graph, so 256 rules
  * need at most 16 windows, within the tail-call budget after the
@@ -1500,8 +1520,8 @@ _Static_assert(256 / REAL_OWNER_RULE_WINDOW_STEPS + 4 <= 33,
 	       "rule windows must fit the tail-call budget");
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
-static __attribute__((always_inline)) inline int real_owner_policy_rule_window(
-	struct se_owk_payload *payload)
+static __attribute__((always_inline)) inline int
+real_owner_policy_rule_window(struct se_owk_payload *payload)
 {
 	struct se_invocation *work = &payload->semantic;
 	struct fm_global_token *token =
@@ -1523,17 +1543,18 @@ static __attribute__((always_inline)) inline int real_owner_policy_rule_window(
 		work->observation.facts.effective_uid = effective_uid;
 		work->observation.facts.uid_known = 1;
 	}
-	real_owner_rule_progress(3,
-		work->observation.facts.effective_uid);
+	real_owner_rule_progress(3, work->observation.facts.effective_uid);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
-	#pragma clang loop unroll(disable)
+#pragma clang loop unroll(disable)
 	for (__u32 step = 0; step < REAL_OWNER_RULE_WINDOW_STEPS; step++) {
 		if (work->observation.stage_cursor.state != FE_STAGE_ACTIVE)
 			break;
-		if (fe_stage_advance((void *)token, &work->observation.facts,
-			&work->observation.evaluator,
-			&work->observation.stage_cursor,
-			&work->observation.stage_workspace.alt_request) != 0)
+		if (fe_stage_advance(
+			    (void *)token, &work->observation.facts,
+			    &work->observation.evaluator,
+			    &work->observation.stage_cursor,
+			    &work->observation.stage_workspace.alt_request) !=
+		    0)
 			return -2;
 	}
 	if (work->observation.stage_cursor.state == FE_STAGE_ACTIVE)
@@ -1541,15 +1562,16 @@ static __attribute__((always_inline)) inline int real_owner_policy_rule_window(
 #else
 	if (work->observation.stage_cursor.state == FE_STAGE_ACTIVE &&
 	    fe_stage_advance((void *)token, &work->observation.facts,
-		&work->observation.evaluator,
-		&work->observation.stage_cursor,
-		&work->observation.stage_workspace.alt_request) != 0)
+			     &work->observation.evaluator,
+			     &work->observation.stage_cursor,
+			     &work->observation.stage_workspace.alt_request) !=
+		    0)
 		return -2;
 #endif
 	if (work->observation.stage_cursor.state != FE_STAGE_READY)
 		return -3;
 	if (fe_stage_finish((void *)token, &work->observation.evaluator,
-		&work->observation.stage_cursor) != 0)
+			    &work->observation.stage_cursor) != 0)
 		return -4;
 	if (work->observation.stage_cursor.state != FE_STAGE_FINISHED)
 		return -5;
@@ -1557,14 +1579,14 @@ static __attribute__((always_inline)) inline int real_owner_policy_rule_window(
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 	    && work->observation.evaluator.decision.error != FE_AUDIT_UNKNOWN
 #endif
-	   )
+	)
 		return -6;
-	real_owner_rule_progress(2,
-		work->observation.evaluator.decision.matched_rules[0] & 1);
+	real_owner_rule_progress(
+		2, work->observation.evaluator.decision.matched_rules[0] & 1);
 	return 1;
 }
-static __attribute__((always_inline)) inline int real_owner_policy_rule_claimed_eval(
-	__u64 scope)
+static __attribute__((always_inline)) inline int
+real_owner_policy_rule_claimed_eval(__u64 scope)
 {
 	struct se_owk_payload *payload =
 		se_owk_suspended_current(scope, REAL_OWNER_EVAL_STAGE, 3);
@@ -1577,9 +1599,10 @@ static __attribute__((always_inline)) inline int real_owner_policy_rule_claimed_
 /* Separate frame: inlined into the bridge, history snapshot + catalogue +
  * role classification pushed the policy program past 1M processed
  * instructions on exact AL2023 6.18 (g005b-verdict-load-20261109). */
-static __attribute__((noinline)) int real_owner_prepare_reader_frame(
-	struct se_owk_semantic_handle *semantic,
-	const struct se_exec_terminal_receipt *receipt, __u64 physical)
+static __attribute__((noinline)) int
+real_owner_prepare_reader_frame(struct se_owk_semantic_handle *semantic,
+				const struct se_exec_terminal_receipt *receipt,
+				__u64 physical)
 {
 	return se_owk_exec_prepare_reader(semantic, receipt, physical);
 }
@@ -1600,12 +1623,11 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } opaque_real_eval_work_outcomes SEC(".maps");
-static __attribute__((noinline)) void real_owner_eval_work_outcome(
-	__u32 index)
+static __attribute__((noinline)) void real_owner_eval_work_outcome(__u32 index)
 {
 	__u32 key = index < 5 ? index : 4;
-	__u64 *count = bpf_map_lookup_elem(&opaque_real_eval_work_outcomes,
-					   &key);
+	__u64 *count =
+		bpf_map_lookup_elem(&opaque_real_eval_work_outcomes, &key);
 	if (count)
 		__sync_fetch_and_add(count, 1);
 }
@@ -1613,9 +1635,9 @@ static __attribute__((noinline)) void real_owner_eval_work_outcome(
 /* The caller first authenticates the retained reader against the original
  * binding. Its TASK lease brackets every policy read. WORK is DONE before
  * return; this test cut never emits a verdict or role. */
-static __attribute__((noinline)) int real_owner_policy_bridge(
-	struct se_ol_payload_handle *owner, __u64 scope, __u64 generation,
-	const struct se_snapshot *snapshot)
+static __attribute__((noinline)) int
+real_owner_policy_bridge(struct se_ol_payload_handle *owner, __u64 scope,
+			 __u64 generation, const struct se_snapshot *snapshot)
 {
 	if (!owner || !scope || !generation || !snapshot ||
 	    snapshot->scope != scope || snapshot->generation != generation ||
@@ -1642,7 +1664,8 @@ static __attribute__((noinline)) int real_owner_policy_bridge(
 	 * the verdict policy chain 16 bytes over the 512-byte combined stack on
 	 * exact AL2023 6.18 (g005b-verdict-load-20261109). */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_STAGE_BEGIN_DIAGNOSTIC
-	struct fm_global_token *token = &work->observation.stage_workspace.token;
+	struct fm_global_token *token =
+		&work->observation.stage_workspace.token;
 #else
 	struct fm_global_token token_storage = {};
 	struct fm_global_token *token = &token_storage;
@@ -1658,14 +1681,14 @@ static __attribute__((noinline)) int real_owner_policy_bridge(
 		/* Source facts and the complete verdict path remain separate
 		 * gates. A prepared history alone grants no policy decision. */
 		__builtin_memset(&work->observation.stage_cursor, 0,
-			       sizeof(work->observation.stage_cursor));
+				 sizeof(work->observation.stage_cursor));
 		if (se_owk_semantic_suspend(&semantic, &work, 1) == SE_OL_OK)
 			return 1;
 		valid = 0;
 	}
 #endif
 	int closed = semantic.held && work &&
-		se_owk_semantic_done(&semantic, &work) == SE_OL_OK;
+		     se_owk_semantic_done(&semantic, &work) == SE_OL_OK;
 	return valid && closed ? 0 : -1;
 failed:
 	if (semantic.held && work)
@@ -1681,8 +1704,9 @@ failed:
 	return -1;
 }
 #endif
-static __attribute__((noinline)) int real_owner_child_prepare(
-	const struct se_route_claim *claim, __u64 *parent_cookie_out)
+static __attribute__((noinline)) int
+real_owner_child_prepare(const struct se_route_claim *claim,
+			 __u64 *parent_cookie_out)
 {
 	if (!parent_cookie_out)
 		return -1;
@@ -1700,10 +1724,12 @@ static __attribute__((noinline)) int real_owner_child_prepare(
 	}
 	struct se_owk_semantic_handle semantic = {};
 	struct se_invocation *work = 0;
-	if (se_owk_semantic_open(&parent, &ticket, &semantic, &work) != SE_OL_OK)
+	if (se_owk_semantic_open(&parent, &ticket, &semantic, &work) !=
+	    SE_OL_OK)
 		goto work_failure;
-	int valid = se_op_parent_snapshot_held(&parent, &semantic, work,
-					     claim) == SE_OL_OK &&
+	int valid =
+		se_op_parent_snapshot_held(&parent, &semantic, work, claim) ==
+			SE_OL_OK &&
 		se_op_parent_project_held(&semantic, work, claim) == SE_OL_OK;
 	if (!valid) {
 		se_owk_fault_ticket(&ticket);
@@ -1747,27 +1773,28 @@ static __attribute__((noinline)) void real_owner_child_missing_target(void)
 	}
 }
 
-#if (defined(ENFORCE_EXEC_POOL_OPAQUE_BIRTH_CLOSE_FAULT_DIAGNOSTIC) || \
-     defined(ENFORCE_EXEC_POOL_OPAQUE_BIRTH_RELEASE_FAULT_DIAGNOSTIC)) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
+#if (defined(ENFORCE_EXEC_POOL_OPAQUE_BIRTH_CLOSE_FAULT_DIAGNOSTIC) ||     \
+     defined(ENFORCE_EXEC_POOL_OPAQUE_BIRTH_RELEASE_FAULT_DIAGNOSTIC)) &&  \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
 #error "birth fault injection requires successful-birth disposable bootstrap"
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 /* This issue is not proof of a successful fork. A zero row is allocated
  * while the original claim is held; raw sched_process_fork must later see
  * the same physical parent/child and exact charged child before eligibility. */
-static __attribute__((noinline)) int real_owner_child_birth_issue(
-	struct task_struct *child, const struct se_route_claim *claim,
-	__u64 parent_cookie)
+static __attribute__((noinline)) int
+real_owner_child_birth_issue(struct task_struct *child,
+			     const struct se_route_claim *claim,
+			     __u64 parent_cookie)
 {
 	if (!child || !claim || !claim->owned || claim->reserved ||
 	    !claim->scope || !claim->generation || !claim->serial ||
 	    !parent_cookie)
 		return -1;
 	__u32 zero = 0;
-	const struct opaque_birth_receipt *template = bpf_map_lookup_elem(
-		&opaque_birth_receipt_zero, &zero);
+	const struct opaque_birth_receipt *template =
+		bpf_map_lookup_elem(&opaque_birth_receipt_zero, &zero);
 	__u64 key = (__u64)child;
 	if (!template)
 		return -1;
@@ -1776,8 +1803,8 @@ static __attribute__((noinline)) int real_owner_child_birth_issue(
 		SE_DEFERRED_STORAGE_REFUSED(3);
 		return -1;
 	}
-	struct opaque_birth_receipt *receipt = bpf_map_lookup_elem(
-		&opaque_birth_receipts, &key);
+	struct opaque_birth_receipt *receipt =
+		bpf_map_lookup_elem(&opaque_birth_receipts, &key);
 	if (!receipt || receipt->state || receipt->child)
 		return -1;
 	receipt->child = key;
@@ -1796,15 +1823,16 @@ static __attribute__((noinline)) int real_owner_child_birth_issue(
 /* A failed post-transition close must not leave a usable qualified TASK.
  * Only the exact charged generation is poisoned; a reused pointer is not
  * sufficient authority. The receipt also remains faulted if reopening fails. */
-static __attribute__((noinline)) void real_owner_birth_quarantine(
-	__u64 key, __u64 cookie, __u64 locator)
+static __attribute__((noinline)) void
+real_owner_birth_quarantine(__u64 key, __u64 cookie, __u64 locator)
 {
 	struct se_ol_payload_handle owner = {};
 	if (se_ol_task_open(&key, &owner) != SE_OL_OK)
 		return;
 	struct se_task_state *task = 0;
 	if (se_op_task_semantic_begin(&owner, &task) == SE_OL_OK) {
-		if (owner.lease.cookie == cookie && owner.lease.locator == locator &&
+		if (owner.lease.cookie == cookie &&
+		    owner.lease.locator == locator &&
 		    task->physical_cookie == cookie) {
 			if (!(task->flags & SE_TASK_QUARANTINED)) {
 				task->flags |= SE_TASK_QUARANTINED;
@@ -1822,12 +1850,12 @@ static __attribute__((noinline)) void real_owner_birth_quarantine(
 /* 1: qualified; 0: no eligible receipt; -1: uncertain transition. State 4
  * is a sticky in-flight/fault marker, installed before touching TASK flags.
  * First-use LSM callers must propagate -1 through their Audit/Strict gate. */
-static __attribute__((noinline)) int real_owner_birth_qualify(
-	struct task_struct *target)
+static __attribute__((noinline)) int
+real_owner_birth_qualify(struct task_struct *target)
 {
 	__u64 key = (__u64)target;
-	struct opaque_birth_receipt *receipt = bpf_map_lookup_elem(
-		&opaque_birth_receipts, &key);
+	struct opaque_birth_receipt *receipt =
+		bpf_map_lookup_elem(&opaque_birth_receipts, &key);
 	if (receipt && receipt->state == 4)
 		return -1;
 	if (!receipt || receipt->state != 2 || receipt->child != key ||
@@ -1844,11 +1872,11 @@ static __attribute__((noinline)) int real_owner_birth_qualify(
 	if (se_route_admit(cgroup, &claim) != SE_ROUTE_OWNED)
 		return 0;
 	int same_claim = claim.scope == receipt->scope &&
-		claim.generation == receipt->generation &&
-		claim.serial == receipt->serial &&
-		claim.slot == receipt->slot &&
-		claim.incarnation == receipt->incarnation &&
-		claim.record == receipt->record;
+			 claim.generation == receipt->generation &&
+			 claim.serial == receipt->serial &&
+			 claim.slot == receipt->slot &&
+			 claim.incarnation == receipt->incarnation &&
+			 claim.record == receipt->record;
 	__u64 cookie = receipt->child_cookie, locator = receipt->child_locator;
 	__u64 parent = receipt->parent, parent_cookie = receipt->parent_cookie;
 	int qualified = 0, transitioned = 0;
@@ -1860,7 +1888,8 @@ static __attribute__((noinline)) int real_owner_birth_qualify(
 		struct se_ol_payload_handle owner = {};
 		if (se_ol_task_open(&key, &owner) == SE_OL_OK) {
 			struct se_task_state *task = 0;
-			if (se_op_task_semantic_begin(&owner, &task) == SE_OL_OK) {
+			if (se_op_task_semantic_begin(&owner, &task) ==
+			    SE_OL_OK) {
 				if (!owner.lease.meta->cleanup_error &&
 				    owner.lease.cookie == cookie &&
 				    owner.lease.locator == locator &&
@@ -1868,8 +1897,9 @@ static __attribute__((noinline)) int real_owner_birth_qualify(
 				    task->flags == SE_TASK_LIVE &&
 				    task->scope_cookie == claim.scope &&
 				    task->scope_slot == claim.slot &&
-				    task->committed.version && !task->exec.owned &&
-				    !task->reader.owned && !task->next_invocation) {
+				    task->committed.version &&
+				    !task->exec.owned && !task->reader.owned &&
+				    !task->next_invocation) {
 					task->flags = SE_TASK_QUALIFIED;
 					qualified = transitioned = 1;
 				}
@@ -1897,10 +1927,11 @@ static __attribute__((noinline)) int real_owner_birth_qualify(
 	    receipt->child == key && receipt->child_cookie == cookie &&
 	    receipt->child_locator == locator && receipt->parent == parent &&
 	    receipt->parent_cookie == parent_cookie &&
-	    receipt->scope == claim.scope && receipt->generation == claim.generation &&
+	    receipt->scope == claim.scope &&
+	    receipt->generation == claim.generation &&
 	    receipt->serial == claim.serial && receipt->slot == claim.slot &&
-	    receipt->incarnation == claim.incarnation && receipt->record == claim.record &&
-	    !receipt->reserved) {
+	    receipt->incarnation == claim.incarnation &&
+	    receipt->record == claim.record && !receipt->reserved) {
 		receipt->state = 3;
 		return 1;
 	}
@@ -1911,8 +1942,8 @@ static __attribute__((noinline)) int real_owner_birth_qualify(
 
 SEC("lsm/task_kill")
 long BPF_PROG(opaque_real_owner_birth_signal0_diagnostic,
-	struct task_struct *target, struct kernel_siginfo *info, int signal,
-	const struct cred *cred, int prior)
+	      struct task_struct *target, struct kernel_siginfo *info,
+	      int signal, const struct cred *cred, int prior)
 {
 	(void)info;
 	(void)cred;
@@ -1925,15 +1956,19 @@ long BPF_PROG(opaque_real_owner_birth_signal0_diagnostic,
 
 /* Keep the route claim's stack quantum out of the LSM wrapper. A source
  * return of -2 means a suspended WORK may remain and needs exact fallback. */
-static __attribute__((noinline)) int real_owner_child_prepare_claimed(
-	struct task_struct *child, unsigned long clone_flags, __u32 *mode_out,
-	int terminal_fault)
+static __attribute__((noinline)) int
+real_owner_child_prepare_claimed(struct task_struct *child,
+				 unsigned long clone_flags, __u32 *mode_out,
+				 int terminal_fault)
 {
 	struct se_route_claim claim = {};
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
 	if (admission != SE_ROUTE_OWNED) {
 		*mode_out = admission == SE_ROUTE_STRICT_FAULT ||
-			admission == SE_ROUTE_INVARIANT_FAULT ? 2 : 1;
+					    admission ==
+						    SE_ROUTE_INVARIANT_FAULT ?
+				    2 :
+				    1;
 		return -1;
 	}
 	*mode_out = claim.execution_class;
@@ -1943,11 +1978,14 @@ static __attribute__((noinline)) int real_owner_child_prepare_claimed(
 		return -1;
 	}
 	__u64 parent_cookie = 0;
-	int result = clone_flags & (1ULL << 33) ? -1 :
-		real_owner_child_prepare(&claim, &parent_cookie);
+	int result = clone_flags & (1ULL << 33) ?
+			     -1 :
+			     real_owner_child_prepare(&claim, &parent_cookie);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
-	if (!result && real_owner_child_birth_issue(child, &claim, parent_cookie))
-		result = -2; /* finish the suspended WORK, never construct a child */
+	if (!result &&
+	    real_owner_child_birth_issue(child, &claim, parent_cookie))
+		result =
+			-2; /* finish the suspended WORK, never construct a child */
 #endif
 	int released = real_owner_child_release_claim(&claim);
 	if (released && result == 0)
@@ -1959,7 +1997,7 @@ static __attribute__((noinline)) int real_owner_child_prepare_claimed(
 
 SEC("lsm/task_alloc")
 long BPF_PROG(opaque_real_owner_child_source_candidate,
-	     struct task_struct *child, unsigned long clone_flags, int prior)
+	      struct task_struct *child, unsigned long clone_flags, int prior)
 {
 	(void)child;
 	/* Preserve the verifier's signed LSM retval range. The BPF_PROG int
@@ -1977,12 +2015,13 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 		return 0;
 	int birth_fault = 0;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
-	birth_fault = real_owner_birth_qualify(
-		(struct task_struct *)bpf_get_current_task_btf()) < 0;
+	birth_fault =
+		real_owner_birth_qualify(
+			(struct task_struct *)bpf_get_current_task_btf()) < 0;
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE
-	int recovery_ret = real_owner_child_recovery_capture(child, clone_flags,
-						 prior);
+	int recovery_ret =
+		real_owner_child_recovery_capture(child, clone_flags, prior);
 	if (recovery_ret)
 		return -1; /* prior was zero; recovery may only refuse this fork */
 #endif
@@ -1996,8 +2035,8 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 			(__u64)bpf_get_current_task_btf());
 #endif
 	__u32 mode = 1;
-	int prepared = real_owner_child_prepare_claimed(child, clone_flags, &mode,
-		terminal_fault);
+	int prepared = real_owner_child_prepare_claimed(child, clone_flags,
+							&mode, terminal_fault);
 	if (prepared) {
 		if (prepared == -2)
 			real_owner_child_missing_target();
@@ -2017,9 +2056,9 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 /* Target frame: reopen original physical TASK, resume exact WORK, take a new
  * real route claim, and use its fixed original-binding snapshot. WORK and
  * claim cleanup happen even if publication or re-admission fails. */
-static __attribute__((noinline)) int real_owner_child_claimed_construct(
-	struct se_owk_semantic_handle *semantic, struct task_struct *child,
-	__u32 *mode_out)
+static __attribute__((noinline)) int
+real_owner_child_claimed_construct(struct se_owk_semantic_handle *semantic,
+				   struct task_struct *child, __u32 *mode_out)
 {
 	struct se_route_claim claim = {};
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
@@ -2042,20 +2081,22 @@ static __attribute__((noinline)) int real_owner_child_claimed_construct(
 				if (snapshot->phase == SE_SNAPSHOT_ACTIVE) {
 					int status =
 						se_op_construct_child_from_parent_work(
-						semantic, &claim, snapshot,
-						&child_key);
+							semantic, &claim,
+							snapshot, &child_key);
 					committed = status == SE_OL_OK;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE
 					attempted = 1;
 					if (!committed)
 						real_owner_fail_closed_rate(
 							status == SE_OL_LIMIT ?
-							REAL_OWNER_RATE_LIMIT :
-							REAL_OWNER_RATE_CONSTRUCT);
+								REAL_OWNER_RATE_LIMIT :
+								REAL_OWNER_RATE_CONSTRUCT);
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 					real_owner_birth_outcome(
-						status >= 0 ? (__u32)status + 1 : 5);
+						status >= 0 ?
+							(__u32)status + 1 :
+							5);
 					goto counted;
 #endif
 				}
@@ -2086,8 +2127,8 @@ counted:
  * post-publication fault cannot be converted into an LSM denial: keep the
  * exact parent charge unreapable instead. Never write a recycled slot whose
  * locator/cookie no longer matches this callback's held lease. */
-static __attribute__((noinline)) void real_owner_child_fault_open_parent(
-	const struct se_ol_payload_handle *parent)
+static __attribute__((noinline)) void
+real_owner_child_fault_open_parent(const struct se_ol_payload_handle *parent)
 {
 	if (!parent || parent->lease.held != 1 || !parent->lease.meta)
 		return;
@@ -2098,8 +2139,8 @@ static __attribute__((noinline)) void real_owner_child_fault_open_parent(
 		meta->cleanup_error = 1;
 	bpf_spin_unlock(&meta->lock);
 }
-static __attribute__((noinline)) int real_owner_child_finish(
-	struct task_struct *child, __u32 *mode_out)
+static __attribute__((noinline)) int
+real_owner_child_finish(struct task_struct *child, __u32 *mode_out)
 {
 	struct se_ol_payload_handle parent = {};
 	if (real_owner_child_open_parent(&parent) != SE_OL_OK)
@@ -2109,12 +2150,13 @@ static __attribute__((noinline)) int real_owner_child_finish(
 		goto close_parent;
 	struct se_owk_semantic_handle semantic = {};
 	struct se_invocation *work = 0;
-	if (se_owk_semantic_open(&parent, &ticket, &semantic, &work) != SE_OL_OK) {
+	if (se_owk_semantic_open(&parent, &ticket, &semantic, &work) !=
+	    SE_OL_OK) {
 		(void)se_owk_done(&parent, &ticket);
 		goto close_parent;
 	}
-	int result = real_owner_child_claimed_construct(&semantic, child,
-							 mode_out);
+	int result =
+		real_owner_child_claimed_construct(&semantic, child, mode_out);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_CLOSE_FAULT_DIAGNOSTIC
 	/* Test only: the child is already published, but the semantic handle
 	 * cannot complete. The strict LSM return must not deny that child. */
@@ -2149,17 +2191,16 @@ close_parent:
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 /* Separate lexical frame: putting a receipt value in the constructor's
  * nested WORK/publication call exceeds Rocky 4.18's 512-byte BPF stack. */
-static __attribute__((noinline)) void real_owner_child_birth_stamp(
-	struct task_struct *child)
+static __attribute__((noinline)) void
+real_owner_child_birth_stamp(struct task_struct *child)
 {
 	__u64 child_key = (__u64)child;
-	struct opaque_birth_receipt *receipt = bpf_map_lookup_elem(
-		&opaque_birth_receipts, &child_key);
+	struct opaque_birth_receipt *receipt =
+		bpf_map_lookup_elem(&opaque_birth_receipts, &child_key);
 	__u64 parent_key = (__u64)bpf_get_current_task_btf();
-	if (!receipt || receipt->state != 1 ||
-	    receipt->child != child_key || receipt->parent != parent_key ||
-	    !receipt->parent_cookie || !receipt->scope ||
-	    receipt->slot >= SE_PROFILE_BINDINGS)
+	if (!receipt || receipt->state != 1 || receipt->child != child_key ||
+	    receipt->parent != parent_key || !receipt->parent_cookie ||
+	    !receipt->scope || receipt->slot >= SE_PROFILE_BINDINGS)
 		return;
 	struct se_ol_payload_handle parent = {};
 	if (se_ol_task_open(&parent_key, &parent) != SE_OL_OK)
@@ -2168,11 +2209,11 @@ static __attribute__((noinline)) void real_owner_child_birth_stamp(
 	int parent_exact = 0;
 	if (se_op_task_semantic_begin(&parent, &task) == SE_OL_OK) {
 		parent_exact = !parent.lease.meta->cleanup_error &&
-			parent.lease.cookie == receipt->parent_cookie &&
-			task->flags == SE_TASK_QUALIFIED &&
-			task->scope_cookie == receipt->scope &&
-			task->scope_slot == receipt->slot &&
-			task->committed.version != 0;
+			       parent.lease.cookie == receipt->parent_cookie &&
+			       task->flags == SE_TASK_QUALIFIED &&
+			       task->scope_cookie == receipt->scope &&
+			       task->scope_slot == receipt->slot &&
+			       task->committed.version != 0;
 		se_op_task_semantic_end(&parent, &task);
 	}
 	if (se_ol_payload_close(&parent) != SE_OL_OK || !parent_exact)
@@ -2185,20 +2226,19 @@ static __attribute__((noinline)) void real_owner_child_birth_stamp(
 	__u64 child_locator = born.lease.locator;
 	if (se_op_task_semantic_begin(&born, &task) == SE_OL_OK) {
 		child_exact = !born.lease.meta->cleanup_error &&
-			task->flags == SE_TASK_LIVE &&
-			task->scope_cookie == receipt->scope &&
-			task->scope_slot == receipt->slot &&
-			task->committed.version != 0 &&
-			!task->exec.owned && !task->reader.owned;
+			      task->flags == SE_TASK_LIVE &&
+			      task->scope_cookie == receipt->scope &&
+			      task->scope_slot == receipt->slot &&
+			      task->committed.version != 0 &&
+			      !task->exec.owned && !task->reader.owned;
 		se_op_task_semantic_end(&born, &task);
 	}
 	if (se_ol_payload_close(&born) != SE_OL_OK || !child_exact)
 		return;
 	receipt = bpf_map_lookup_elem(&opaque_birth_receipts, &child_key);
-	if (!receipt || receipt->state != 1 ||
-	    receipt->child != child_key || receipt->parent != parent_key ||
-	    !receipt->parent_cookie || receipt->child_cookie ||
-	    receipt->child_locator)
+	if (!receipt || receipt->state != 1 || receipt->child != child_key ||
+	    receipt->parent != parent_key || !receipt->parent_cookie ||
+	    receipt->child_cookie || receipt->child_locator)
 		return;
 	receipt->child_cookie = child_cookie;
 	receipt->child_locator = child_locator;
@@ -2207,7 +2247,7 @@ static __attribute__((noinline)) void real_owner_child_birth_stamp(
 
 SEC("lsm/task_alloc")
 long BPF_PROG(opaque_real_owner_child_target_candidate,
-	     struct task_struct *child, unsigned long clone_flags, int prior)
+	      struct task_struct *child, unsigned long clone_flags, int prior)
 {
 	(void)clone_flags;
 	(void)prior;
@@ -2244,8 +2284,8 @@ int opaque_real_owner_successful_birth_candidate(
 	if (!parent || !child || parent == child ||
 	    parent != (__u64)bpf_get_current_task_btf())
 		return 0;
-	struct opaque_birth_receipt *receipt = bpf_map_lookup_elem(
-		&opaque_birth_receipts, &child);
+	struct opaque_birth_receipt *receipt =
+		bpf_map_lookup_elem(&opaque_birth_receipts, &child);
 	if (!receipt)
 		return 0;
 	receipt->observation = 1;
@@ -2253,13 +2293,12 @@ int opaque_real_owner_successful_birth_candidate(
 	    receipt->parent != parent || !receipt->scope ||
 	    !receipt->generation || !receipt->serial ||
 	    !receipt->parent_cookie || !receipt->child_cookie ||
-	    !receipt->child_locator ||
-	    receipt->slot >= SE_PROFILE_BINDINGS)
+	    !receipt->child_locator || receipt->slot >= SE_PROFILE_BINDINGS)
 		return 0;
 	receipt->observation = 2;
 	__u64 child_cgroup = 0;
-	if (BPF_CORE_READ_INTO(&child_cgroup,
-		(struct task_struct *)child, cgroups, dfl_cgrp, kn, id) ||
+	if (BPF_CORE_READ_INTO(&child_cgroup, (struct task_struct *)child,
+			       cgroups, dfl_cgrp, kn, id) ||
 	    child_cgroup != bpf_get_current_cgroup_id())
 		return 0;
 	receipt->observation = 3;
@@ -2274,7 +2313,7 @@ int opaque_real_owner_successful_birth_candidate(
  * issued receipt while this source-owned cleanup link remains attached. */
 SEC("kprobe/free_task")
 int BPF_KPROBE(opaque_real_owner_birth_free_task_candidate,
-	struct task_struct *task)
+	       struct task_struct *task)
 {
 	real_owner_birth_retire((__u64)task, 1);
 	return 0;
@@ -2285,8 +2324,9 @@ int BPF_KPROBE(opaque_real_owner_birth_free_task_candidate,
  * locks settle their respective owners. Never hold the TASK metadata lock
  * across the route/binding lookup or the route lock. A failed reader release
  * retains the charge; it cannot be translated into an empty-owner receipt. */
-static __attribute__((noinline)) int real_owner_child_exec_death(
-	struct se_of_lease *lease, struct task_struct *physical)
+static __attribute__((noinline)) int
+real_owner_child_exec_death(struct se_of_lease *lease,
+			    struct task_struct *physical)
 {
 	struct se_of_semantic_handle semantic = {};
 	struct se_pool_task_wire *payload = 0;
@@ -2296,10 +2336,11 @@ static __attribute__((noinline)) int real_owner_child_exec_death(
 	struct se_task_state *task = &payload->semantic;
 	__u32 slot = task->scope_slot;
 	__u64 invocation = task->reader_invocation;
-	int abort_ok = !task->exec.owned ||
+	int abort_ok =
+		!task->exec.owned ||
 		(task->exec.bprm && task->exec.sequence &&
-		 !se_exec_abort_locked(task, lease->cookie,
-				      task->exec.bprm, task->exec.sequence));
+		 !se_exec_abort_locked(task, lease->cookie, task->exec.bprm,
+				       task->exec.sequence));
 	if (!abort_ok)
 		lease->meta->cleanup_error = 1;
 	/* begin's successful branch holds this exact metadata lock. The generic
@@ -2321,20 +2362,20 @@ static __attribute__((noinline)) int real_owner_child_exec_death(
 	bpf_spin_lock(&route->lock);
 	int reader_ok = !task->reader.owned && !task->reader_invocation;
 	if (!reader_ok && invocation)
-		reader_ok = !se_exec_reader_release_locked(&binding->state,
-						 task, lease->cookie, invocation);
+		reader_ok = !se_exec_reader_release_locked(
+			&binding->state, task, lease->cookie, invocation);
 	bpf_spin_unlock(&route->lock);
 	/* The callback-local death lease remains held; recheck the exact TASK
 	 * identity before issuing a receipt. Reader state was observed under its
 	 * owning route lock and cannot acquire a new owner after task_free. */
 	struct se_ol_meta *meta = lease->meta;
 	bpf_spin_lock(&meta->lock);
-	int done = reader_ok && lease->held == 1 &&
-		meta->phase == SE_OL_DEAD && meta->cookie == lease->cookie &&
-		meta->locator == lease->locator && meta->active_leases &&
-		!meta->cleanup_error && !task->exec.owned &&
-		task->physical_cookie == lease->cookie &&
-		task->scope_slot == slot;
+	int done = reader_ok && lease->held == 1 && meta->phase == SE_OL_DEAD &&
+		   meta->cookie == lease->cookie &&
+		   meta->locator == lease->locator && meta->active_leases &&
+		   !meta->cleanup_error && !task->exec.owned &&
+		   task->physical_cookie == lease->cookie &&
+		   task->scope_slot == slot;
 	if (done)
 		meta->cleanup_done |= SE_OL_EXEC_DONE;
 	else
@@ -2343,8 +2384,8 @@ static __attribute__((noinline)) int real_owner_child_exec_death(
 	return done ? SE_OL_OK : SE_OL_CORRUPT;
 }
 
-static __attribute__((noinline)) void real_owner_child_work_death(
-	struct se_of_lease *lease)
+static __attribute__((noinline)) void
+real_owner_child_work_death(struct se_of_lease *lease)
 {
 	/* STALE means no suspended WORK; CONTENDED means a live WORK callback
 	 * still owns completion. Neither is a fabricated WORK_DONE receipt. */
@@ -2405,12 +2446,12 @@ int BPF_PROG(opaque_real_owner_child_final_free_candidate,
 		__u64 receipt_key = (__u64)physical;
 		const struct se_exec_terminal_receipt *receipt =
 			bpf_map_lookup_elem(&se_exec_terminal_receipts,
-				&receipt_key);
+					    &receipt_key);
 		if (receipt && receipt->physical == receipt_key &&
 		    receipt->cookie == lease.cookie &&
 		    receipt->locator == lease.locator)
 			(void)bpf_map_delete_elem(&se_exec_terminal_receipts,
-				&receipt_key);
+						  &receipt_key);
 #endif
 		(void)se_of_complete_native_unheld(&lease, physical);
 		/* Withdraw the directory entry before this address can be reused
@@ -2484,8 +2525,8 @@ int opaque_real_reuse_hold(struct __sk_buff *skb)
  * cannot be overwritten. Audit still runs, but neither prior trusted roles
  * nor an owned transaction may survive an unobserved successor exec. This
  * helper never consumes or retires the earlier receipt. */
-static __attribute__((noinline)) int real_owner_reader_quarantine_pending(
-	__u64 physical)
+static __attribute__((noinline)) int
+real_owner_reader_quarantine_pending(__u64 physical)
 {
 	struct se_ol_payload_handle owner = {};
 	if (!physical || se_ol_task_open(&physical, &owner) != SE_OL_OK)
@@ -2512,11 +2553,11 @@ static __attribute__((noinline)) int real_owner_reader_quarantine_pending(
 /* The source has released its lexical TASK lease and early claim before a
  * tail call. A missing target must reopen and quarantine the exact reader;
  * a copied receipt alone can never authorize another physical generation. */
-static __attribute__((noinline)) int real_owner_policy_abort_handoff(
-	__u64 physical, __u64 bprm)
+static __attribute__((noinline)) int
+real_owner_policy_abort_handoff(__u64 physical, __u64 bprm)
 {
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	if (!receipt || receipt->physical != physical ||
 	    receipt->bprm != bprm || !receipt->cookie || !receipt->locator ||
 	    !receipt->invocation || !receipt->scope || !receipt->generation ||
@@ -2530,7 +2571,7 @@ static __attribute__((noinline)) int real_owner_policy_abort_handoff(
 		return -1;
 	}
 	int exact = owner.lease.cookie == receipt->cookie &&
-		owner.lease.locator == receipt->locator;
+		    owner.lease.locator == receipt->locator;
 	__u32 slot = SE_OC_ACCOUNTS;
 	struct se_task_state *task = 0;
 	if (exact && se_op_task_semantic_begin(&owner, &task) == SE_OL_OK) {
@@ -2544,14 +2585,17 @@ static __attribute__((noinline)) int real_owner_policy_abort_handoff(
 	} else {
 		exact = 0;
 	}
-	struct se_shared_binding *binding = exact && slot < SE_OC_ACCOUNTS ?
-		bpf_map_lookup_elem(&se_bindings, &slot) : 0;
-	int aborted = binding &&
-		se_op_exec_reader_abort_quarantined(&owner, &binding->state,
-			bprm, receipt->invocation) == SE_OL_OK;
+	struct se_shared_binding *binding =
+		exact && slot < SE_OC_ACCOUNTS ?
+			bpf_map_lookup_elem(&se_bindings, &slot) :
+			0;
+	int aborted = binding && se_op_exec_reader_abort_quarantined(
+					 &owner, &binding->state, bprm,
+					 receipt->invocation) == SE_OL_OK;
 	int closed = se_ol_payload_close(&owner) == SE_OL_OK;
 	if (aborted && closed)
-		(void)bpf_map_delete_elem(&se_exec_terminal_receipts, &physical);
+		(void)bpf_map_delete_elem(&se_exec_terminal_receipts,
+					  &physical);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_EVAL_WORK_WITNESS_DIAGNOSTIC
 	real_owner_eval_work_outcome(aborted && closed ? 3 : 4);
 #endif
@@ -2573,19 +2617,20 @@ struct {
 	__type(key, __u32);
 	__type(value, struct opaque_real_continue_witness);
 } opaque_real_owner_continue_witness SEC(".maps");
-static __attribute__((noinline)) void real_owner_continue_observe(
-	const struct se_exec_terminal_receipt *receipt, __u64 bprm, int continued,
-	__u64 record, __u64 serial)
+static __attribute__((noinline)) void
+real_owner_continue_observe(const struct se_exec_terminal_receipt *receipt,
+			    __u64 bprm, int continued, __u64 record,
+			    __u64 serial)
 {
 	__u32 zero = 0;
-	struct opaque_real_continue_witness *w = bpf_map_lookup_elem(
-		&opaque_real_owner_continue_witness, &zero);
+	struct opaque_real_continue_witness *w =
+		bpf_map_lookup_elem(&opaque_real_owner_continue_witness, &zero);
 	if (!w || !receipt)
 		return;
-	__u64 inode = BPF_CORE_READ((struct linux_binprm *)bprm, file,
-		f_inode, i_ino);
-	__u64 dev = BPF_CORE_READ((struct linux_binprm *)bprm, file,
-		f_inode, i_sb, s_dev);
+	__u64 inode = BPF_CORE_READ((struct linux_binprm *)bprm, file, f_inode,
+				    i_ino);
+	__u64 dev = BPF_CORE_READ((struct linux_binprm *)bprm, file, f_inode,
+				  i_sb, s_dev);
 	if (continued) {
 		w->second_inode = inode;
 		w->second_dev = dev;
@@ -2614,13 +2659,15 @@ static __attribute__((noinline)) void real_owner_continue_observe(
 /* Build the plain exact receipt in its own lexical frame. The source's
  * TASK-open frame must not retain this 64-byte temporary on the older
  * kernel's deepest payload-open path. */
-static __attribute__((noinline)) int real_owner_policy_register_receipt(
-	const struct se_ol_payload_handle *owner,
-	const struct se_route_claim *claim, __u64 bprm, __u64 invocation)
+static __attribute__((noinline)) int
+real_owner_policy_register_receipt(const struct se_ol_payload_handle *owner,
+				   const struct se_route_claim *claim,
+				   __u64 bprm, __u64 invocation)
 {
 	__u64 physical = (__u64)bpf_get_current_task_btf();
 	struct se_exec_terminal_receipt receipt = {
-		.physical = physical, .bprm = bprm,
+		.physical = physical,
+		.bprm = bprm,
 		.cookie = owner->lease.cookie,
 		.locator = owner->lease.locator,
 		.invocation = invocation,
@@ -2628,19 +2675,20 @@ static __attribute__((noinline)) int real_owner_policy_register_receipt(
 		.generation = claim->generation,
 		.phase = SE_EXEC_TERMINAL_REGISTERED,
 	};
-	if (bpf_map_update_elem(&se_exec_terminal_receipts, &physical,
-		&receipt, BPF_NOEXIST)) {
+	if (bpf_map_update_elem(&se_exec_terminal_receipts, &physical, &receipt,
+				BPF_NOEXIST)) {
 		SE_DEFERRED_STORAGE_REFUSED(0);
 		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_STORAGE);
 		return 0;
 	}
 	if (real_owner_failure_bind_receipt(&receipt)) {
-		(void)bpf_map_delete_elem(&se_exec_terminal_receipts, &physical);
+		(void)bpf_map_delete_elem(&se_exec_terminal_receipts,
+					  &physical);
 		return 0;
 	}
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC
 	real_owner_continue_observe(&receipt, bprm, 0, claim->record,
-		claim->serial);
+				    claim->serial);
 #endif
 	return 1;
 }
@@ -2651,8 +2699,8 @@ struct real_owner_policy_auth {
 	__u32 record;
 };
 
-static __attribute__((noinline)) void real_owner_policy_note_prepared(
-	__u64 physical, __u64 cookie, __u64 invocation)
+static __attribute__((noinline)) void
+real_owner_policy_note_prepared(__u64 physical, __u64 cookie, __u64 invocation)
 {
 	__u32 zero = 0;
 	struct opaque_real_owner_policy_witness *witness =
@@ -2667,10 +2715,10 @@ static __attribute__((noinline)) void real_owner_policy_note_prepared(
 
 /* The only source of the original record selector is an exact live TASK
  * semantic borrow. No map-value or semantic pointer escapes this function. */
-static __attribute__((noinline)) int real_owner_policy_authenticate(
-	struct se_ol_payload_handle *owner,
-	const struct se_exec_terminal_receipt *receipt, __u64 bprm,
-	struct real_owner_policy_auth *auth)
+static __attribute__((noinline)) int
+real_owner_policy_authenticate(struct se_ol_payload_handle *owner,
+			       const struct se_exec_terminal_receipt *receipt,
+			       __u64 bprm, struct real_owner_policy_auth *auth)
 {
 	if (owner->lease.cookie != receipt->cookie ||
 	    owner->lease.locator != receipt->locator)
@@ -2679,14 +2727,14 @@ static __attribute__((noinline)) int real_owner_policy_authenticate(
 	if (se_op_task_semantic_begin(owner, &task) != SE_OL_OK)
 		return 0;
 	int exact = task->physical_cookie == receipt->cookie &&
-		task->scope_cookie == receipt->scope &&
-		task->exec.owned && task->exec.bprm == bprm &&
-		task->exec.sequence == receipt->invocation &&
-		task->exec.generation == receipt->generation &&
-		task->reader.owned &&
-		task->reader_invocation == receipt->invocation &&
-		task->reader.token.task_cookie == receipt->cookie &&
-		task->reader.token.scope == receipt->scope;
+		    task->scope_cookie == receipt->scope && task->exec.owned &&
+		    task->exec.bprm == bprm &&
+		    task->exec.sequence == receipt->invocation &&
+		    task->exec.generation == receipt->generation &&
+		    task->reader.owned &&
+		    task->reader_invocation == receipt->invocation &&
+		    task->reader.token.task_cookie == receipt->cookie &&
+		    task->reader.token.scope == receipt->scope;
 	if (exact) {
 		auth->slot = task->scope_slot;
 		auth->record = task->reader.token.record;
@@ -2702,8 +2750,9 @@ static __attribute__((noinline)) int real_owner_policy_authenticate(
 /* Failed TASK close after a possible suspension. A separate frame keeps the
  * cleanup ticket off the target -> bridge -> WORK stack chain, which was 528
  * bytes (limit 512) on exact AL2023 6.18 with the ticket in this frame. */
-static __attribute__((noinline)) void real_owner_policy_close_fault(
-	struct se_ol_payload_handle *owner, __u64 bprm, int suspended)
+static __attribute__((noinline)) void
+real_owner_policy_close_fault(struct se_ol_payload_handle *owner, __u64 bprm,
+			      int suspended)
 {
 	(void)se_op_task_owned_fault(owner, bprm);
 	if (suspended) {
@@ -2716,16 +2765,16 @@ static __attribute__((noinline)) void real_owner_policy_close_fault(
 	(void)se_ol_payload_close(owner);
 }
 #endif
-static __attribute__((noinline)) int real_owner_policy_target_core(
-	struct linux_binprm *bprm)
+static __attribute__((noinline)) int
+real_owner_policy_target_core(struct linux_binprm *bprm)
 {
 	int suspended = 0;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 	int closed;
 #endif
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	if (!receipt || receipt->physical != physical ||
 	    receipt->bprm != (__u64)bprm || !receipt->cookie ||
 	    !receipt->locator || !receipt->invocation || !receipt->scope ||
@@ -2736,8 +2785,8 @@ static __attribute__((noinline)) int real_owner_policy_target_core(
 	if (real_owner_child_open_parent(&owner) != SE_OL_OK)
 		return 0;
 	struct real_owner_policy_auth auth = {};
-	int exact = real_owner_policy_authenticate(&owner, receipt,
-		(__u64)bprm, &auth);
+	int exact = real_owner_policy_authenticate(&owner, receipt, (__u64)bprm,
+						   &auth);
 	/* The original-record index must be scalar-bounded before pointer
 	 * arithmetic; a conditional lookup alone does not carry that bound
 	 * through old verifier state joins. */
@@ -2752,18 +2801,20 @@ static __attribute__((noinline)) int real_owner_policy_target_core(
 	__u64 recovered = 0;
 	if (binding &&
 	    se_op_exec_reader_recover(&owner, &binding->state, (__u64)bprm,
-		&recovered) == SE_OL_OK &&
+				      &recovered) == SE_OL_OK &&
 	    recovered == receipt->invocation) {
 		const struct se_snapshot *snapshot =
 			&binding->state.records[bounded_record & 1ULL];
 		if (snapshot->serial == auth.serial &&
 		    snapshot->scope == receipt->scope &&
 		    snapshot->generation == receipt->generation) {
-			int prepared = real_owner_policy_bridge(&owner,
-				receipt->scope, receipt->generation, snapshot);
+			int prepared = real_owner_policy_bridge(
+				&owner, receipt->scope, receipt->generation,
+				snapshot);
 			if (!prepared)
-				real_owner_policy_note_prepared(physical,
-					owner.lease.cookie, recovered);
+				real_owner_policy_note_prepared(
+					physical, owner.lease.cookie,
+					recovered);
 			else if (prepared == 1)
 				suspended = 1;
 		}
@@ -2793,25 +2844,26 @@ close_owner:
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_STAGE_BEGIN_DIAGNOSTIC
 /* A missing stage target is not allowed to strand the suspended WORK. Reopen
  * the original current TASK and consume precisely its stage-one charge. */
-static __attribute__((noinline)) int real_owner_policy_finish_stage_one(
-	__u64 physical, __u64 bprm)
+static __attribute__((noinline)) int
+real_owner_policy_finish_stage_one(__u64 physical, __u64 bprm)
 {
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
-	if (!receipt || receipt->physical != physical || receipt->bprm != bprm ||
-	    !receipt->cookie || !receipt->locator || !receipt->scope ||
-	    receipt->phase != SE_EXEC_TERMINAL_REGISTERED || receipt->reserved)
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
+	if (!receipt || receipt->physical != physical ||
+	    receipt->bprm != bprm || !receipt->cookie || !receipt->locator ||
+	    !receipt->scope || receipt->phase != SE_EXEC_TERMINAL_REGISTERED ||
+	    receipt->reserved)
 		return -1;
 	struct se_ol_payload_handle owner = {};
 	if (se_ol_task_open(&physical, &owner) != SE_OL_OK)
 		return -1;
 	int exact = owner.lease.cookie == receipt->cookie &&
-		owner.lease.locator == receipt->locator;
+		    owner.lease.locator == receipt->locator;
 	struct se_owk_ticket ticket = {};
 	/* Consume the WORK at whichever stage it is suspended. A stage
 	 * mismatch is a non-mutating STALE replay in se_owk_resume. */
-	int resumed = exact &&
-		se_owk_resume(&owner, REAL_OWNER_EVAL_STAGE, &ticket) == SE_OL_OK;
+	int resumed = exact && se_owk_resume(&owner, REAL_OWNER_EVAL_STAGE,
+					     &ticket) == SE_OL_OK;
 	if (exact && !resumed && REAL_OWNER_EVAL_STAGE != 1) {
 		ticket = (struct se_owk_ticket){};
 		resumed = se_owk_resume(&owner, 1, &ticket) == SE_OL_OK;
@@ -2834,8 +2886,8 @@ int BPF_PROG(opaque_real_owner_policy_stage_target_candidate,
 	real_owner_rule_progress(0, -8);
 #endif
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	if (receipt && receipt->physical == physical &&
 	    receipt->bprm == (__u64)bprm && receipt->cookie &&
 	    receipt->locator && receipt->scope &&
@@ -2852,11 +2904,13 @@ int BPF_PROG(opaque_real_owner_policy_stage_target_candidate,
 			real_owner_rule_progress(0, begun);
 			payload = 0;
 			if (begun == 1)
-				bpf_tail_call(ctx, &opaque_real_owner_rule_targets, 0);
+				bpf_tail_call(ctx,
+					      &opaque_real_owner_rule_targets,
+					      0);
 #else
 			if (real_owner_policy_stage_begin(payload))
-				real_owner_policy_note_prepared(physical, cookie,
-					invocation);
+				real_owner_policy_note_prepared(
+					physical, cookie, invocation);
 			payload = 0;
 #endif
 			(void)se_owk_suspended_current(scope, 1, 2);
@@ -2871,15 +2925,15 @@ int BPF_PROG(opaque_real_owner_policy_stage_target_candidate,
  * reserved same-task WORK before any matcher read; failure only quarantines
  * this diagnostic Audit execution and closes its exact charge. */
 SEC("lsm/bprm_check_security")
-int BPF_PROG(opaque_real_owner_rule_target_candidate,
-	     struct linux_binprm *bprm, int prior)
+int BPF_PROG(opaque_real_owner_rule_target_candidate, struct linux_binprm *bprm,
+	     int prior)
 {
 	if (prior)
 		return prior;
 	real_owner_rule_progress(1, -8);
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	if (receipt && receipt->physical == physical &&
 	    receipt->bprm == (__u64)bprm && receipt->cookie &&
 	    receipt->locator && receipt->scope && receipt->invocation &&
@@ -2892,7 +2946,7 @@ int BPF_PROG(opaque_real_owner_rule_target_candidate,
 		real_owner_rule_progress(1, evaluated);
 		if (evaluated == 1)
 			real_owner_policy_note_prepared(physical, cookie,
-				invocation);
+							invocation);
 		(void)se_owk_suspended_current(scope, 1, 2);
 	}
 	(void)real_owner_policy_finish_stage_one(physical, (__u64)bprm);
@@ -2912,8 +2966,8 @@ int opaque_real_owner_alt_request_probe(struct __sk_buff *skb)
 	if (!payload)
 		return 0;
 	struct se_invocation *work = &payload->semantic;
-	(void)fe_match_alternative(&work->observation.facts,
-		&work->observation.evaluator,
+	(void)fe_match_alternative(
+		&work->observation.facts, &work->observation.evaluator,
 		&work->observation.stage_workspace.alt_request, 0);
 	return 0;
 }
@@ -2925,14 +2979,15 @@ int opaque_real_owner_alt_request_probe(struct __sk_buff *skb)
 /* Resume/propose uses new lexical authority, never the suspended-read pointer.
  * Bit 1 means proposal and lexical cleanup succeeded; bit 0 is a policy deny.
  * A clean deny leaves the reader/receipt for the actual failure terminal. */
-static __attribute__((noinline)) int real_owner_policy_propose_finished(
-	__u64 physical, __u64 bprm, __u32 mode)
+static __attribute__((noinline)) int
+real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
 {
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
-	if (!receipt || receipt->physical != physical || receipt->bprm != bprm ||
-	    !receipt->cookie || !receipt->locator || !receipt->scope ||
-	    receipt->phase != SE_EXEC_TERMINAL_REGISTERED || receipt->reserved)
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
+	if (!receipt || receipt->physical != physical ||
+	    receipt->bprm != bprm || !receipt->cookie || !receipt->locator ||
+	    !receipt->scope || receipt->phase != SE_EXEC_TERMINAL_REGISTERED ||
+	    receipt->reserved)
 		return 0;
 	struct se_ol_payload_handle owner = {};
 	if (se_ol_task_open(&physical, &owner) != SE_OL_OK)
@@ -2945,22 +3000,27 @@ static __attribute__((noinline)) int real_owner_policy_propose_finished(
 	    owner.lease.locator != receipt->locator ||
 	    se_owk_resume(&owner, REAL_OWNER_EVAL_STAGE, &ticket) != SE_OL_OK)
 		goto close;
-	if (se_owk_semantic_open(&owner, &ticket, &semantic, &work) != SE_OL_OK) {
+	if (se_owk_semantic_open(&owner, &ticket, &semantic, &work) !=
+	    SE_OL_OK) {
 		(void)se_owk_done(&owner, &ticket);
 		goto close;
 	}
 	if (work->history.transaction.execution_class == mode &&
-	    se_owk_exec_propose_reader(&semantic, receipt, physical, 0) == SE_OL_OK) {
-		const struct fe_decision *decision = &work->observation.evaluator.decision;
+	    se_owk_exec_propose_reader(&semantic, receipt, physical, 0) ==
+		    SE_OL_OK) {
+		const struct fe_decision *decision =
+			&work->observation.evaluator.decision;
 		int error = decision->error != FE_OK &&
-			decision->error != FE_AUDIT_UNKNOWN;
+			    decision->error != FE_AUDIT_UNKNOWN;
 		if (!error)
-			result = 2 | (fe_lsm_verdict(mode, 0, 0, decision) != 0);
+			result = 2 |
+				 (fe_lsm_verdict(mode, 0, 0, decision) != 0);
 	}
 	/* A clean proposal keeps this WORK for the exec terminal; a failed
 	 * suspension faults the ticket and falls back to the class verdict. */
-	if ((result & 2) && se_owk_semantic_suspend(&semantic, &work,
-		REAL_OWNER_TERMINAL_STAGE) != SE_OL_OK)
+	if ((result & 2) &&
+	    se_owk_semantic_suspend(&semantic, &work,
+				    REAL_OWNER_TERMINAL_STAGE) != SE_OL_OK)
 		result = 0;
 	if (semantic.held && work &&
 	    se_owk_semantic_done(&semantic, &work) != SE_OL_OK)
@@ -2978,8 +3038,8 @@ close:
 /* Failure class comes from the statically reached program, not a relookup of
  * a possibly absent receipt or a newer mutable route. Cleanup remains exact
  * and best-effort; neither a failure nor an Audit allow grants any role. */
-static __attribute__((always_inline)) inline long real_owner_policy_failure(
-	__u64 physical, __u64 bprm, __u32 mode)
+static __attribute__((always_inline)) inline long
+real_owner_policy_failure(__u64 physical, __u64 bprm, __u32 mode)
 {
 	(void)real_owner_policy_finish_stage_one(physical, bprm);
 	(void)real_owner_policy_abort_handoff(physical, bprm);
@@ -2994,10 +3054,10 @@ static __attribute__((always_inline)) inline long real_owner_policy_failure(
 __attribute__((noinline)) long real_owner_policy_failure_global(
 	void *ctx __attribute__((btf_decl_tag("arg:ctx"))), __u32 mode)
 {
-	struct linux_binprm *bprm = (struct linux_binprm *)
-		((unsigned long long *)ctx)[0];
+	struct linux_binprm *bprm =
+		(struct linux_binprm *)((unsigned long long *)ctx)[0];
 	return real_owner_policy_failure((__u64)bpf_get_current_task_btf(),
-		(__u64)bprm, mode == 1 ? 1 : 2);
+					 (__u64)bprm, mode == 1 ? 1 : 2);
 }
 
 /* Prepare program body: reopen the exact receipt TASK, resume the stage-1
@@ -3005,8 +3065,8 @@ __attribute__((noinline)) long real_owner_policy_failure_global(
  * Returns 1 only when the WORK is suspended at REAL_OWNER_EVAL_STAGE. */
 static __attribute__((noinline)) int real_owner_prepare_frame(__u64 physical)
 {
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	if (!receipt || receipt->physical != physical || !receipt->cookie ||
 	    !receipt->locator || !receipt->scope || !receipt->invocation ||
 	    receipt->phase != SE_EXEC_TERMINAL_REGISTERED || receipt->reserved)
@@ -3022,7 +3082,8 @@ static __attribute__((noinline)) int real_owner_prepare_frame(__u64 physical)
 	    owner.lease.locator != receipt->locator ||
 	    se_owk_resume(&owner, 1, &ticket) != SE_OL_OK)
 		goto close;
-	if (se_owk_semantic_open(&owner, &ticket, &semantic, &work) != SE_OL_OK) {
+	if (se_owk_semantic_open(&owner, &ticket, &semantic, &work) !=
+	    SE_OL_OK) {
 		(void)se_owk_done(&owner, &ticket);
 		goto close;
 	}
@@ -3044,8 +3105,9 @@ close:
 	return result;
 }
 
-static __attribute__((always_inline)) inline long real_owner_prepare_class(
-	unsigned long long *ctx, struct linux_binprm *bprm, __u32 mode)
+static __attribute__((always_inline)) inline long
+real_owner_prepare_class(unsigned long long *ctx, struct linux_binprm *bprm,
+			 __u32 mode)
 {
 	__s64 prior = (__s64)ctx[1];
 	if (prior)
@@ -3064,8 +3126,9 @@ static __attribute__((always_inline)) inline long real_owner_prepare_class(
 	return 0;
 }
 
-static __attribute__((always_inline)) inline long real_owner_policy_class(
-	unsigned long long *ctx, struct linux_binprm *bprm, __u32 mode)
+static __attribute__((always_inline)) inline long
+real_owner_policy_class(unsigned long long *ctx, struct linux_binprm *bprm,
+			__u32 mode)
 {
 	__s64 prior = (__s64)ctx[1];
 	if (prior)
@@ -3085,54 +3148,62 @@ static __attribute__((always_inline)) inline long real_owner_policy_class(
 	return 0;
 }
 
-static __attribute__((always_inline)) inline long real_owner_stage_class(
-	unsigned long long *ctx, struct linux_binprm *bprm, __u32 mode)
+static __attribute__((always_inline)) inline long
+real_owner_stage_class(unsigned long long *ctx, struct linux_binprm *bprm,
+		       __u32 mode)
 {
 	__s64 prior = (__s64)ctx[1];
 	if (prior)
 		return prior;
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	if (receipt && receipt->physical == physical &&
 	    receipt->bprm == (__u64)bprm && receipt->cookie &&
 	    receipt->locator && receipt->scope && receipt->invocation &&
-	    receipt->phase == SE_EXEC_TERMINAL_REGISTERED && !receipt->reserved) {
+	    receipt->phase == SE_EXEC_TERMINAL_REGISTERED &&
+	    !receipt->reserved) {
 		__u64 scope = receipt->scope;
-		struct se_owk_payload *payload = se_owk_suspended_current(scope,
-			REAL_OWNER_EVAL_STAGE, 1);
+		struct se_owk_payload *payload = se_owk_suspended_current(
+			scope, REAL_OWNER_EVAL_STAGE, 1);
 		if (payload) {
 			int begun = real_owner_policy_stage_begin(payload);
 			real_owner_rule_progress(0, begun);
 			payload = 0;
 			if (begun == 1) {
 				if (mode == 1)
-					bpf_tail_call(ctx, &opaque_real_rule_audit, 0);
+					bpf_tail_call(ctx,
+						      &opaque_real_rule_audit,
+						      0);
 				else
-					bpf_tail_call(ctx, &opaque_real_rule_strict, 0);
+					bpf_tail_call(ctx,
+						      &opaque_real_rule_strict,
+						      0);
 			}
-			(void)se_owk_suspended_current(scope,
-				REAL_OWNER_EVAL_STAGE, 2);
+			(void)se_owk_suspended_current(
+				scope, REAL_OWNER_EVAL_STAGE, 2);
 		}
 	}
 	return real_owner_policy_failure(physical, (__u64)bprm, mode);
 }
 
-static __attribute__((always_inline)) inline long real_owner_rule_class(
-	unsigned long long *ctx, struct linux_binprm *bprm, __u32 mode)
+static __attribute__((always_inline)) inline long
+real_owner_rule_class(unsigned long long *ctx, struct linux_binprm *bprm,
+		      __u32 mode)
 {
 	__s64 prior = (__s64)ctx[1];
 	if (prior)
 		return prior;
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &physical);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
 	int evaluated = 0;
 	__u64 held = 0;
 	if (receipt && receipt->physical == physical &&
 	    receipt->bprm == (__u64)bprm && receipt->cookie &&
 	    receipt->locator && receipt->scope && receipt->invocation &&
-	    receipt->phase == SE_EXEC_TERMINAL_REGISTERED && !receipt->reserved) {
+	    receipt->phase == SE_EXEC_TERMINAL_REGISTERED &&
+	    !receipt->reserved) {
 		__u64 scope = receipt->scope;
 		evaluated = real_owner_policy_rule_claimed_eval(scope);
 		if (evaluated == 2)
@@ -3187,15 +3258,16 @@ static __attribute__((always_inline)) inline long real_owner_rule_class(
 /* Finish program: propose the completed evaluation, or perform the exact
  * failure cleanup and class verdict. propose_finished refuses anything that
  * did not reach a clean FINISHED decision. */
-static __attribute__((always_inline)) inline long real_owner_finish_class(
-	unsigned long long *ctx, struct linux_binprm *bprm, __u32 mode)
+static __attribute__((always_inline)) inline long
+real_owner_finish_class(unsigned long long *ctx, struct linux_binprm *bprm,
+			__u32 mode)
 {
 	__s64 prior = (__s64)ctx[1];
 	if (prior)
 		return prior;
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	int result = real_owner_policy_propose_finished(physical, (__u64)bprm,
-		mode);
+	int result =
+		real_owner_policy_propose_finished(physical, (__u64)bprm, mode);
 	if (result & 2) {
 		if (result & 1) {
 			asm volatile("" ::: "memory");
@@ -3206,23 +3278,32 @@ static __attribute__((always_inline)) inline long real_owner_finish_class(
 	return real_owner_policy_failure(physical, (__u64)bprm, mode);
 }
 
-#define REAL_OWNER_CLASS_PROGRAM(name, body, mode) \
-SEC("lsm/bprm_check_security") \
-long BPF_PROG(name, struct linux_binprm *bprm, int prior) \
-{ \
-	(void)prior; \
-	return body(ctx, bprm, mode); \
-}
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_policy_audit, real_owner_policy_class, 1)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_policy_strict, real_owner_policy_class, 2)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_prepare_audit, real_owner_prepare_class, 1)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_prepare_strict, real_owner_prepare_class, 2)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_stage_audit, real_owner_stage_class, 1)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_stage_strict, real_owner_stage_class, 2)
+#define REAL_OWNER_CLASS_PROGRAM(name, body, mode)                \
+	SEC("lsm/bprm_check_security")                            \
+	long BPF_PROG(name, struct linux_binprm *bprm, int prior) \
+	{                                                         \
+		(void)prior;                                      \
+		return body(ctx, bprm, mode);                     \
+	}
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_policy_audit,
+			 real_owner_policy_class, 1)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_policy_strict,
+			 real_owner_policy_class, 2)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_prepare_audit,
+			 real_owner_prepare_class, 1)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_prepare_strict,
+			 real_owner_prepare_class, 2)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_stage_audit, real_owner_stage_class,
+			 1)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_stage_strict, real_owner_stage_class,
+			 2)
 REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_rule_audit, real_owner_rule_class, 1)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_rule_strict, real_owner_rule_class, 2)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_finish_audit, real_owner_finish_class, 1)
-REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_finish_strict, real_owner_finish_class, 2)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_rule_strict, real_owner_rule_class,
+			 2)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_finish_audit,
+			 real_owner_finish_class, 1)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_finish_strict,
+			 real_owner_finish_class, 2)
 #undef REAL_OWNER_CLASS_PROGRAM
 #endif
 
@@ -3247,7 +3328,7 @@ int BPF_PROG(opaque_real_owner_policy_target_candidate,
 	(void)suspended;
 #endif
 	(void)real_owner_policy_abort_handoff((__u64)bpf_get_current_task_btf(),
-		(__u64)bprm);
+					      (__u64)bprm);
 	return 0; /* Audit-only diagnostic; never grants a policy decision. */
 }
 #endif
@@ -3272,21 +3353,24 @@ int BPF_PROG(opaque_real_owner_terminal_retain_target,
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE
 /* Begin/recover and terminal registration are separate lexical frames: the
  * old verifier charges every live BPF call stack, not just C local bytes. */
-static __attribute__((noinline)) int real_owner_reader_open_exact(
-	struct se_ol_payload_handle *owner, struct se_route_claim *claim,
-	struct linux_binprm *bprm, __u64 *invocation_out)
+static __attribute__((noinline)) int
+real_owner_reader_open_exact(struct se_ol_payload_handle *owner,
+			     struct se_route_claim *claim,
+			     struct linux_binprm *bprm, __u64 *invocation_out)
 {
 	struct se_shared_binding *binding =
 		bpf_map_lookup_elem(&se_bindings, &claim->slot);
 	*invocation_out = 0;
 	int good = binding &&
-		se_op_exec_reader_begin(owner, claim, &binding->state,
-			(__u64)bprm, invocation_out) == SE_OL_OK;
+		   se_op_exec_reader_begin(owner, claim, &binding->state,
+					   (__u64)bprm,
+					   invocation_out) == SE_OL_OK;
 	if (good) {
 		__u64 recovered = 0;
 		good = se_op_exec_reader_recover(owner, &binding->state,
-			(__u64)bprm, &recovered) == SE_OL_OK &&
-			recovered == *invocation_out;
+						 (__u64)bprm,
+						 &recovered) == SE_OL_OK &&
+		       recovered == *invocation_out;
 	}
 	return good;
 }
@@ -3312,60 +3396,65 @@ static __attribute__((noinline)) int real_owner_reader_finish_exact(
 	    !real_owner_failure_frame_ready(key, (__u64)bprm)) {
 		SE_DEFERRED_STORAGE_REFUSED(4);
 		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_STORAGE);
-		(void)se_op_exec_reader_abort_quarantined(owner,
-			&binding->state, (__u64)bprm, invocation);
+		(void)se_op_exec_reader_abort_quarantined(
+			owner, &binding->state, (__u64)bprm, invocation);
 		invocation = 0;
 		good = 0;
 	}
-	int retained = good &&
+	int retained =
+		good &&
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 		(claim->execution_class == 1 || claim->execution_class == 2);
 #else
 		claim->execution_class == 1;
 #endif
-	if (retained && !real_owner_policy_register_receipt(owner, claim,
-		(__u64)bprm, invocation)) {
-		(void)se_op_exec_reader_abort_quarantined(owner,
-			&binding->state, (__u64)bprm, invocation);
+	if (retained && !real_owner_policy_register_receipt(
+				owner, claim, (__u64)bprm, invocation)) {
+		(void)se_op_exec_reader_abort_quarantined(
+			owner, &binding->state, (__u64)bprm, invocation);
 		retained = 0;
 		invocation = 0;
 		good = 0;
 	}
 	if (binding && invocation && !retained)
 		good = se_op_exec_reader_finish_bounded(owner, &binding->state,
-			(__u64)bprm, invocation, 0) == SE_OL_OK && good;
+							(__u64)bprm, invocation,
+							0) == SE_OL_OK &&
+		       good;
 	if (se_ol_payload_close(owner) != SE_OL_OK)
 		good = 0;
 	return (good ? 1 : 0) | (retained ? 2 : 0);
 }
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC
-static __attribute__((noinline)) int real_owner_continue_frames(
-	const struct se_exec_terminal_receipt *receipt, __u64 key, __u64 bprm)
+static __attribute__((noinline)) int
+real_owner_continue_frames(const struct se_exec_terminal_receipt *receipt,
+			   __u64 key, __u64 bprm)
 {
-	const struct se_failure_outer_frame *outer = bpf_map_lookup_elem(
-		&se_failure_outer_frames, &key);
-	const struct se_failure_handler_frame *handler = bpf_map_lookup_elem(
-		&se_failure_handler_frames, &key);
+	const struct se_failure_outer_frame *outer =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
+	const struct se_failure_handler_frame *handler =
+		bpf_map_lookup_elem(&se_failure_handler_frames, &key);
 	return outer && handler && outer->physical == key &&
-		outer->depth == 1 && !outer->uncertain &&
-		outer->bprm == bprm && outer->bprm == receipt->bprm &&
-		outer->cookie == receipt->cookie &&
-		outer->locator == receipt->locator &&
-		outer->invocation == receipt->invocation &&
-		outer->scope == receipt->scope &&
-		outer->generation == receipt->generation &&
-		handler->bprm == bprm && handler->depth == 1 && !handler->uncertain;
+	       outer->depth == 1 && !outer->uncertain && outer->bprm == bprm &&
+	       outer->bprm == receipt->bprm &&
+	       outer->cookie == receipt->cookie &&
+	       outer->locator == receipt->locator &&
+	       outer->invocation == receipt->invocation &&
+	       outer->scope == receipt->scope &&
+	       outer->generation == receipt->generation &&
+	       handler->bprm == bprm && handler->depth == 1 &&
+	       !handler->uncertain;
 }
 
 /* 0: absent/terminal, 1: recovered Audit, 2: strict fault, 3: Audit
  * fault, 4: unknown disposition. REGISTERED never reaches a fresh begin. */
-static __attribute__((noinline)) int real_owner_continue_reader(
-	struct linux_binprm *bprm, int prior_denied)
+static __attribute__((noinline)) int
+real_owner_continue_reader(struct linux_binprm *bprm, int prior_denied)
 {
 	__u64 key = (__u64)bpf_get_current_task_btf();
-	const struct se_exec_terminal_receipt *receipt = bpf_map_lookup_elem(
-		&se_exec_terminal_receipts, &key);
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
 	if (!receipt || receipt->phase != SE_EXEC_TERMINAL_REGISTERED)
 		return 0;
 	struct se_ol_payload_handle owner = {};
@@ -3383,19 +3472,26 @@ static __attribute__((noinline)) int real_owner_continue_reader(
 		}
 		se_op_task_semantic_end(&owner, &task);
 	}
-	struct se_shared_binding *binding = slot < SE_OC_ACCOUNTS ?
-		bpf_map_lookup_elem(&se_bindings, &slot) : 0;
+	struct se_shared_binding *binding =
+		slot < SE_OC_ACCOUNTS ?
+			bpf_map_lookup_elem(&se_bindings, &slot) :
+			0;
 	__u64 invocation = 0;
 	int valid = binding &&
-		se_op_exec_reader_classify(&owner, &binding->state, receipt,
-			key, (__u64)bprm) == SE_EXEC_READER_CONTINUE &&
-		real_owner_continue_frames(receipt, key, (__u64)bprm) &&
-		se_op_exec_reader_recover(&owner, &binding->state, (__u64)bprm,
-			&invocation) == SE_OL_OK && invocation == receipt->invocation;
+		    se_op_exec_reader_classify(&owner, &binding->state, receipt,
+					       key, (__u64)bprm) ==
+			    SE_EXEC_READER_CONTINUE &&
+		    real_owner_continue_frames(receipt, key, (__u64)bprm) &&
+		    se_op_exec_reader_recover(&owner, &binding->state,
+					      (__u64)bprm,
+					      &invocation) == SE_OL_OK &&
+		    invocation == receipt->invocation;
 	if (valid && prior_denied)
-		valid = se_op_task_note_prior_deny(&owner, (__u64)bprm) == SE_OL_OK;
+		valid = se_op_task_note_prior_deny(&owner, (__u64)bprm) ==
+			SE_OL_OK;
 	if (valid && !prior_denied && mode == 1)
-		real_owner_continue_observe(receipt, (__u64)bprm, 1, record, serial);
+		real_owner_continue_observe(receipt, (__u64)bprm, 1, record,
+					    serial);
 	if (se_ol_payload_close(&owner) != SE_OL_OK)
 		valid = 0;
 	if (mode == 2)
@@ -3477,7 +3573,8 @@ int BPF_PROG(real_owner_capsule_terminal, struct linux_binprm *bprm, int ret)
 {
 	__u64 id = bpf_get_current_pid_tgid();
 	(void)se_cap_on_terminal(id >> 32, (__u32)id,
-		(__u64)bpf_get_current_task_btf(), (__u64)bprm, ret);
+				 (__u64)bpf_get_current_task_btf(), (__u64)bprm,
+				 ret);
 	return 0;
 }
 SEC("fentry/bprm_execve")
@@ -3485,7 +3582,7 @@ int BPF_PROG(real_owner_capsule_entry, struct linux_binprm *bprm)
 {
 	__u64 id = bpf_get_current_pid_tgid();
 	se_cap_on_entry((__u32)id, (__u64)bpf_get_current_task_btf(),
-		(__u64)bprm);
+			(__u64)bprm);
 	return 0;
 }
 struct linux_binprm___capsule_check {
@@ -3500,23 +3597,26 @@ int BPF_PROG(real_owner_capsule_begin, struct linux_binprm *bprm)
 	if (bpf_core_field_exists(checked->is_check))
 		is_check = BPF_CORE_READ_BITFIELD_PROBED(checked, is_check);
 	(void)se_cap_on_begin(id >> 32, (__u32)id,
-		(__u64)bpf_get_current_task_btf(), (__u64)bprm, is_check);
+			      (__u64)bpf_get_current_task_btf(), (__u64)bprm,
+			      is_check);
 	return 0;
 }
 /* Separate frame: the capsule admission's views/tokens/lock sections must
  * not sum with the begin_core claim/TASK frames (dead ends 18/23). The class
  * is the frozen ORIGINAL class; the current cgroup never selects it after
  * the first selected admission of this physical exec. */
-static __attribute__((noinline)) int real_owner_cap_admit(
-	struct linux_binprm *bprm, struct se_route_claim *claim, __u32 *frozen)
+static __attribute__((noinline)) int
+real_owner_cap_admit(struct linux_binprm *bprm, struct se_route_claim *claim,
+		     __u32 *frozen)
 {
 	__u64 id = bpf_get_current_pid_tgid();
 	return se_cap_admit(id >> 32, (__u64)bpf_get_current_task_btf(),
-		(__u64)bprm, bpf_get_current_cgroup_id(), claim, frozen);
+			    (__u64)bprm, bpf_get_current_cgroup_id(), claim,
+			    frozen);
 }
 #endif
-static __attribute__((noinline)) int real_owner_reader_begin_core(
-	struct linux_binprm *bprm, int terminal_fault)
+static __attribute__((noinline)) int
+real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 {
 	if (!real_owner_image_configured())
 		return 0;
@@ -3535,7 +3635,9 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 #endif
 	if (admission != SE_ROUTE_OWNED)
 		return admission == SE_ROUTE_STRICT_FAULT ||
-		       admission == SE_ROUTE_INVARIANT_FAULT ? 1 : 0;
+				       admission == SE_ROUTE_INVARIANT_FAULT ?
+			       1 :
+			       0;
 	__u32 mode = claim.execution_class;
 	__u64 key = (__u64)bpf_get_current_task_btf();
 	struct se_ol_payload_handle owner = {};
@@ -3544,19 +3646,19 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 	 * replace the exact sequence needed for retry-safe receipt retirement. */
 	int pending_terminal = 0;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
-	pending_terminal = bpf_map_lookup_elem(&se_exec_terminal_receipts,
-		&key) != 0;
+	pending_terminal =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key) != 0;
 #endif
 	int good = !terminal_fault && !pending_terminal &&
-		real_owner_child_open_parent(&owner) == SE_OL_OK;
+		   real_owner_child_open_parent(&owner) == SE_OL_OK;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE
 	int transfer = 0;
 	if (good) {
 		__u64 invocation = 0;
-		int opened = real_owner_reader_open_exact(&owner, &claim,
-			bprm, &invocation);
+		int opened = real_owner_reader_open_exact(&owner, &claim, bprm,
+							  &invocation);
 		int step = real_owner_reader_finish_exact(&owner, &claim, bprm,
-			invocation, opened);
+							  invocation, opened);
 		good = step & 1;
 		transfer = !!(step & 2);
 	}
@@ -3566,13 +3668,15 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 			bpf_map_lookup_elem(&se_bindings, &claim.slot);
 		__u64 invocation = 0;
 		good = binding &&
-			se_op_exec_reader_begin(&owner, &claim, &binding->state,
-				(__u64)bprm, &invocation) == SE_OL_OK;
+		       se_op_exec_reader_begin(&owner, &claim, &binding->state,
+					       (__u64)bprm,
+					       &invocation) == SE_OL_OK;
 		if (good) {
 			__u64 recovered = 0;
-			good = se_op_exec_reader_recover(&owner, &binding->state,
-				(__u64)bprm, &recovered) == SE_OL_OK &&
-				recovered == invocation;
+			good = se_op_exec_reader_recover(
+				       &owner, &binding->state, (__u64)bprm,
+				       &recovered) == SE_OL_OK &&
+			       recovered == invocation;
 		}
 		/* The lifecycle variant leaves only a successfully recovered Audit
 		 * reader to the actual terminal callback. Strict remains denied here;
@@ -3585,8 +3689,9 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE
 		if (good && mode == 1 &&
 		    !real_owner_failure_frame_ready(key, (__u64)bprm)) {
-			(void)se_op_exec_reader_abort_quarantined(&owner,
-				&binding->state, (__u64)bprm, invocation);
+			(void)se_op_exec_reader_abort_quarantined(
+				&owner, &binding->state, (__u64)bprm,
+				invocation);
 			invocation = 0;
 			good = 0;
 		}
@@ -3594,7 +3699,8 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 		retained = good && mode == 1;
 		if (retained) {
 			struct se_exec_terminal_receipt receipt = {
-				.physical = key, .bprm = (__u64)bprm,
+				.physical = key,
+				.bprm = (__u64)bprm,
 				.cookie = owner.lease.cookie,
 				.locator = owner.lease.locator,
 				.invocation = invocation,
@@ -3606,15 +3712,17 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 				&se_exec_terminal_receipts, &key, &receipt,
 				BPF_NOEXIST);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE
-			if (recorded && real_owner_failure_bind_receipt(&receipt)) {
+			if (recorded &&
+			    real_owner_failure_bind_receipt(&receipt)) {
 				(void)bpf_map_delete_elem(
 					&se_exec_terminal_receipts, &key);
 				recorded = 0;
 			}
 #endif
 			if (!recorded) {
-				(void)se_op_exec_reader_abort_quarantined(&owner,
-					&binding->state, (__u64)bprm, invocation);
+				(void)se_op_exec_reader_abort_quarantined(
+					&owner, &binding->state, (__u64)bprm,
+					invocation);
 				retained = 0;
 				invocation = 0; /* no second terminal attempt */
 				good = 0;
@@ -3622,9 +3730,10 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 		}
 #endif
 		if (invocation && !retained)
-			good = se_op_exec_reader_finish_bounded(&owner,
-				&binding->state, (__u64)bprm, invocation, 0) == SE_OL_OK &&
-				good;
+			good = se_op_exec_reader_finish_bounded(
+				       &owner, &binding->state, (__u64)bprm,
+				       invocation, 0) == SE_OL_OK &&
+			       good;
 		if (se_ol_payload_close(&owner) != SE_OL_OK)
 			good = 0;
 	}
@@ -3648,8 +3757,8 @@ static __attribute__((noinline)) int real_owner_reader_begin_core(
 }
 
 SEC("lsm/bprm_check_security")
-long BPF_PROG(opaque_real_owner_reader_begin_probe,
-	     struct linux_binprm *bprm, int prior)
+long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
+	      int prior)
 {
 	/* Keep the prior LSM result and our verdict in the signed 64-bit return
 	 * domain; a 32-bit negation loses its range on the AL2023 6.12 verifier. */
@@ -3664,15 +3773,17 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe,
 	int continuation = real_owner_continue_reader(bprm, 0);
 	if (continuation) {
 		if (continuation == 1) {
-			bpf_tail_call(ctx, &opaque_real_owner_policy_targets, 0);
+			bpf_tail_call(ctx, &opaque_real_owner_policy_targets,
+				      0);
 			(void)real_owner_policy_abort_handoff(
 				(__u64)bpf_get_current_task_btf(), (__u64)bprm);
 		} else {
 			(void)real_owner_reader_quarantine_pending(
 				(__u64)bpf_get_current_task_btf());
 		}
-		if (continuation == 2 || (continuation == 4 &&
-		    (real_owner_reader_begin_core(bprm, 1) & 1))) {
+		if (continuation == 2 ||
+		    (continuation == 4 &&
+		     (real_owner_reader_begin_core(bprm, 1) & 1))) {
 			asm volatile("" ::: "memory");
 			return -1L;
 		}
@@ -3686,7 +3797,9 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe,
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 	if (real_owner_image_configured())
 		terminal_fault = real_owner_birth_qualify(
-			(struct task_struct *)bpf_get_current_task_btf()) < 0;
+					 (struct task_struct *)
+						 bpf_get_current_task_btf()) <
+				 0;
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_TERMINAL_DRAIN_DIAGNOSTIC
 	/* Keep completion outside the new claim/TASK-open stack frame. */
@@ -3702,11 +3815,14 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe,
 		if (result & 4) {
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 			if (result & 1)
-				bpf_tail_call(ctx, &opaque_real_policy_strict, 0);
+				bpf_tail_call(ctx, &opaque_real_policy_strict,
+					      0);
 			else
-				bpf_tail_call(ctx, &opaque_real_policy_audit, 0);
+				bpf_tail_call(ctx, &opaque_real_policy_audit,
+					      0);
 #else
-			bpf_tail_call(ctx, &opaque_real_owner_policy_targets, 0);
+			bpf_tail_call(ctx, &opaque_real_owner_policy_targets,
+				      0);
 #endif
 		}
 		/* Missing target or failed lexical close: never retain an unknown
@@ -3745,19 +3861,20 @@ int BPF_PROG(opaque_real_owner_reader_success_probe,
 	struct se_exec_terminal_receipt *receipt =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC
-	if (receipt && real_owner_terminal_transition(receipt, key,
-			(__u64)bprm, receipt->cookie, receipt->locator,
-			receipt->invocation, receipt->scope, receipt->generation,
-			SE_EXEC_TERMINAL_SUCCESS)) {
+	if (receipt &&
+	    real_owner_terminal_transition(
+		    receipt, key, (__u64)bprm, receipt->cookie,
+		    receipt->locator, receipt->invocation, receipt->scope,
+		    receipt->generation, SE_EXEC_TERMINAL_SUCCESS)) {
 		/* The callee may delete the receipt; do not use its pointer again. */
 		(void)real_owner_work_completion_shape(key);
 	}
 #else
 	if (receipt)
-		(void)real_owner_terminal_transition(receipt, key,
-			(__u64)bprm, receipt->cookie, receipt->locator,
-			receipt->invocation, receipt->scope, receipt->generation,
-			SE_EXEC_TERMINAL_SUCCESS);
+		(void)real_owner_terminal_transition(
+			receipt, key, (__u64)bprm, receipt->cookie,
+			receipt->locator, receipt->invocation, receipt->scope,
+			receipt->generation, SE_EXEC_TERMINAL_SUCCESS);
 #endif
 	return 0;
 }
@@ -3766,7 +3883,7 @@ int BPF_PROG(opaque_real_owner_reader_success_probe,
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_COMPLETION_PROBE
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE)
 #error "prepared WORK receipt probe requires the reader and terminal producer"
 #endif
 /* Never attached or selected. The controller supplies only a physical-key
@@ -3787,11 +3904,13 @@ struct {
 	__type(value, __u64);
 } opaque_real_owner_work_completion_selector SEC(".maps");
 
-static __attribute__((noinline)) int real_owner_work_delete_receipt_exact(
-	__u64 key, const struct se_ol_payload_handle *owner);
+static __attribute__((noinline)) int
+real_owner_work_delete_receipt_exact(__u64 key,
+				     const struct se_ol_payload_handle *owner);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
-static __attribute__((noinline)) int real_owner_work_receipt_exact(
-	__u64 key, const struct se_ol_payload_handle *owner);
+static __attribute__((noinline)) int
+real_owner_work_receipt_exact(__u64 key,
+			      const struct se_ol_payload_handle *owner);
 
 /* Terminal completion outcomes, read by the attached verdict test. */
 #define REAL_OWNER_TERMINAL_RESUMED_COMPLETED 0
@@ -3809,15 +3928,15 @@ struct {
 /* Leaf frame: keeps the key/pointer off the deep completion frame. */
 static __attribute__((noinline)) void real_owner_terminal_outcome(__u32 outcome)
 {
-	__u64 *count = bpf_map_lookup_elem(&opaque_real_terminal_outcomes,
-		&outcome);
+	__u64 *count =
+		bpf_map_lookup_elem(&opaque_real_terminal_outcomes, &outcome);
 	if (count)
 		__sync_fetch_and_add(count, 1);
 }
 #endif
 
-static __attribute__((noinline)) int real_owner_work_complete_active(
-	struct se_ol_payload_handle *owner, __u64 key)
+static __attribute__((noinline)) int
+real_owner_work_complete_active(struct se_ol_payload_handle *owner, __u64 key)
 {
 	struct se_owk_ticket ticket = {};
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
@@ -3838,7 +3957,8 @@ static __attribute__((noinline)) int real_owner_work_complete_active(
 				REAL_OWNER_TERMINAL_FALLBACK_REFUSED);
 			goto abort_work;
 		}
-		real_owner_terminal_outcome(REAL_OWNER_TERMINAL_FALLBACK_CHARGED);
+		real_owner_terminal_outcome(
+			REAL_OWNER_TERMINAL_FALLBACK_CHARGED);
 	}
 #else
 	if (real_owner_child_start_work(owner, &ticket))
@@ -3866,7 +3986,7 @@ static __attribute__((noinline)) int real_owner_work_complete_active(
 		goto semantic_done;
 	int success = receipt && receipt->phase == SE_EXEC_TERMINAL_SUCCESS;
 	if (!se_owk_terminal_receipt_matches(receipt, key, owner, task,
-			success)) {
+					     success)) {
 		se_op_task_semantic_end(owner, &task);
 		goto semantic_done;
 	}
@@ -3876,18 +3996,18 @@ static __attribute__((noinline)) int real_owner_work_complete_active(
 	se_exec_snapshot_locked(task, generation, &work->history);
 	se_op_task_semantic_end(owner, &task);
 	int completed = bprm && invocation && generation &&
-		se_owk_catalogue_fill_reader(&semantic) == SE_OL_OK &&
-		se_owk_exec_complete_reader(&semantic, bprm, invocation, success) ==
-			SE_OL_OK;
+			se_owk_catalogue_fill_reader(&semantic) == SE_OL_OK &&
+			se_owk_exec_complete_reader(&semantic, bprm, invocation,
+						    success) == SE_OL_OK;
 	int closed = se_owk_semantic_done(&semantic, &work) == SE_OL_OK;
 	int ok = completed && closed &&
-		!real_owner_work_delete_receipt_exact(key, owner);
+		 !real_owner_work_delete_receipt_exact(key, owner);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 	/* The resumed completion's final result; fallback was counted at charge. */
 	if (resumed == SE_OL_OK)
-		real_owner_terminal_outcome(ok ?
-			REAL_OWNER_TERMINAL_RESUMED_COMPLETED :
-			REAL_OWNER_TERMINAL_RESUMED_FAILED);
+		real_owner_terminal_outcome(
+			ok ? REAL_OWNER_TERMINAL_RESUMED_COMPLETED :
+			     REAL_OWNER_TERMINAL_RESUMED_FAILED);
 #endif
 	return ok ? 0 : -1;
 semantic_done:
@@ -3916,20 +4036,23 @@ abort_work:
 	return -1;
 }
 
-static __attribute__((noinline)) int real_owner_work_receipt_exact(
-	__u64 key, const struct se_ol_payload_handle *owner)
+static __attribute__((noinline)) int
+real_owner_work_receipt_exact(__u64 key,
+			      const struct se_ol_payload_handle *owner)
 {
 	const struct se_exec_terminal_receipt *receipt =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
 	return receipt &&
-		(receipt->phase == SE_EXEC_TERMINAL_SUCCESS ||
-		 receipt->phase == SE_EXEC_TERMINAL_FAILURE) &&
-		receipt->physical == key && receipt->cookie == owner->lease.cookie &&
-		receipt->locator == owner->lease.locator;
+	       (receipt->phase == SE_EXEC_TERMINAL_SUCCESS ||
+		receipt->phase == SE_EXEC_TERMINAL_FAILURE) &&
+	       receipt->physical == key &&
+	       receipt->cookie == owner->lease.cookie &&
+	       receipt->locator == owner->lease.locator;
 }
 
-static __attribute__((noinline)) int real_owner_work_delete_receipt_exact(
-	__u64 key, const struct se_ol_payload_handle *owner)
+static __attribute__((noinline)) int
+real_owner_work_delete_receipt_exact(__u64 key,
+				     const struct se_ol_payload_handle *owner)
 {
 	if (!real_owner_work_receipt_exact(key, owner))
 		return -1;
@@ -3937,8 +4060,8 @@ static __attribute__((noinline)) int real_owner_work_delete_receipt_exact(
 }
 
 /* The observation/lease stack frame ends before the WORK completion frame. */
-static __attribute__((noinline)) int real_owner_work_open_key(
-	__u64 key, struct se_ol_payload_handle *owner)
+static __attribute__((noinline)) int
+real_owner_work_open_key(__u64 key, struct se_ol_payload_handle *owner)
 {
 	return se_ol_task_open(&key, owner);
 }
@@ -3966,8 +4089,8 @@ struct {
 static __attribute__((noinline)) void real_owner_terminal_auth_enter(void)
 {
 	__u32 zero = 0;
-	struct opaque_real_terminal_race_witness *witness = bpf_map_lookup_elem(
-		&opaque_real_terminal_race_witness, &zero);
+	struct opaque_real_terminal_race_witness *witness =
+		bpf_map_lookup_elem(&opaque_real_terminal_race_witness, &zero);
 	if (!witness)
 		return;
 	__sync_fetch_and_add(&witness->authenticated, 1);
@@ -3984,8 +4107,8 @@ static __attribute__((noinline)) void real_owner_terminal_auth_enter(void)
 static __attribute__((noinline)) void real_owner_terminal_auth_exit(void)
 {
 	__u32 zero = 0;
-	struct opaque_real_terminal_race_witness *witness = bpf_map_lookup_elem(
-		&opaque_real_terminal_race_witness, &zero);
+	struct opaque_real_terminal_race_witness *witness =
+		bpf_map_lookup_elem(&opaque_real_terminal_race_witness, &zero);
 	if (witness)
 		__sync_fetch_and_sub(&witness->auth_inflight, 1);
 }
@@ -4070,7 +4193,7 @@ static __attribute__((noinline)) int real_owner_work_retry_shape(__u64 key)
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
 	if (real_owner_work_receipt_exact(key, &owner) && receipt &&
 	    se_owk_exec_settle_committed_reader(&owner, receipt, key) ==
-		SE_OL_OK)
+		    SE_OL_OK)
 		result = real_owner_work_delete_receipt_exact(key, &owner);
 	if (se_ol_payload_close(&owner) != SE_OL_OK)
 		return -2;

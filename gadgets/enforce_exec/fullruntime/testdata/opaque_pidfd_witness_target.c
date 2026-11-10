@@ -13,7 +13,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static int precreated_swap_pipe[2] = {-1, -1};
+static int precreated_swap_pipe[2] = { -1, -1 };
 static pid_t held_children[64];
 static int held_count;
 static int qualified_control[8], qualified_result[8], qualified_count;
@@ -42,7 +42,7 @@ static int release_held_children(void)
 static void *exec_from_nonleader(void *unused)
 {
 	(void)unused;
-	char *const args[] = {"/proc/self/exe", "resume", NULL};
+	char *const args[] = { "/proc/self/exe", "resume", NULL };
 	execv(args[0], args);
 	perror("nonleader exec");
 	return NULL;
@@ -64,7 +64,9 @@ int main(int argc, char **argv)
 		puts("SWAPPED");
 		fflush(stdout);
 		char command;
-		return read(STDIN_FILENO, &command, 1) == 1 && command == 'X' ? 0 : 96;
+		return read(STDIN_FILENO, &command, 1) == 1 && command == 'X' ?
+			       0 :
+			       96;
 	}
 	if (argc != 2 || argv[1][0] != '/')
 		return 90;
@@ -76,7 +78,8 @@ int main(int argc, char **argv)
 	if (precreated_swap) {
 		pthread_t thread;
 		if (pipe(precreated_swap_pipe) ||
-		    pthread_create(&thread, NULL, exec_from_precreated_nonleader, NULL))
+		    pthread_create(&thread, NULL,
+				   exec_from_precreated_nonleader, NULL))
 			return 101;
 	}
 	puts("READY");
@@ -130,7 +133,8 @@ int main(int argc, char **argv)
 				if (prctl(PR_SET_PDEATHSIG, SIGKILL) ||
 				    getppid() != parent)
 					_exit(104);
-				for (;;) pause();
+				for (;;)
+					pause();
 			}
 			held_children[held_count++] = child;
 			printf("HELD:%d\n", child);
@@ -151,15 +155,18 @@ int main(int argc, char **argv)
 				close(control[1]);
 				close(result[0]);
 				if (prctl(PR_SET_PDEATHSIG, SIGKILL) ||
-				    getppid() != parent || write(result[1], "R", 1) != 1)
+				    getppid() != parent ||
+				    write(result[1], "R", 1) != 1)
 					_exit(110);
 				char action;
-				if (read(control[0], &action, 1) != 1 || action != 'B')
+				if (read(control[0], &action, 1) != 1 ||
+				    action != 'B')
 					_exit(111);
 				/* All held parents must reach this barrier before any of
 				 * them attempts its first fork. */
 				if (write(result[1], "A", 1) != 1 ||
-				    read(control[0], &action, 1) != 1 || action != 'G')
+				    read(control[0], &action, 1) != 1 ||
+				    action != 'G')
 					_exit(118);
 				pid_t grandchild = fork();
 				char outcome = '0';
@@ -170,15 +177,18 @@ int main(int argc, char **argv)
 					_exit(0);
 				} else {
 					int status;
-					if (waitpid(grandchild, &status, 0) != grandchild ||
-					    !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+					if (waitpid(grandchild, &status, 0) !=
+						    grandchild ||
+					    !WIFEXITED(status) ||
+					    WEXITSTATUS(status) != 0)
 						outcome = 'E';
 					else
 						outcome = '1';
 				}
 				if (write(result[1], &outcome, 1) != 1)
 					_exit(112);
-				for (;;) pause();
+				for (;;)
+					pause();
 			}
 			close(control[0]);
 			close(result[1]);
@@ -200,7 +210,8 @@ int main(int argc, char **argv)
 					return 115;
 			for (int i = 0; i < qualified_count; i++) {
 				char arrived;
-				if (read(qualified_result[i], &arrived, 1) != 1 ||
+				if (read(qualified_result[i], &arrived, 1) !=
+					    1 ||
 				    arrived != 'A')
 					return 119;
 			}
@@ -212,9 +223,12 @@ int main(int argc, char **argv)
 				char outcome;
 				if (read(qualified_result[i], &outcome, 1) != 1)
 					return 116;
-				if (outcome == '1') succeeded++;
-				else if (outcome == '0') denied++;
-				else return 117;
+				if (outcome == '1')
+					succeeded++;
+				else if (outcome == '0')
+					denied++;
+				else
+					return 117;
 			}
 			printf("BURST:%d:%d\n", succeeded, denied);
 			fflush(stdout);
@@ -232,16 +246,19 @@ int main(int argc, char **argv)
 			if (precreated_swap) {
 				if (write(precreated_swap_pipe[1], "T", 1) != 1)
 					return 102;
-				for (;;) pause(); /* nonleader exec replaces this leader */
+				for (;;)
+					pause(); /* nonleader exec replaces this leader */
 			}
 			pthread_t thread;
-			if (pthread_create(&thread, NULL, exec_from_nonleader, NULL))
+			if (pthread_create(&thread, NULL, exec_from_nonleader,
+					   NULL))
 				return 97;
 			pthread_join(thread, NULL);
 			return 98;
 		}
 		if (command == 'X')
-			return held_count && release_held_children() < 0 ? 106 : 0;
+			return held_count && release_held_children() < 0 ? 106 :
+									   0;
 		return 95;
 	}
 }

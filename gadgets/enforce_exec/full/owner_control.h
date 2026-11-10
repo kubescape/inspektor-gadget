@@ -786,11 +786,14 @@ struct eo_seal_list_scan {
  * The caller retains the exclusive workspace and stamped candidate-bank claim
  * across all nested references. No locks are held here. */
 __noinline int eo_seal_value(const struct fm_blob *value,
- struct eo_seal_workspace *workspace, __u32 kind, __u32 bank, __u64 attempt)
+			     struct eo_seal_workspace *workspace, __u32 kind,
+			     __u32 bank, __u64 attempt)
 {
- if(!value || !workspace || kind>EO_SEAL_FILESYSTEM || bank>1 ||
-    !attempt || attempt==~0ULL) return -1;
- const struct eo_seal_source source={.bank=bank,.attempt=attempt};
+	if (!value || !workspace || kind > EO_SEAL_FILESYSTEM || bank > 1 ||
+	    !attempt || attempt == ~0ULL)
+		return -1;
+	const struct eo_seal_source source = { .bank = bank,
+					       .attempt = attempt };
 	if ((kind == EO_SEAL_IDENTITY && !value->words[0]) ||
 	    (kind == EO_SEAL_UID && value->words[0] > 0xffffffffULL))
 		return -1;
@@ -817,21 +820,23 @@ __noinline int eo_seal_value(const struct fm_blob *value,
 		       !__builtin_memcmp(string->bytes, "overlay", 7))))
 			return -1;
 	}
- return 0;
+	return 0;
 }
 static long eo_seal_list_step(__u32 i, void *opaque)
 {
- struct eo_seal_list_scan *scan=opaque;
- if(i>=256 || i>=scan->list.count || !scan->list.base ||
-    scan->list.base>=16384 || i>=16384-scan->list.base) goto invalid;
- const struct fm_blob *value=eo_program_blob(scan->source.bank,
-  scan->list.base+i,scan->source.attempt);
- if(!value || eo_seal_value(value,scan->workspace,scan->kind,
-  scan->source.bank,scan->source.attempt)) goto invalid;
- return 0;
+	struct eo_seal_list_scan *scan = opaque;
+	if (i >= 256 || i >= scan->list.count || !scan->list.base ||
+	    scan->list.base >= 16384 || i >= 16384 - scan->list.base)
+		goto invalid;
+	const struct fm_blob *value = eo_program_blob(
+		scan->source.bank, scan->list.base + i, scan->source.attempt);
+	if (!value || eo_seal_value(value, scan->workspace, scan->kind,
+				    scan->source.bank, scan->source.attempt))
+		goto invalid;
+	return 0;
 invalid:
- scan->invalid=1;
- return 1;
+	scan->invalid = 1;
+	return 1;
 }
 static __always_inline int eo_seal_list(struct fe_list list, int kind,
 					struct eo_seal_workspace *workspace,

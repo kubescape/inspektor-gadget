@@ -23,10 +23,10 @@ struct se_of_semantic_handle {
 	__u32 locked;
 };
 
-static __attribute__((always_inline)) inline int se_of_semantic_begin(
-	struct se_of_lease *lease, struct task_struct *physical,
-	struct se_of_semantic_handle *handle,
-	struct se_pool_task_wire **payload_out)
+static __attribute__((always_inline)) inline int
+se_of_semantic_begin(struct se_of_lease *lease, struct task_struct *physical,
+		     struct se_of_semantic_handle *handle,
+		     struct se_pool_task_wire **payload_out)
 {
 	if (!lease || lease->held != 1 || lease->locked || !lease->meta ||
 	    !physical || lease->physical != physical || !handle ||
@@ -42,7 +42,8 @@ static __attribute__((always_inline)) inline int se_of_semantic_begin(
 		return SE_OL_CORRUPT;
 	struct se_ol_meta *meta = lease->meta;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->locator == lease->locator &&
+	int exact =
+		meta->locator == lease->locator &&
 		meta->cookie == lease->cookie && meta->active_leases &&
 		(meta->phase == SE_OL_DEAD || meta->phase == SE_OL_CLEANING) &&
 		meta->directory_state == SE_OL_PUBLISHED &&
@@ -63,21 +64,22 @@ static __attribute__((always_inline)) inline int se_of_semantic_begin(
 	}
 	lease->locked = 1;
 	*handle = (struct se_of_semantic_handle){
-		.lease = lease, .payload = payload, .locked = 1,
+		.lease = lease,
+		.payload = payload,
+		.locked = 1,
 	};
 	*payload_out = payload;
 	return SE_OL_OK;
 }
 
-static __attribute__((always_inline)) inline int se_of_semantic_end(
-	struct se_of_semantic_handle *handle,
-	struct se_pool_task_wire **payload_out)
+static __attribute__((always_inline)) inline int
+se_of_semantic_end(struct se_of_semantic_handle *handle,
+		   struct se_pool_task_wire **payload_out)
 {
 	if (!handle || handle->locked != 1 || !handle->lease ||
 	    !handle->payload || !payload_out ||
-	    *payload_out != handle->payload ||
-	    handle->lease->held != 1 || handle->lease->locked != 1 ||
-	    !handle->lease->meta)
+	    *payload_out != handle->payload || handle->lease->held != 1 ||
+	    handle->lease->locked != 1 || !handle->lease->meta)
 		return SE_OL_CORRUPT;
 	struct se_ol_meta *meta = handle->lease->meta;
 	*payload_out = 0;

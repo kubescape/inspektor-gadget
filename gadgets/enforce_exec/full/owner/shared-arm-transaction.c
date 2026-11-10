@@ -9,7 +9,7 @@ static int se_arm_request_padding_zero(const struct se_arm_request *request)
 {
 	const unsigned char *bytes = (const unsigned char *)request;
 	for (size_t i = offsetof(struct se_arm_request, bank_index) +
-			 sizeof(request->bank_index);
+			sizeof(request->bank_index);
 	     i < offsetof(struct se_arm_request, epochs); i++)
 		if (bytes[i])
 			return 0;
@@ -32,8 +32,8 @@ int se_arm_tx_stage(struct se_arm_transaction *tx,
 	if (!tx || !request || !ops || !ops->journal || !ops->write_request ||
 	    tx->phase != SE_ARM_TX_EMPTY || !tx->node_cookie ||
 	    request->node_cookie != tx->node_cookie || request->reserved ||
-	    !se_arm_request_padding_zero(request) ||
-	    !request->sequence || request->sequence == ULLONG_MAX ||
+	    !se_arm_request_padding_zero(request) || !request->sequence ||
+	    request->sequence == ULLONG_MAX ||
 	    request->sequence <= tx->last_sequence ||
 	    (request->operation != SE_ARM_BIND &&
 	     request->operation != SE_ARM_COMMIT &&
@@ -78,7 +78,8 @@ int se_arm_tx_receipt_matches(const struct se_arm_request *request,
 	case SE_ARM_COMMIT:
 		return request->expected_generation < ULLONG_MAX - 1 &&
 		       request->serial &&
-		       receipt->generation == request->expected_generation + 1 &&
+		       receipt->generation ==
+			       request->expected_generation + 1 &&
 		       receipt->serial == request->serial;
 	case SE_ARM_WITHDRAW:
 		return receipt->generation == request->expected_generation &&

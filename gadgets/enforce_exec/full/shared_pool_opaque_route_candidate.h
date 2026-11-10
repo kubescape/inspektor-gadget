@@ -18,9 +18,9 @@
  * no second route counter or cross-lock refund is created. The selected
  * image must route every opaque constructor through this adapter and every
  * route recycle through se_oc_route_recycle below. */
-static __attribute__((noinline)) int se_oc_reserve_route_claim(
-	const struct se_route_claim *claim,
-	struct se_oc_reservation *reservation)
+static __attribute__((noinline)) int
+se_oc_reserve_route_claim(const struct se_route_claim *claim,
+			  struct se_oc_reservation *reservation)
 {
 	if (!claim || !reservation || !claim->owned || claim->reserved ||
 	    claim->slot >= SE_OC_ACCOUNTS || reservation->held ||
@@ -37,14 +37,13 @@ static __attribute__((noinline)) int se_oc_reserve_route_claim(
 	 * opaque account. A WORK can outlive its TASK, so checking only the
 	 * legacy TASK counter permits a mixed-owner transition. */
 	int mixed_or_faulted = route->tasks_used || route->scratch_used ||
-		route->reserved;
+			       route->reserved;
 	bpf_spin_unlock(&route->lock);
 	if (!valid)
 		return SE_OL_STALE;
 	if (mixed_or_faulted)
 		return SE_OL_CORRUPT;
-	int result = se_oc_bind_account(slot, claim->scope,
-					claim->incarnation);
+	int result = se_oc_bind_account(slot, claim->scope, claim->incarnation);
 	if (result != SE_OL_OK)
 		return result;
 	return se_oc_reserve_any(slot, claim->scope, claim->incarnation,
@@ -59,8 +58,8 @@ static __attribute__((noinline)) int se_oc_reserve_route_claim(
  * no helper under either lock. A stale/replaced account never authorizes
  * recycling its old route. The selected control path must use this adapter,
  * not se_route_recycle_locked directly. */
-static __attribute__((noinline)) int se_oc_route_recycle(
-	__u32 slot, const struct se_binding_snapshots *snapshots)
+static __attribute__((noinline)) int
+se_oc_route_recycle(__u32 slot, const struct se_binding_snapshots *snapshots)
 {
 	if (slot >= SE_OC_ACCOUNTS || !snapshots)
 		return SE_OL_CORRUPT;
@@ -72,8 +71,9 @@ static __attribute__((noinline)) int se_oc_route_recycle(
 	__u32 incarnation;
 	bpf_spin_lock(&route->lock);
 	int withdraw_ready = route->phase == SE_ROUTE_WITHDRAWN &&
-		!route->early_claims && route->payload_slot == slot &&
-		route->scope && route->incarnation && !route->reserved;
+			     !route->early_claims &&
+			     route->payload_slot == slot && route->scope &&
+			     route->incarnation && !route->reserved;
 	scope = route->scope;
 	incarnation = route->incarnation;
 	bpf_spin_unlock(&route->lock);
@@ -81,11 +81,11 @@ static __attribute__((noinline)) int se_oc_route_recycle(
 		return SE_OL_STALE;
 	bpf_spin_lock(&account->lock);
 	int healthy = !account->fault && !account->reserved &&
-		account->used <= SE_OC_QUOTA &&
-		se_oc_bitmap_count(account) == account->used &&
-		((!account->scope && !account->incarnation) ||
-		 (account->scope == scope &&
-		  account->incarnation == incarnation));
+		      account->used <= SE_OC_QUOTA &&
+		      se_oc_bitmap_count(account) == account->used &&
+		      ((!account->scope && !account->incarnation) ||
+		       (account->scope == scope &&
+			account->incarnation == incarnation));
 	int occupied = account->used != 0;
 	bpf_spin_unlock(&account->lock);
 	if (!healthy)
@@ -95,9 +95,9 @@ static __attribute__((noinline)) int se_oc_route_recycle(
 	SE_OC_AFTER_RECYCLE_ACCOUNT_CHECK();
 	bpf_spin_lock(&route->lock);
 	int exact = route->phase == SE_ROUTE_WITHDRAWN &&
-		!route->early_claims && route->payload_slot == slot &&
-		route->scope == scope && route->incarnation == incarnation &&
-		!route->reserved;
+		    !route->early_claims && route->payload_slot == slot &&
+		    route->scope == scope &&
+		    route->incarnation == incarnation && !route->reserved;
 	int result = exact ? se_route_recycle_locked(route, snapshots) : -1;
 	bpf_spin_unlock(&route->lock);
 	return result ? SE_OL_STALE : SE_OL_OK;

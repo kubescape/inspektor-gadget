@@ -31,7 +31,8 @@ struct se_arm_tx_ops {
 	void *ctx;
 	/* Must durably fsync before returning success; no permit on failure. */
 	int (*journal)(void *, enum se_arm_journal_phase,
-		       const struct se_arm_request *, const struct se_arm_receipt *);
+		       const struct se_arm_request *,
+		       const struct se_arm_receipt *);
 	/* S's exclusive writer FD; no other writer may change this map value. */
 	int (*write_request)(void *, const struct se_arm_request *);
 	/* Exactly one explicit token to the committed physical A. An error or
@@ -48,7 +49,8 @@ int se_arm_tx_stage(struct se_arm_transaction *, const struct se_arm_request *,
 		    const struct se_arm_tx_ops *);
 int se_arm_tx_permit(struct se_arm_transaction *, const struct se_arm_tx_ops *);
 int se_arm_tx_reconcile(struct se_arm_transaction *,
-			const struct se_arm_receipt *, const struct se_arm_tx_ops *);
+			const struct se_arm_receipt *,
+			const struct se_arm_tx_ops *);
 /* Exact wire receipt predicate, shared with durable journal replay. This
  * does not replace the separate locked descendant-state proof. */
 int se_arm_tx_receipt_matches(const struct se_arm_request *,

@@ -134,13 +134,19 @@ static long bpf_loop(__u32 count, long (*callback)(__u32, void *),
 	return count;
 }
 static int short_seal_loop;
-static long seal_test_loop(unsigned int count, long (*callback)(unsigned int, void *), void *context)
+static long seal_test_loop(unsigned int count,
+			   long (*callback)(unsigned int, void *),
+			   void *context)
 {
- if(short_seal_loop) { short_seal_loop=0; return count ? (long)count-1 : -1; }
- return fm_c_loop(count,callback,context);
+	if (short_seal_loop) {
+		short_seal_loop = 0;
+		return count ? (long)count - 1 : -1;
+	}
+	return fm_c_loop(count, callback, context);
 }
 #undef FE_LOOP
-#define FE_LOOP(count, callback, context) seal_test_loop(count, callback, context)
+#define FE_LOOP(count, callback, context) \
+	seal_test_loop(count, callback, context)
 /* ACTUAL_SEAL */
 struct eo_health {
 	__u64 authority_version, active_generation, ready_generation,
@@ -288,44 +294,47 @@ static void retained_seal_source(void)
 	}
 }
 
-
 static void item_boundary_controls(void)
 {
- reset(2);
- struct fm_blob value={};
- struct eo_seal_workspace workspace={};
- assert(eo_seal_value(0,&workspace,EO_SEAL_UID,1,2));
- assert(eo_seal_value(&value,0,EO_SEAL_UID,1,2));
- assert(eo_seal_value(&value,&workspace,99,1,2));
- assert(eo_seal_value(&value,&workspace,EO_SEAL_UID,2,2));
- assert(eo_seal_value(&value,&workspace,EO_SEAL_UID,1,0));
- assert(eo_seal_value(&value,&workspace,EO_SEAL_IDENTITY,1,2));
- value.words[0]=0xffffffffULL;
- assert(!eo_seal_value(&value,&workspace,EO_SEAL_UID,1,2));
- value.words[0]++;
- assert(eo_seal_value(&value,&workspace,EO_SEAL_UID,1,2));
- value.words[0]=1; value.words[35]=1;
- assert(eo_seal_value(&value,&workspace,EO_SEAL_IDENTITY,1,2));
- value.words[35]=0;
- assert(!eo_seal_value(&value,&workspace,EO_SEAL_IDENTITY,1,2));
- struct eo_seal_source source={.bank=1,.attempt=2};
- put(12,&value,sizeof(value));
- short_seal_loop=1;
- assert(eo_seal_list((struct fe_list){12,1},EO_SEAL_IDENTITY,&workspace,source));
- assert(!short_seal_loop);
- assert(!eo_seal_list((struct fe_list){12,1},EO_SEAL_IDENTITY,&workspace,source));
- struct fm_pattern pattern={.code_base=13,.count=1,.start=0};
- memset(&value,0,sizeof(value)); memcpy(&value,&pattern,sizeof(pattern));
- struct fm_instruction instruction={.op=FM_MATCH};
- put(13,&instruction,sizeof(instruction));
- short_seal_loop=1;
- assert(eo_seal_value(&value,&workspace,EO_SEAL_PATTERN,1,2));
- assert(!short_seal_loop);
- assert(!eo_seal_value(&value,&workspace,EO_SEAL_PATTERN,1,2));
+	reset(2);
+	struct fm_blob value = {};
+	struct eo_seal_workspace workspace = {};
+	assert(eo_seal_value(0, &workspace, EO_SEAL_UID, 1, 2));
+	assert(eo_seal_value(&value, 0, EO_SEAL_UID, 1, 2));
+	assert(eo_seal_value(&value, &workspace, 99, 1, 2));
+	assert(eo_seal_value(&value, &workspace, EO_SEAL_UID, 2, 2));
+	assert(eo_seal_value(&value, &workspace, EO_SEAL_UID, 1, 0));
+	assert(eo_seal_value(&value, &workspace, EO_SEAL_IDENTITY, 1, 2));
+	value.words[0] = 0xffffffffULL;
+	assert(!eo_seal_value(&value, &workspace, EO_SEAL_UID, 1, 2));
+	value.words[0]++;
+	assert(eo_seal_value(&value, &workspace, EO_SEAL_UID, 1, 2));
+	value.words[0] = 1;
+	value.words[35] = 1;
+	assert(eo_seal_value(&value, &workspace, EO_SEAL_IDENTITY, 1, 2));
+	value.words[35] = 0;
+	assert(!eo_seal_value(&value, &workspace, EO_SEAL_IDENTITY, 1, 2));
+	struct eo_seal_source source = { .bank = 1, .attempt = 2 };
+	put(12, &value, sizeof(value));
+	short_seal_loop = 1;
+	assert(eo_seal_list((struct fe_list){ 12, 1 }, EO_SEAL_IDENTITY,
+			    &workspace, source));
+	assert(!short_seal_loop);
+	assert(!eo_seal_list((struct fe_list){ 12, 1 }, EO_SEAL_IDENTITY,
+			     &workspace, source));
+	struct fm_pattern pattern = { .code_base = 13, .count = 1, .start = 0 };
+	memset(&value, 0, sizeof(value));
+	memcpy(&value, &pattern, sizeof(pattern));
+	struct fm_instruction instruction = { .op = FM_MATCH };
+	put(13, &instruction, sizeof(instruction));
+	short_seal_loop = 1;
+	assert(eo_seal_value(&value, &workspace, EO_SEAL_PATTERN, 1, 2));
+	assert(!short_seal_loop);
+	assert(!eo_seal_value(&value, &workspace, EO_SEAL_PATTERN, 1, 2));
 }
 int main(void)
 {
- item_boundary_controls();
+	item_boundary_controls();
 	retained_seal_source();
 	/* COMPILED_DEPENDENCY_CASES */
 	reset(2);

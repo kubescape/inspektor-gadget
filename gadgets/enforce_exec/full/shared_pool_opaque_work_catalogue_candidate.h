@@ -17,21 +17,20 @@
  * non-OK result. The lookup must return ER_UNKNOWN on unavailable evidence;
  * zero means COMPLETE history proves the UID was never accepted. No helper is
  * called under a spinlock. Scope/generation publish only after all rows. */
-static __attribute__((always_inline)) inline int se_owk_catalogue_fill_after_authority(
-	struct se_owk_semantic_handle *handle,
-	__u64 scope, __u64 generation)
+static __attribute__((always_inline)) inline int
+se_owk_catalogue_fill_after_authority(struct se_owk_semantic_handle *handle,
+				      __u64 scope, __u64 generation)
 {
-	if (!handle || handle->held != 1 || !handle->owner ||
-	    !handle->ticket || !handle->payload || !scope || !generation)
+	if (!handle || handle->held != 1 || !handle->owner || !handle->ticket ||
+	    !handle->payload || !scope || !generation)
 		return SE_OL_CORRUPT;
 	struct se_ol_payload_handle *owner = handle->owner;
 	struct se_owk_ticket *ticket = handle->ticket;
 	struct se_owk_payload *payload = handle->payload;
 	struct se_invocation *semantic = &payload->semantic;
 	struct se_pool_epoch_cache *cache = &payload->catalogue;
-	if (owner->locked || owner->lease.held != 1 ||
-	    !owner->lease.meta || !owner->payload ||
-	    ticket->held != 1 || ticket->stage != 3 ||
+	if (owner->locked || owner->lease.held != 1 || !owner->lease.meta ||
+	    !owner->payload || ticket->held != 1 || ticket->stage != 3 ||
 	    !ticket->cookie || !ticket->invocation_sequence ||
 	    ticket->scope != scope ||
 	    owner->lease.locator != ticket->owner_locator ||
@@ -42,14 +41,13 @@ static __attribute__((always_inline)) inline int se_owk_catalogue_fill_after_aut
 	    semantic->sequence != ticket->invocation_sequence ||
 	    semantic->slot != ticket->work_slot || semantic->reserved ||
 	    semantic->history.scope_cookie != scope ||
-	    semantic->history.view.work.authority_version !=
-		generation || cache->scope || cache->generation)
+	    semantic->history.view.work.authority_version != generation ||
+	    cache->scope || cache->generation)
 		return SE_OL_CORRUPT;
 	const struct er_work *snapshot = &semantic->history.view.work;
 	for (__u32 i = 0; i < ER_SLOTS; i++) {
 		__u64 uid = snapshot->rows[i].uid;
-		__u64 accepted = uid ?
-			SE_OWK_CATALOGUE_EPOCH(scope, uid) : 0;
+		__u64 accepted = uid ? SE_OWK_CATALOGUE_EPOCH(scope, uid) : 0;
 		cache->rows[i].uid = uid;
 		cache->rows[i].accepted_epoch = accepted;
 		if (accepted == ER_UNKNOWN)
@@ -59,14 +57,14 @@ static __attribute__((always_inline)) inline int se_owk_catalogue_fill_after_aut
 	cache->generation = generation;
 	return SE_OL_OK;
 }
-static __attribute__((always_inline)) inline int se_owk_catalogue_fill(
-	struct se_owk_semantic_handle *handle,
-	const struct se_route_claim *claim)
+static __attribute__((always_inline)) inline int
+se_owk_catalogue_fill(struct se_owk_semantic_handle *handle,
+		      const struct se_route_claim *claim)
 {
 	if (!claim || !claim->owned || claim->reserved)
 		return SE_OL_CORRUPT;
 	return se_owk_catalogue_fill_after_authority(handle, claim->scope,
-		claim->generation);
+						     claim->generation);
 }
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE
@@ -78,14 +76,15 @@ static __attribute__((always_inline)) inline int se_owk_catalogue_fill(
  * handles, and not issue a concurrent source completion, through the LAST
  * cache lookup. This predicate issues no lease and must not be used with a
  * copied reader token or current-cgroup tuple. */
-static __attribute__((always_inline)) inline int se_owk_reader_catalogue_authority(
-	const struct se_owk_semantic_handle *handle, __u64 generation)
+static __attribute__((always_inline)) inline int
+se_owk_reader_catalogue_authority(const struct se_owk_semantic_handle *handle,
+				  __u64 generation)
 {
-	if (!handle || handle->held != 1 || !handle->owner ||
-	    !handle->ticket || !handle->payload || !generation ||
-	    handle->owner->locked || handle->owner->lease.held != 1 ||
-	    !handle->owner->lease.meta || !handle->owner->payload ||
-	    handle->ticket->held != 1 || handle->ticket->stage != 3 ||
+	if (!handle || handle->held != 1 || !handle->owner || !handle->ticket ||
+	    !handle->payload || !generation || handle->owner->locked ||
+	    handle->owner->lease.held != 1 || !handle->owner->lease.meta ||
+	    !handle->owner->payload || handle->ticket->held != 1 ||
+	    handle->ticket->stage != 3 ||
 	    handle->ticket->account_slot >= SE_OWK_ACCOUNTS ||
 	    handle->ticket->owner_slot >= SE_OL_TASKS ||
 	    handle->owner->lease.slot != handle->ticket->owner_slot ||
@@ -93,10 +92,9 @@ static __attribute__((always_inline)) inline int se_owk_reader_catalogue_authori
 	    handle->owner->lease.locator != handle->ticket->owner_locator ||
 	    handle->ticket->scope != handle->owner->lease.meta->account_scope ||
 	    handle->ticket->incarnation !=
-		handle->owner->lease.meta->account_incarnation)
+		    handle->owner->lease.meta->account_incarnation)
 		return SE_OL_CORRUPT;
-	const struct se_exec_work *history =
-		&handle->payload->semantic.history;
+	const struct se_exec_work *history = &handle->payload->semantic.history;
 	if (history->physical_cookie != handle->ticket->owner_cookie ||
 	    history->scope_cookie != handle->ticket->scope ||
 	    !history->transaction.owned || !history->transaction.bprm ||
@@ -113,17 +111,17 @@ static __attribute__((always_inline)) inline int se_owk_reader_catalogue_authori
 	struct se_pool_task_wire *task_payload = handle->owner->payload;
 	bpf_spin_lock(&route->lock);
 	int valid = route->incarnation == handle->ticket->incarnation &&
-		se_exec_reader_authority_locked(route, binding,
-			&task_payload->semantic, slot,
-			handle->ticket->scope, generation,
-			handle->ticket->owner_cookie,
-			history->transaction.sequence,
-			history->transaction.execution_class);
+		    se_exec_reader_authority_locked(
+			    route, binding, &task_payload->semantic, slot,
+			    handle->ticket->scope, generation,
+			    handle->ticket->owner_cookie,
+			    history->transaction.sequence,
+			    history->transaction.execution_class);
 	bpf_spin_unlock(&route->lock);
 	return valid ? SE_OL_OK : SE_OL_STALE;
 }
-static __attribute__((always_inline)) inline int se_owk_catalogue_fill_reader(
-	struct se_owk_semantic_handle *handle)
+static __attribute__((always_inline)) inline int
+se_owk_catalogue_fill_reader(struct se_owk_semantic_handle *handle)
 {
 	if (!handle || !handle->payload)
 		return SE_OL_CORRUPT;
@@ -132,11 +130,11 @@ static __attribute__((always_inline)) inline int se_owk_catalogue_fill_reader(
 	int status = se_owk_reader_catalogue_authority(handle, generation);
 	if (status != SE_OL_OK)
 		return status;
-	return se_owk_catalogue_fill_after_authority(handle,
-		handle->ticket->scope, generation);
+	return se_owk_catalogue_fill_after_authority(
+		handle, handle->ticket->scope, generation);
 }
-static __attribute__((always_inline)) inline int se_owk_catalogue_classify_reader(
-	struct se_owk_semantic_handle *handle)
+static __attribute__((always_inline)) inline int
+se_owk_catalogue_classify_reader(struct se_owk_semantic_handle *handle)
 {
 	if (!handle || !handle->payload)
 		return SE_OL_CORRUPT;
@@ -146,9 +144,11 @@ static __attribute__((always_inline)) inline int se_owk_catalogue_classify_reade
 	if (status != SE_OL_OK)
 		return status;
 	return se_pool_catalogue_classify_after_authority(
-		&handle->payload->semantic.history.view,
-		&handle->payload->catalogue,
-		handle->ticket->scope, generation) ? SE_OL_CORRUPT : SE_OL_OK;
+		       &handle->payload->semantic.history.view,
+		       &handle->payload->catalogue, handle->ticket->scope,
+		       generation) ?
+		       SE_OL_CORRUPT :
+		       SE_OL_OK;
 }
 
 #endif

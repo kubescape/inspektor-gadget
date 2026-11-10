@@ -24,8 +24,8 @@
 #else
 #define SE_OL_TASK_OPEN_ATTR __attribute__((noinline))
 #endif
-static SE_OL_TASK_OPEN_ATTR int se_ol_task_open(
-	const void *original_key, struct se_ol_payload_handle *handle)
+static SE_OL_TASK_OPEN_ATTR int
+se_ol_task_open(const void *original_key, struct se_ol_payload_handle *handle)
 {
 	if (!original_key || !handle || handle->lease.held ||
 	    handle->lease.meta || handle->payload || handle->locked)
@@ -50,8 +50,7 @@ static SE_OL_TASK_OPEN_ATTR int se_ol_task_open(
 		return result;
 	}
 	result = se_ol_payload_open(&lease, handle);
-	if (result != SE_OL_OK &&
-	    se_ol_release_lease(&lease) != SE_OL_OK)
+	if (result != SE_OL_OK && se_ol_release_lease(&lease) != SE_OL_OK)
 		return SE_OL_CORRUPT;
 	return result;
 }

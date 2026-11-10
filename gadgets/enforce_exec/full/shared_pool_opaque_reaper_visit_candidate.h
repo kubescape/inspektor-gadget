@@ -3,7 +3,7 @@
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_REAPER_VISIT_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_REAPER_VISIT_CANDIDATE_H
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_SHARED_RECOVERY)
+	!defined(ENFORCE_EXEC_SHARED_RECOVERY)
 #error "opaque reaper visitors require the recovered candidate"
 #endif
 
@@ -18,27 +18,27 @@ enum se_or_visit_result {
 	SE_OR_FAULT,
 };
 
-static __attribute__((noinline)) int se_or_work_free_shape(
-	__u32 slot, __u64 last)
+static __attribute__((noinline)) int se_or_work_free_shape(__u32 slot,
+							   __u64 last)
 {
 	struct se_owk_meta *work = work_meta_lookup(slot);
 	if (!work)
 		return 0;
 	bpf_spin_lock(&work->lock);
-	int common = work->phase == SE_OWK_META_FREE &&
-		work->cookie == last && !work->owner_locator &&
-		!work->owner_cookie && !work->scope &&
-		!work->invocation_sequence && !work->owner_slot &&
-		!work->account_slot && !work->incarnation &&
-		!work->active_leases && !work->owner_ref_held &&
-		!work->continuation_stage && !work->continuation_reserved;
+	int common = work->phase == SE_OWK_META_FREE && work->cookie == last &&
+		     !work->owner_locator && !work->owner_cookie &&
+		     !work->scope && !work->invocation_sequence &&
+		     !work->owner_slot && !work->account_slot &&
+		     !work->incarnation && !work->active_leases &&
+		     !work->owner_ref_held && !work->continuation_stage &&
+		     !work->continuation_reserved;
 	int shape = common && work->cleanup_done == (last ? 3U : 0U);
 	bpf_spin_unlock(&work->lock);
 	return shape;
 }
 
-static __attribute__((noinline)) int se_or_task_free_shape(
-	struct se_ol_meta *meta, __u32 slot, __u64 last)
+static __attribute__((noinline)) int
+se_or_task_free_shape(struct se_ol_meta *meta, __u32 slot, __u64 last)
 {
 	if (!meta)
 		return 0;
@@ -57,9 +57,10 @@ static __attribute__((noinline)) int se_or_task_free_shape(
 			!meta->account_incarnation && !meta->work_refs &&
 			!meta->native_refs && !meta->cleanup_done &&
 			!meta->cleanup_error && !meta->current_work_slot &&
-			!meta->current_work_owned && !meta->current_work_cookie &&
-			!meta->next_work_sequence && !meta->last_reap_sequence &&
-			!meta->reserved2;
+			!meta->current_work_owned &&
+			!meta->current_work_cookie &&
+			!meta->next_work_sequence &&
+			!meta->last_reap_sequence && !meta->reserved2;
 	}
 	bpf_spin_unlock(&meta->lock);
 	return shape;
@@ -83,19 +84,18 @@ static __attribute__((noinline)) int se_or_work_visit(__u32 slot)
 	state = charge->state;
 	int occupied = !!(account->bits & (1ULL << local));
 	int account_ok = !account->reserved && !account->fault &&
-		account->used <= SE_OWK_QUOTA &&
-		se_owk_count(account->bits) == account->used;
+			 account->used <= SE_OWK_QUOTA &&
+			 se_owk_count(account->bits) == account->used;
 	int free_charge_ok = !occupied && !cookie && !charge->scope &&
-		!charge->incarnation && !charge->owner_locator &&
-		!charge->owner_cookie && !charge->owner_slot &&
-		!charge->reserved;
-	int charge_ok = occupied && cookie &&
-		charge->last_returned < cookie && charge->scope &&
-		charge->incarnation &&
-		charge->scope == account->scope &&
-		charge->incarnation == account->incarnation &&
-		charge->owner_locator && charge->owner_cookie &&
-		charge->owner_slot < SE_OL_TASKS && !charge->reserved;
+			     !charge->incarnation && !charge->owner_locator &&
+			     !charge->owner_cookie && !charge->owner_slot &&
+			     !charge->reserved;
+	int charge_ok = occupied && cookie && charge->last_returned < cookie &&
+			charge->scope && charge->incarnation &&
+			charge->scope == account->scope &&
+			charge->incarnation == account->incarnation &&
+			charge->owner_locator && charge->owner_cookie &&
+			charge->owner_slot < SE_OL_TASKS && !charge->reserved;
 	bpf_spin_unlock(&account->lock);
 	if (!account_ok)
 		return SE_OR_FAULT;
@@ -106,8 +106,8 @@ static __attribute__((noinline)) int se_or_work_visit(__u32 slot)
 			return SE_OR_EMPTY;
 		bpf_spin_lock(&account->lock);
 		int changed = charge->state != SE_OWK_FREE ||
-			charge->last_returned != last ||
-			(account->bits & (1ULL << local));
+			      charge->last_returned != last ||
+			      (account->bits & (1ULL << local));
 		bpf_spin_unlock(&account->lock);
 		return changed ? SE_OR_PENDING : SE_OR_FAULT;
 	}
@@ -131,9 +131,9 @@ static __attribute__((noinline)) int se_or_work_visit(__u32 slot)
 /* Select the exact cookie under its original account lock. The metadata
  * snapshot only chooses a stage; each stage rechecks the charged identity
  * before mutation, and the final account-locked refund owns the credit. */
-static __attribute__((noinline)) int se_or_task_directory_step(
-	struct se_ol_meta *meta, __u32 slot, __u64 cookie,
-	__u32 directory)
+static __attribute__((noinline)) int
+se_or_task_directory_step(struct se_ol_meta *meta, __u32 slot, __u64 cookie,
+			  __u32 directory)
 {
 	const __u64 *archive = archive_lookup(slot);
 	int result = SE_OL_CONTENDED;
@@ -154,8 +154,9 @@ static __attribute__((noinline)) int se_or_task_directory_step(
 	else
 		return SE_OR_FAULT;
 	return result == SE_OL_OK ? SE_OR_PROGRESS :
-		result == SE_OL_CONTENDED || result == SE_OL_STALE ?
-		SE_OR_PENDING : SE_OR_FAULT;
+	       result == SE_OL_CONTENDED || result == SE_OL_STALE ?
+				    SE_OR_PENDING :
+				    SE_OR_FAULT;
 }
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
@@ -164,8 +165,8 @@ static __attribute__((noinline)) int se_or_task_directory_step(
  * guard prevents the ordinary directory/archive/reuse reaper from destroying
  * that key first. A receipt for another cookie at the same address belongs to
  * another charge: it neither blocks nor authorizes this slot's retirement. */
-static __attribute__((noinline)) int se_or_task_terminal_guard(
-	__u32 slot, __u64 cookie, __u64 locator)
+static __attribute__((noinline)) int
+se_or_task_terminal_guard(__u32 slot, __u64 cookie, __u64 locator)
 {
 	const __u64 *original = archive_lookup(slot);
 	if (!original || !*original)
@@ -196,14 +197,17 @@ static __attribute__((noinline)) int se_or_task_terminal_guard(
 	bpf_spin_lock(&meta->lock);
 	const struct se_task_state *task = &payload->semantic;
 	int dead_done = se_exec_terminal_dead_retirable(meta, task, receipt,
-		*original, cookie, locator, slot / SE_OC_QUOTA);
+							*original, cookie,
+							locator,
+							slot / SE_OC_QUOTA);
 	bpf_spin_unlock(&meta->lock);
 	if (!dead_done)
 		return SE_OR_PENDING;
 	/* Reaper single-flight excludes a second deletion. Delete only after the
 	 * exact source proof; a failed delete retains the charged TASK. */
 	return bpf_map_delete_elem(&se_exec_terminal_receipts, original) == 0 ?
-		SE_OR_PROGRESS : SE_OR_PENDING;
+		       SE_OR_PROGRESS :
+		       SE_OR_PENDING;
 }
 #endif
 
@@ -227,15 +231,14 @@ static __attribute__((noinline)) int se_or_task_visit(__u32 slot)
 	scope = charge->scope;
 	incarnation = charge->incarnation;
 	state = charge->state;
-	int occupied = !!(account->bits[SE_OC_WORD(local)] &
-		(1ULL << (local % 64U)));
+	int occupied =
+		!!(account->bits[SE_OC_WORD(local)] & (1ULL << (local % 64U)));
 	int account_ok = !account->reserved && !account->fault &&
-		account->used <= SE_OC_QUOTA &&
-		se_oc_bitmap_count(account) == account->used;
-	int charge_ok = occupied && cookie &&
-		charge->last_returned < cookie && scope && incarnation &&
-		scope == account->scope &&
-		incarnation == account->incarnation;
+			 account->used <= SE_OC_QUOTA &&
+			 se_oc_bitmap_count(account) == account->used;
+	int charge_ok = occupied && cookie && charge->last_returned < cookie &&
+			scope && incarnation && scope == account->scope &&
+			incarnation == account->incarnation;
 	bpf_spin_unlock(&account->lock);
 	if (!account_ok)
 		return SE_OR_FAULT;
@@ -246,9 +249,9 @@ static __attribute__((noinline)) int se_or_task_visit(__u32 slot)
 			return SE_OR_EMPTY;
 		bpf_spin_lock(&account->lock);
 		int changed = charge->state != SE_OC_FREE ||
-			charge->last_returned != last ||
-			(account->bits[SE_OC_WORD(local)] &
-			 (1ULL << (local % 64U)));
+			      charge->last_returned != last ||
+			      (account->bits[SE_OC_WORD(local)] &
+			       (1ULL << (local % 64U)));
 		bpf_spin_unlock(&account->lock);
 		return changed ? SE_OR_PENDING : SE_OR_FAULT;
 	}
@@ -266,9 +269,9 @@ static __attribute__((noinline)) int se_or_task_visit(__u32 slot)
 	__u32 directory = meta->directory_state;
 	__u32 done = meta->cleanup_done;
 	int same = meta->cookie == cookie && meta->locator == locator &&
-		meta->account_scope == scope &&
-		meta->account_slot == account_slot &&
-		meta->account_incarnation == incarnation;
+		   meta->account_scope == scope &&
+		   meta->account_slot == account_slot &&
+		   meta->account_incarnation == incarnation;
 	bpf_spin_unlock(&meta->lock);
 	if (!same && !(phase == SE_OL_FREE && state == SE_OC_RETURN_READY))
 		return SE_OR_FAULT;
@@ -282,16 +285,18 @@ static __attribute__((noinline)) int se_or_task_visit(__u32 slot)
 	     (done & SE_OL_PAYLOAD_ZERO_DONE))) {
 		int result = se_oc_refund_step(slot, cookie);
 		return result == SE_OC_RETURNED ? SE_OR_RETURNED :
-			result == SE_OC_PROGRESS ? SE_OR_PROGRESS :
-			result == SE_OC_PENDING || result == SE_OC_STALE ||
-			result == SE_OC_ALREADY_RETURNED ? SE_OR_PENDING :
-			SE_OR_FAULT;
+		       result == SE_OC_PROGRESS ? SE_OR_PROGRESS :
+		       result == SE_OC_PENDING || result == SE_OC_STALE ||
+				       result == SE_OC_ALREADY_RETURNED ?
+						  SE_OR_PENDING :
+						  SE_OR_FAULT;
 	}
 	if (phase == SE_OL_ARCHIVE_ZEROED) {
 		int result = se_op_zero_payload(slot, cookie);
 		return result == SE_OC_PROGRESS ? SE_OR_PROGRESS :
-			result == SE_OC_PENDING || result == SE_OC_STALE ?
-			SE_OR_PENDING : SE_OR_FAULT;
+		       result == SE_OC_PENDING || result == SE_OC_STALE ?
+						  SE_OR_PENDING :
+						  SE_OR_FAULT;
 	}
 	if (phase != SE_OL_ABORTED && phase != SE_OL_DEAD &&
 	    phase != SE_OL_CLEANING)

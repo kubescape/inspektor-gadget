@@ -3,13 +3,14 @@
 #ifdef __bpf__
 struct fm_blob;
 #ifdef FE_SCALAR_TEST
-static inline const struct fm_blob *lookup_scalar(unsigned int,
-	unsigned long long, unsigned int);
+static inline const struct fm_blob *
+lookup_scalar(unsigned int, unsigned long long, unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	lookup_scalar((slot), (cookie), (key))
-#define FM_BLOB_LOOKUP(context, key) \
-	lookup_scalar(((const struct fm_global_token *)(context))->slot, \
-		((const struct fm_global_token *)(context))->cookie, (key))
+#define FM_BLOB_LOOKUP(context, key)                                       \
+	lookup_scalar(((const struct fm_global_token *)(context))->slot,   \
+		      ((const struct fm_global_token *)(context))->cookie, \
+		      (key))
 #else
 static inline const struct fm_blob *lookup_global(unsigned int);
 #define FM_GLOBAL_BLOB_LOOKUP(key) lookup_global(key)
@@ -41,9 +42,8 @@ struct {
 } scratch_map SEC(".maps");
 static void *(*map_lookup)(void *, const void *) = (void *)1;
 #ifdef FE_SCALAR_TEST
-static inline const struct fm_blob *lookup_scalar(unsigned int slot,
-					unsigned long long cookie,
-					unsigned int key)
+static inline const struct fm_blob *
+lookup_scalar(unsigned int slot, unsigned long long cookie, unsigned int key)
 {
 	return slot == 0 && cookie == 101 ? map_lookup(&blobs, &key) : 0;
 }
@@ -152,10 +152,11 @@ int main(int argc, char **argv)
 	int staged_result = fe_stage_begin(&fixture, f, staged, &cursor);
 	unsigned int passes = 0;
 	if (staged_result == 0) {
-		for (unsigned int pass = 0; pass < 17 &&
-		     cursor.state == FE_STAGE_ACTIVE; pass++, passes++)
-			staged_result = fe_stage_advance(&fixture, f, staged,
-				&cursor);
+		for (unsigned int pass = 0;
+		     pass < 17 && cursor.state == FE_STAGE_ACTIVE;
+		     pass++, passes++)
+			staged_result =
+				fe_stage_advance(&fixture, f, staged, &cursor);
 		if (cursor.state != FE_STAGE_READY)
 			return 5;
 		staged_result = fe_stage_finish(&fixture, staged, &cursor);
@@ -165,7 +166,8 @@ int main(int argc, char **argv)
 		return 7;
 	if (staged_result != result ||
 	    memcmp(&first, &staged->decision, sizeof(first))) {
-		fprintf(stderr, "staged evaluator differs: original=%d staged=%d rule=%u state=%u\n",
+		fprintf(stderr,
+			"staged evaluator differs: original=%d staged=%d rule=%u state=%u\n",
 			result, staged_result, cursor.next_rule, cursor.state);
 		return 6;
 	}

@@ -94,9 +94,12 @@ static void reset(void)
 	sequence_limit = ~0ULL - 1;
 	for (__u32 slot = 0; slot < SE_ROUTE_CAPACITY; slot++) {
 		routes[slot] = (struct se_route_anchor){
-			.incarnation = 1, .cgroup_identity = CG_AUDIT + slot,
-			.scope = 10 + slot, .payload_generation = 13,
-			.active_serial = 1, .payload_slot = slot,
+			.incarnation = 1,
+			.cgroup_identity = CG_AUDIT + slot,
+			.scope = 10 + slot,
+			.payload_generation = 13,
+			.active_serial = 1,
+			.payload_slot = slot,
 			.execution_class = slot ? other : original,
 			.phase = SE_ROUTE_ACTIVE,
 		};
@@ -135,10 +138,14 @@ static int admit(const struct exec *e, __u64 cgroup)
 	}
 	assert(!claim.owned);
 	switch (r) {
-	case SE_ROUTE_UNSELECTED: return 0;
-	case SE_ROUTE_AUDIT_FAULT: return 3;
-	case SE_ROUTE_STRICT_FAULT: return 4;
-	default: return 5;
+	case SE_ROUTE_UNSELECTED:
+		return 0;
+	case SE_ROUTE_AUDIT_FAULT:
+		return 3;
+	case SE_ROUTE_STRICT_FAULT:
+		return 4;
+	default:
+		return 5;
 	}
 }
 static int terminal(const struct exec *e, long retval)
@@ -170,7 +177,9 @@ static int route_withdrawable(__u32 slot)
 	       !a.source_pins && !a.unresolved_sources;
 }
 
-static const struct exec A = { .tgid = 20, .pid = 20, .task = 0xa000,
+static const struct exec A = { .tgid = 20,
+			       .pid = 20,
+			       .task = 0xa000,
 			       .bprm = 0xb000 };
 
 /* Ordinary covered exec with an interpreter iteration in the same scope. */
@@ -198,8 +207,10 @@ static void headerless_migrated(void)
 	struct se_route_anchor before = routes[1];
 	int later = admit(&A, CG_STRICT);
 	if (later != (int)original) {
-		fprintf(stderr, "RED: migrated admission saw class %d, "
-			"original %u\n", later, original);
+		fprintf(stderr,
+			"RED: migrated admission saw class %d, "
+			"original %u\n",
+			later, original);
 		assert(0);
 	}
 	/* The current (other) route was never claimed or counted. */
@@ -219,16 +230,18 @@ static void fresh_control(void)
 	entry(&A);
 	assert(begin(&A, 0) == SE_CAP_OK);
 	assert(admit(&A, CG_AUDIT) == (int)original);
-	const struct exec B = { .tgid = 21, .pid = 21, .task = 0xa100,
-				.bprm = 0xb100 };
+	const struct exec B = {
+		.tgid = 21, .pid = 21, .task = 0xa100, .bprm = 0xb100
+	};
 	entry(&B);
 	assert(begin(&B, 0) == SE_CAP_OK);
 	assert(admit(&B, CG_STRICT) == (int)other);
 	assert(terminal(&B, 0) == 1);
 	assert(terminal(&A, 0) == 1);
 	/* The same TGID's NEXT exec after migration uses the new route. */
-	const struct exec A2 = { .tgid = 20, .pid = 20, .task = 0xa000,
-				 .bprm = 0xb200 };
+	const struct exec A2 = {
+		.tgid = 20, .pid = 20, .task = 0xa000, .bprm = 0xb200
+	};
 	entry(&A2);
 	assert(begin(&A2, 0) == SE_CAP_OK);
 	assert(admit(&A2, CG_STRICT) == (int)other);
@@ -241,10 +254,12 @@ static void fresh_control(void)
  * killed by de_thread. Its terminal must not touch the winner's capsule. */
 static void losing_waiter(void)
 {
-	const struct exec win = { .tgid = 30, .pid = 31, .task = 0xc100,
-				  .bprm = 0xd100 };
-	const struct exec lose = { .tgid = 30, .pid = 32, .task = 0xc200,
-				   .bprm = 0xd200 };
+	const struct exec win = {
+		.tgid = 30, .pid = 31, .task = 0xc100, .bprm = 0xd100
+	};
+	const struct exec lose = {
+		.tgid = 30, .pid = 32, .task = 0xc200, .bprm = 0xd200
+	};
 	entry(&win);
 	entry(&lose);
 	assert(begin(&win, 0) == SE_CAP_OK);
@@ -263,14 +278,16 @@ static void losing_waiter(void)
  * leader's PID after the last admission. TGID and task are unchanged. */
 static void nonleader_dethread(void)
 {
-	const struct exec before = { .tgid = 40, .pid = 43, .task = 0xe300,
-				     .bprm = 0xf300 };
+	const struct exec before = {
+		.tgid = 40, .pid = 43, .task = 0xe300, .bprm = 0xf300
+	};
 	entry(&before);
 	assert(begin(&before, 0) == SE_CAP_OK);
 	assert(admit(&before, CG_AUDIT) == (int)original);
 	assert(admit(&before, CG_STRICT) == (int)original);
-	const struct exec after = { .tgid = 40, .pid = 40, .task = 0xe300,
-				    .bprm = 0xf300 };
+	const struct exec after = {
+		.tgid = 40, .pid = 40, .task = 0xe300, .bprm = 0xf300
+	};
 	assert(terminal(&after, 0) == 1);
 	quiescent();
 }
@@ -308,8 +325,9 @@ static void stale_reuse(void)
 	assert(admit(&A, CG_AUDIT) == (int)original);
 	__u64 old_sequence = capsules[A.tgid].sequence;
 	assert(routes[0].source_pins == 1); /* terminal never arrives */
-	const struct exec reuse = { .tgid = 20, .pid = 20, .task = 0xa000,
-				    .bprm = 0xb000 }; /* ABA addresses */
+	const struct exec reuse = {
+		.tgid = 20, .pid = 20, .task = 0xa000, .bprm = 0xb000
+	}; /* ABA addresses */
 	entry(&reuse);
 	assert(begin(&reuse, 0) == SE_CAP_OK);
 	assert(stats[SE_CAP_STAT_STALE_RETIRED] == 1);
@@ -350,8 +368,9 @@ static void late_attach(void)
 	assert(admit(&A, CG_STRICT) == fault_of(original));
 	assert(admit(&A, CG_AUDIT) == fault_of(original));
 	/* No fexit for this call. Next exec of the new image is covered. */
-	const struct exec next = { .tgid = 20, .pid = 20, .task = 0xa000,
-				   .bprm = 0xb400 };
+	const struct exec next = {
+		.tgid = 20, .pid = 20, .task = 0xa000, .bprm = 0xb400
+	};
 	entry(&next);
 	assert(begin(&next, 0) == SE_CAP_OK);
 	assert(stats[SE_CAP_STAT_STALE_RETIRED] == 1);
@@ -362,8 +381,9 @@ static void late_attach(void)
 	entry(&A);
 	assert(begin(&A, 0) == SE_CAP_OK);
 	assert(admit(&A, CG_AUDIT) == (int)original); /* pinned, then lost */
-	const struct exec late = { .tgid = 20, .pid = 20, .task = 0xa900,
-				   .bprm = 0xb900 };
+	const struct exec late = {
+		.tgid = 20, .pid = 20, .task = 0xa900, .bprm = 0xb900
+	};
 	assert(admit(&late, CG_STRICT) == (int)other);
 	assert(stats[SE_CAP_STAT_STALE_RETIRED] == 2 && !routes[0].source_pins);
 	/* Detach stand-in: clear only the uncovered capsule (no pin). */
@@ -423,8 +443,9 @@ static void sequence_exhausted(void)
  * selected Strict exec is denied. No claim is ever granted. */
 static void out_of_range(void)
 {
-	const struct exec big = { .tgid = CAPSULES, .pid = CAPSULES,
-				  .task = 1, .bprm = 2 };
+	const struct exec big = {
+		.tgid = CAPSULES, .pid = CAPSULES, .task = 1, .bprm = 2
+	};
 	entry(&big);
 	assert(begin(&big, 0) == SE_CAP_FAULT);
 	assert(admit(&big, CG_UNSELECTED) == 0);
@@ -458,7 +479,8 @@ static void check_frozen_never_success(void)
 	assert(begin(&A, 1) == SE_CAP_OK);
 	assert(admit(&A, CG_AUDIT) == (int)original);
 	assert(terminal(&A, 0) == 0);
-	assert(stats[SE_CAP_STAT_CHECK_ONLY] == 1 && !stats[SE_CAP_STAT_SUCCESS]);
+	assert(stats[SE_CAP_STAT_CHECK_ONLY] == 1 &&
+	       !stats[SE_CAP_STAT_SUCCESS]);
 	quiescent();
 }
 
@@ -475,27 +497,31 @@ static void tampered_owner_or_route(void)
 	assert(admit(&A, CG_STRICT) == fault_of(original));
 	assert(admit(&A, CG_AUDIT) == fault_of(original));
 	capsules[A.tgid].owner.token.source_sequence--;
-	routes[0].execution_class = other; /* invariant breach, not publication */
+	routes[0].execution_class =
+		other; /* invariant breach, not publication */
 	assert(admit(&A, CG_STRICT) == fault_of(original));
 	assert(admit(&A, CG_AUDIT) == fault_of(original));
 	/* Terminal release also refuses the breached route. The pin is never
 	 * decremented and the route is latched (publication stays refused);
 	 * the owner is abandoned so the TGID slot stays usable (review M1). */
 	assert(terminal(&A, 0) == 1);
-	assert(routes[0].source_pins == 1 && routes[0].unresolved_sources == 1 &&
+	assert(routes[0].source_pins == 1 &&
+	       routes[0].unresolved_sources == 1 &&
 	       !capsules[A.tgid].owner.owned &&
 	       stats[SE_CAP_STAT_RELEASE_FAULT] == 1);
 	routes[0].execution_class = original;
 	/* The next exec of the same TGID is fully functional. */
-	const struct exec next = { .tgid = 20, .pid = 20, .task = 0xa000,
-				   .bprm = 0xb500 };
+	const struct exec next = {
+		.tgid = 20, .pid = 20, .task = 0xa000, .bprm = 0xb500
+	};
 	entry(&next);
 	assert(begin(&next, 0) == SE_CAP_OK);
 	assert(admit(&next, CG_AUDIT) == (int)original);
 	assert(routes[0].source_pins == 2 && !stats[SE_CAP_STAT_PIN_FAILED]);
 	assert(admit(&next, CG_STRICT) == (int)original);
 	assert(terminal(&next, 0) == 1);
-	assert(routes[0].source_pins == 1 && stats[SE_CAP_STAT_RELEASE_FAULT] == 1);
+	assert(routes[0].source_pins == 1 &&
+	       stats[SE_CAP_STAT_RELEASE_FAULT] == 1);
 	routes[0].source_pins = 0;
 	routes[0].unresolved_sources = 0;
 	stats[SE_CAP_STAT_RELEASE_FAULT] = 0;
@@ -532,8 +558,9 @@ static void stale_then_exhausted(void)
 	assert(begin(&A, 0) == SE_CAP_OK);
 	assert(admit(&A, CG_AUDIT) == (int)original);
 	sequence = sequence_limit;
-	const struct exec next = { .tgid = 20, .pid = 20, .task = 0xa000,
-				   .bprm = 0xb000 };
+	const struct exec next = {
+		.tgid = 20, .pid = 20, .task = 0xa000, .bprm = 0xb000
+	};
 	entry(&next);
 	assert(begin(&next, 0) == SE_CAP_FAULT);
 	assert(stats[SE_CAP_STAT_STALE_RETIRED] == 1 && !routes[0].source_pins);
@@ -605,7 +632,8 @@ int main(int argc, char **argv)
 		{ "legacy-fallback-is-unsafe", legacy_fallback_is_unsafe },
 	};
 	for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
-		if (strcmp(argv[1], "all") && strcmp(argv[1], scenarios[i].name))
+		if (strcmp(argv[1], "all") &&
+		    strcmp(argv[1], scenarios[i].name))
 			continue;
 		reset();
 		scenarios[i].run();

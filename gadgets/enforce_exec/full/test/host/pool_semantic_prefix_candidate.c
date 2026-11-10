@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#define __uint(name, value) int (*name)[value]
+#define __uint(name, value) int(*name)[value]
 #define __type(name, value) value *name
 #define SEC(name)
 #define ENFORCE_EXEC_ABI3_DEVELOPMENT 1
@@ -21,17 +21,34 @@
 /* The production semantic types have these fixed prefix sizes and offsets.
  * This fixture tests the candidate ABI's typed embedding, not production
  * helper invocation or BPF verifier acceptance. */
-struct er_state { _Alignas(8) unsigned char bytes[520]; };
-struct se_task_stage { _Alignas(8) unsigned char bytes[64]; };
-struct se_reader_owner { _Alignas(8) unsigned char bytes[48]; };
-struct se_exec_transaction { _Alignas(8) unsigned char bytes[272]; };
-struct se_policy_view { _Alignas(8) unsigned char bytes[904]; };
-struct se_exec_work { _Alignas(8) unsigned char bytes[1704]; };
-struct er_work { _Alignas(8) unsigned char bytes[536]; };
-struct observation { _Alignas(8) unsigned char bytes[16008]; };
+struct er_state {
+	_Alignas(8) unsigned char bytes[520];
+};
+struct se_task_stage {
+	_Alignas(8) unsigned char bytes[64];
+};
+struct se_reader_owner {
+	_Alignas(8) unsigned char bytes[48];
+};
+struct se_exec_transaction {
+	_Alignas(8) unsigned char bytes[272];
+};
+struct se_policy_view {
+	_Alignas(8) unsigned char bytes[904];
+};
+struct se_exec_work {
+	_Alignas(8) unsigned char bytes[1704];
+};
+struct er_work {
+	_Alignas(8) unsigned char bytes[536];
+};
+struct observation {
+	_Alignas(8) unsigned char bytes[16008];
+};
 struct se_task_state {
 	__u32 reserved_lock, flags;
-	__u64 physical_cookie, scope_cookie, eligibility_version, next_invocation;
+	__u64 physical_cookie, scope_cookie, eligibility_version,
+		next_invocation;
 	__u32 scope_slot, identity_reserved;
 	struct er_state committed;
 	struct se_task_stage staged;

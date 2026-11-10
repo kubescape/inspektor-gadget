@@ -23,8 +23,7 @@
 #define FM_MAX_BYTES 255
 #define FM_MAX_ENTRIES 16384
 #define FM_MAX_RANGES 8
-#if defined(FM_GLOBAL_BLOB_LOOKUP) || \
-    defined(FM_GLOBAL_SCALAR_BLOB_LOOKUP)
+#if defined(FM_GLOBAL_BLOB_LOOKUP) || defined(FM_GLOBAL_SCALAR_BLOB_LOOKUP)
 #define FM_GLOBAL_MATCHER 1
 #endif
 
@@ -212,19 +211,29 @@ int fm_enqueue(struct fm_scratch *scratch, fm_u32 pc, fm_u32 count)
  * candidate keeps the callback's 0/1/error contract without an indirect
  * function-pointer call. Verifier acceptance of the full matcher is separate
  * from the isolated loop premise. Never select this macro by default. */
-#define FM_BOUND_LOOP(count, callback, context) ({ \
-	fm_u32 _fm_count = (count); \
-	long _fm_result = _fm_count; \
-	if (_fm_count > FM_MAX_STATES) \
-		_fm_result = -1; \
-	else for (fm_u32 _fm_i = 0; _fm_i < FM_MAX_STATES; _fm_i++) { \
-		if (_fm_i >= _fm_count) break; \
-		long _fm_step = callback(_fm_i, (context)); \
-		if (_fm_step == 1) { _fm_result = _fm_i + 1; break; } \
-		if (_fm_step != 0) { _fm_result = -1; break; } \
-	} \
-	_fm_result; \
-})
+#define FM_BOUND_LOOP(count, callback, context)                             \
+	({                                                                  \
+		fm_u32 _fm_count = (count);                                 \
+		long _fm_result = _fm_count;                                \
+		if (_fm_count > FM_MAX_STATES)                              \
+			_fm_result = -1;                                    \
+		else                                                        \
+			for (fm_u32 _fm_i = 0; _fm_i < FM_MAX_STATES;       \
+			     _fm_i++) {                                     \
+				if (_fm_i >= _fm_count)                     \
+					break;                              \
+				long _fm_step = callback(_fm_i, (context)); \
+				if (_fm_step == 1) {                        \
+					_fm_result = _fm_i + 1;             \
+					break;                              \
+				}                                           \
+				if (_fm_step != 0) {                        \
+					_fm_result = -1;                    \
+					break;                              \
+				}                                           \
+			}                                                   \
+		_fm_result;                                                 \
+	})
 #define FM_LOOP(count, callback, context) \
 	FM_BOUND_LOOP(count, callback, context)
 #elif defined(__bpf__)
@@ -264,11 +273,13 @@ FM_INLINE long fm_failure(struct fm_step_context *ctx)
 }
 #if !(defined(FE_BOUNDED_LOOP_CANDIDATE) && defined(FM_GLOBAL_MATCHER))
 #if defined(__bpf__) && defined(FE_BOUNDED_LOOP_CANDIDATE)
-static __attribute__((noinline))
+static
+	__attribute__((noinline))
 #else
 static
 #endif
-long fm_seed_callback(fm_u32 pc, void *data)
+	long
+	fm_seed_callback(fm_u32 pc, void *data)
 {
 	struct fm_step_context *ctx = data;
 	if (pc >= ctx->count || pc >= FM_MAX_STATES)
@@ -374,7 +385,8 @@ int fm_apply_instruction(struct fm_scratch *scratch,
 				break;
 			fm_u32 lo_index = 2 * i, hi_index = lo_index + 1;
 #if defined(FE_BOUNDED_LOOP_CANDIDATE)
-			__asm__ __volatile__("" : "+r"(lo_index), "+r"(hi_index));
+			__asm__ __volatile__(""
+					     : "+r"(lo_index), "+r"(hi_index));
 			if (lo_index >= 2 * FM_MAX_RANGES ||
 			    hi_index >= 2 * FM_MAX_RANGES)
 				return -1;
@@ -454,11 +466,13 @@ int fm_instruction_step(struct fm_scratch *scratch,
 	if (!blob)
 		return -1;
 	struct fm_instruction_state state = {
-		.count = request->count, .rune = request->rune,
-		.at_begin = request->at_begin, .at_end = request->at_end,
+		.count = request->count,
+		.rune = request->rune,
+		.at_begin = request->at_begin,
+		.at_end = request->at_end,
 	};
-	return fm_apply_instruction(scratch,
-			(const struct fm_instruction *)blob, &state);
+	return fm_apply_instruction(
+		scratch, (const struct fm_instruction *)blob, &state);
 }
 /* At most eight windows cover all 512 unique PCs. A window returns bit 0 for
  * a match and bit 1 when the queue has drained; errors remain negative. */
@@ -474,7 +488,7 @@ int fm_instruction_window(struct fm_scratch *scratch,
 		return -1;
 	int matched = 0;
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-	#pragma unroll
+#pragma unroll
 #endif
 	for (fm_u32 i = 0; i < 64; i++) {
 		int result = fm_instruction_step(scratch, request);
@@ -490,11 +504,13 @@ int fm_instruction_window(struct fm_scratch *scratch,
 #endif
 #if !(defined(FE_BOUNDED_LOOP_CANDIDATE) && defined(FM_GLOBAL_MATCHER))
 #if defined(__bpf__) && defined(FE_BOUNDED_LOOP_CANDIDATE)
-static __attribute__((noinline))
+static
+	__attribute__((noinline))
 #else
 static
 #endif
-long fm_instruction_callback(fm_u32 index, void *data)
+	long
+	fm_instruction_callback(fm_u32 index, void *data)
 {
 	(void)index;
 	struct fm_step_context *ctx = data;
@@ -515,8 +531,8 @@ long fm_instruction_callback(fm_u32 index, void *data)
 	const struct fm_global_token *token = ctx->context;
 	if (!token || token->reserved || !token->cookie)
 		return fm_failure(ctx);
-	const struct fm_blob *blob = FM_GLOBAL_SCALAR_BLOB_LOOKUP(
-		token->slot, token->cookie, key);
+	const struct fm_blob *blob =
+		FM_GLOBAL_SCALAR_BLOB_LOOKUP(token->slot, token->cookie, key);
 #else
 	const struct fm_blob *blob = FM_GLOBAL_BLOB_LOOKUP(key);
 #endif
@@ -567,7 +583,7 @@ int fm_step_global(struct fm_scratch *scratch,
 	}
 	int matched = 0;
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-	#pragma unroll
+#pragma unroll
 #endif
 	for (fm_u32 window = 0; window < 8; window++) {
 		int result = fm_instruction_window(scratch, request);
@@ -591,8 +607,11 @@ FM_INLINE int fm_step(void *context, fm_u32 code_base, fm_u32 count,
 		return -1;
 #if defined(FE_BOUNDED_LOOP_CANDIDATE) && defined(FM_GLOBAL_MATCHER)
 	struct fm_instruction_request request = {
-		.code_base = code_base, .count = count, .rune = rune,
-		.at_begin = at_begin, .at_end = at_end,
+		.code_base = code_base,
+		.count = count,
+		.rune = rune,
+		.at_begin = at_begin,
+		.at_end = at_end,
 	};
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 	const struct fm_global_token *token = context;
@@ -611,15 +630,19 @@ FM_INLINE int fm_step(void *context, fm_u32 code_base, fm_u32 count,
 		scratch->seen[i] = 0;
 	}
 	struct fm_step_context ctx = {
-		.context = context, .scratch = scratch,
-		.code_base = code_base, .count = count, .rune = rune,
-		.at_begin = at_begin, .at_end = at_end,
+		.context = context,
+		.scratch = scratch,
+		.code_base = code_base,
+		.count = count,
+		.rune = rune,
+		.at_begin = at_begin,
+		.at_end = at_end,
 	};
 #ifdef FE_BOUNDED_LOOP_CANDIDATE
 	if (FM_LOOP(count, fm_seed_callback, &ctx) < 0 || ctx.error)
 		return -1;
-	if (FM_LOOP(count, fm_instruction_callback, &ctx) < 0 ||
-	    ctx.error || scratch->head != scratch->tail)
+	if (FM_LOOP(count, fm_instruction_callback, &ctx) < 0 || ctx.error ||
+	    scratch->head != scratch->tail)
 		return -1;
 #else
 	if (FM_LOOP(FM_MAX_STATES, fm_seed_callback, &ctx) < 0 || ctx.error)
@@ -658,7 +681,8 @@ struct fm_run_context {
 #if defined(__bpf__) && defined(FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC)
 __attribute__((noinline))
 #endif
-static long fm_rune_callback(fm_u32 index, void *data)
+static long
+fm_rune_callback(fm_u32 index, void *data)
 {
 	(void)index;
 	struct fm_run_context *ctx = data;
@@ -675,31 +699,28 @@ static long fm_rune_callback(fm_u32 index, void *data)
 	}
 	int result = fm_step(
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-			     ctx->run,
+		ctx->run,
 #else
-			     ctx->context,
+		ctx->context,
 #endif
-			     FM_CTX(ctx, code_base),
-			     FM_CTX(ctx, count), FM_CTX(ctx, decoded).rune,
-			     FM_CTX(ctx, position) == 0, at_end,
-			     ctx->scratch);
+		FM_CTX(ctx, code_base), FM_CTX(ctx, count),
+		FM_CTX(ctx, decoded).rune, FM_CTX(ctx, position) == 0, at_end,
+		ctx->scratch);
 #else
 	fm_u32 rune = 0, width = 0;
 	if (!at_end && fm_decode(ctx->input, FM_CTX(ctx, length),
-				 FM_CTX(ctx, position), &rune,
-				 &width) < 0) {
+				 FM_CTX(ctx, position), &rune, &width) < 0) {
 		FM_CTX(ctx, result) = -1;
 		return 1;
 	}
 	int result = fm_step(
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-			     ctx->run,
+		ctx->run,
 #else
-			     ctx->context,
+		ctx->context,
 #endif
-			     FM_CTX(ctx, code_base),
-			     FM_CTX(ctx, count), rune,
-			     FM_CTX(ctx, position) == 0, at_end, ctx->scratch);
+		FM_CTX(ctx, code_base), FM_CTX(ctx, count), rune,
+		FM_CTX(ctx, position) == 0, at_end, ctx->scratch);
 #endif
 	if (result < 0 || at_end) {
 		FM_CTX(ctx, result) = result;
@@ -805,7 +826,7 @@ fm_match_global(fm_u32 pattern_key, const struct fm_utf8_buffer *input,
 {
 	if (!input || pattern_key >= FM_MAX_ENTRIES)
 		return -1;
-	/* Readonly map values must not cross the global memory-argument ABI: C
+		/* Readonly map values must not cross the global memory-argument ABI: C
      * const does not mark BTF memory arguments readonly. Resolve by scalar key. */
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
@@ -818,12 +839,11 @@ fm_match_global(fm_u32 pattern_key, const struct fm_utf8_buffer *input,
 			token->slot, token->cookie, pattern_key);
 	return fm_match_inline((void *)
 #ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-			       run,
+				       run,
 #else
-			       token,
+				       token,
 #endif
-			       pattern, input->bytes, length,
-			       scratch);
+			       pattern, input->bytes, length, scratch);
 #else
 	const struct fm_pattern *pattern =
 		(const struct fm_pattern *)FM_GLOBAL_BLOB_LOOKUP(pattern_key);
@@ -846,12 +866,12 @@ FM_INLINE int fm_match_key(void *context, fm_u32 key, const fm_u8 *input,
 		return -1;
 #ifdef FM_GLOBAL_MATCHER
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
-	#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
+#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
 	struct fm_work_run_request *run = context;
 	const struct fm_global_token *token = run ? &run->token : 0;
-	#else
+#else
 	const struct fm_global_token *token = context;
-	#endif
+#endif
 	if (!token || token->reserved || !token->cookie)
 		return -1;
 	return fm_match_global(key, (const struct fm_utf8_buffer *)input,

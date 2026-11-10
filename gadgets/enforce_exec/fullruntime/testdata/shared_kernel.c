@@ -78,10 +78,10 @@ struct se_policy_view;
 static inline struct se_policy_view *full_shared_view(void);
 #ifdef TEST_SHARED_SCALAR_EVAL
 struct fm_global_token;
-static inline struct se_policy_view *se_shared_view_from_token(
-	const struct fm_global_token *);
-static inline const struct fm_blob *se_shared_blob_from_token(
-	unsigned int, unsigned long long, unsigned int);
+static inline struct se_policy_view *
+se_shared_view_from_token(const struct fm_global_token *);
+static inline const struct fm_blob *
+se_shared_blob_from_token(unsigned int, unsigned long long, unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	se_shared_blob_from_token((slot), (cookie), (key))
 #define SE_POLICY_VIEW(ctx) \
@@ -313,7 +313,9 @@ static void scalar_evaluator_token_requires_exact_work(void)
 {
 	setup(1);
 	invocation = (struct se_invocation){
-		.scope = 11, .cookie = 42, .slot = 0,
+		.scope = 11,
+		.cookie = 42,
+		.slot = 0,
 	};
 	invocation.view.ready = 1;
 	invocation.view.scope_cookie = 11;
@@ -425,8 +427,7 @@ static void recovery_unpinned_reader(void)
 	setup(1);
 	struct linux_binprm exec = {};
 	assert(!se_shared_check(&exec, 0));
-	assert(task.reader.owned &&
-	       bindings[0].state.records[0].claims == 1);
+	assert(task.reader.owned && bindings[0].state.records[0].claims == 1);
 	/* A copied reader token cannot authorize the original catalogue once the
 	 * binding's persistent claim has disappeared. Restore this deliberately
 	 * corrupted host state only to exercise ordinary source cleanup. */
@@ -436,8 +437,7 @@ static void recovery_unpinned_reader(void)
 	assert(observations == observed && task.reader.owned);
 	bindings[0].state.records[0].claims = 1;
 	assert(!se_shared_finish(&physical, &exec, 0));
-	assert(!task.reader.owned &&
-	       !bindings[0].state.records[0].claims);
+	assert(!task.reader.owned && !bindings[0].state.records[0].claims);
 }
 static void ingress_invariant(int continuing, int fault, int prior)
 {
@@ -623,22 +623,33 @@ static void child_snapshot_preflight_refusal(void)
 	for (unsigned fault = 0; fault < 5; fault++) {
 		setup(1);
 		child_task = (struct se_task_state){ .flags = SE_TASK_LIVE,
-					     .physical_cookie = 100,
-					     .scope_cookie = 11,
-					     .scope_slot = 0 };
+						     .physical_cookie = 100,
+						     .scope_cookie = 11,
+						     .scope_slot = 0 };
 		struct se_task_state before = child_task;
 		struct se_route_claim claim = {};
 		assert(se_route_admit(7, &claim) == SE_ROUTE_OWNED);
 		struct se_snapshot *snapshot = &bindings[0].state.records[0];
 		switch (fault) {
-		case 0: snapshot->scope++; break;
-		case 1: snapshot->serial++; break;
-		case 2: snapshot->generation++; break;
-		case 3: snapshot->metadata.root_epochs[0]++; break;
-		case 4: snapshot->metadata.policy_uids[0] = 99; break;
+		case 0:
+			snapshot->scope++;
+			break;
+		case 1:
+			snapshot->serial++;
+			break;
+		case 2:
+			snapshot->generation++;
+			break;
+		case 3:
+			snapshot->metadata.root_epochs[0]++;
+			break;
+		case 4:
+			snapshot->metadata.policy_uids[0] = 99;
+			break;
 		}
 		assert(se_inherit_child((__u64)&physical,
-					(__u64)&child_physical, &claim, 0) == -1);
+					(__u64)&child_physical, &claim,
+					0) == -1);
 		assert(!memcmp(&child_task, &before, sizeof(before)));
 		assert(!work_present && !routes[0].scratch_used && !locks);
 		se_early_release(&claim);
@@ -656,14 +667,30 @@ static void policy_view_preflight_refusal(void)
 		 * reason and cease to cover its intended preflight. */
 		snapshot->claims = 1;
 		switch (fault) {
-		case 0: snapshot->tickets[0].scope++; break;
-		case 1: snapshot->tickets[0].snapshot_serial++; break;
-		case 2: snapshot->tickets[0].position++; break;
-		case 3: snapshot->tickets[0].phase = 0; break;
-		case 4: objects[0].state.generation++; break;
-		case 5: missing_object = 1; break;
-		case 6: snapshot->metadata.policy_uids[0] = 99; break;
-		case 7: snapshot->claims = 0; break;
+		case 0:
+			snapshot->tickets[0].scope++;
+			break;
+		case 1:
+			snapshot->tickets[0].snapshot_serial++;
+			break;
+		case 2:
+			snapshot->tickets[0].position++;
+			break;
+		case 3:
+			snapshot->tickets[0].phase = 0;
+			break;
+		case 4:
+			objects[0].state.generation++;
+			break;
+		case 5:
+			missing_object = 1;
+			break;
+		case 6:
+			snapshot->metadata.policy_uids[0] = 99;
+			break;
+		case 7:
+			snapshot->claims = 0;
+			break;
 		}
 		assert(se_prepare_view(&work, snapshot, 20) == -1);
 		assert(!locks);

@@ -43,7 +43,7 @@ static int se_arm_journal_padding_zero(const struct se_arm_request *request)
 {
 	const unsigned char *bytes = (const unsigned char *)request;
 	for (size_t i = offsetof(struct se_arm_request, bank_index) +
-			 sizeof(request->bank_index);
+			sizeof(request->bank_index);
 	     i < offsetof(struct se_arm_request, epochs); i++)
 		if (bytes[i])
 			return 0;
@@ -55,7 +55,8 @@ static int se_arm_journal_apply(struct se_arm_journal *j,
 {
 	if (r->magic != SE_ARM_J_MAGIC || r->version != SE_ARM_J_VERSION ||
 	    r->reserved || r->tail_reserved ||
-	    r->crc32 != se_arm_crc32(r, offsetof(struct se_arm_journal_record, crc32)) ||
+	    r->crc32 != se_arm_crc32(r, offsetof(struct se_arm_journal_record,
+						 crc32)) ||
 	    r->node_cookie != j->node_cookie ||
 	    r->request.node_cookie != j->node_cookie ||
 	    r->request.sequence != r->sequence || !r->sequence ||
@@ -68,7 +69,8 @@ static int se_arm_journal_apply(struct se_arm_journal *j,
 	case SE_ARM_J_PREPARED:
 		if (j->phase != SE_ARM_TX_EMPTY ||
 		    r->sequence <= j->last_sequence ||
-		    memcmp(&r->receipt, &(struct se_arm_receipt){}, sizeof(r->receipt)))
+		    memcmp(&r->receipt, &(struct se_arm_receipt){},
+			   sizeof(r->receipt)))
 			return -1;
 		j->pending = r->request;
 		j->phase = SE_ARM_TX_PREPARED;
@@ -76,7 +78,8 @@ static int se_arm_journal_apply(struct se_arm_journal *j,
 	case SE_ARM_J_WRITTEN:
 		if (j->phase != SE_ARM_TX_PREPARED ||
 		    memcmp(&j->pending, &r->request, sizeof(r->request)) ||
-		    memcmp(&r->receipt, &(struct se_arm_receipt){}, sizeof(r->receipt)))
+		    memcmp(&r->receipt, &(struct se_arm_receipt){},
+			   sizeof(r->receipt)))
 			return -1;
 		j->phase = SE_ARM_TX_WRITTEN;
 		return 0;
@@ -107,7 +110,8 @@ static int se_arm_journal_scan(struct se_arm_journal *j)
 	for (off_t offset = 0; offset < st.st_size;
 	     offset += sizeof(struct se_arm_journal_record)) {
 		struct se_arm_journal_record record;
-		if (pread(j->fd, &record, sizeof(record), offset) != sizeof(record) ||
+		if (pread(j->fd, &record, sizeof(record), offset) !=
+			    sizeof(record) ||
 		    se_arm_journal_apply(j, &record))
 			return -1;
 	}
@@ -117,7 +121,8 @@ static int se_arm_journal_scan(struct se_arm_journal *j)
 static int se_arm_journal_file_unchanged(struct se_arm_journal *j);
 
 static int se_arm_journal_open_internal(int trusted_dir_fd, __u64 node_cookie,
-					struct se_arm_journal *journal, int create)
+					struct se_arm_journal *journal,
+					int create)
 {
 	if (!journal || journal->initialized || !node_cookie ||
 	    sizeof(void *) != 8 || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__) {
@@ -142,7 +147,8 @@ static int se_arm_journal_open_internal(int trusted_dir_fd, __u64 node_cookie,
 	if (fstat(fd, &st))
 		goto fail;
 	if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
-	    st.st_nlink != 1 || (st.st_mode & 077) || st.st_dev != dir_st.st_dev) {
+	    st.st_nlink != 1 || (st.st_mode & 077) ||
+	    st.st_dev != dir_st.st_dev) {
 		errno = EACCES;
 		goto fail;
 	}
@@ -154,9 +160,12 @@ static int se_arm_journal_open_internal(int trusted_dir_fd, __u64 node_cookie,
 	if (owned_dir_fd < 0)
 		goto fail;
 	*journal = (struct se_arm_journal){ .fd = fd,
-		.dir_fd = owned_dir_fd, .node_cookie = node_cookie,
-		.device = st.st_dev, .inode = st.st_ino, .size = st.st_size,
-		.initialized = 1 };
+					    .dir_fd = owned_dir_fd,
+					    .node_cookie = node_cookie,
+					    .device = st.st_dev,
+					    .inode = st.st_ino,
+					    .size = st.st_size,
+					    .initialized = 1 };
 	if (se_arm_journal_scan(journal) ||
 	    se_arm_journal_file_unchanged(journal)) {
 		errno = EBADMSG;
@@ -176,18 +185,17 @@ fail: {
 static int se_arm_journal_file_unchanged(struct se_arm_journal *j)
 {
 	struct stat fd_st, path_st, dir_st;
-	if (fstat(j->fd, &fd_st) ||
-	    fstat(j->dir_fd, &dir_st) ||
+	if (fstat(j->fd, &fd_st) || fstat(j->dir_fd, &dir_st) ||
 	    fstatat(j->dir_fd, SE_ARM_J_NAME, &path_st, AT_SYMLINK_NOFOLLOW) ||
 	    !S_ISDIR(dir_st.st_mode) || dir_st.st_uid != geteuid() ||
-	    (dir_st.st_mode & 022) ||
-	    !S_ISREG(fd_st.st_mode) || !S_ISREG(path_st.st_mode) ||
-	    fd_st.st_uid != geteuid() || path_st.st_uid != geteuid() ||
-	    (fd_st.st_mode & 077) || (path_st.st_mode & 077) ||
-	    fd_st.st_dev != j->device || fd_st.st_ino != j->inode ||
-	    path_st.st_dev != j->device || path_st.st_ino != j->inode ||
-	    fd_st.st_nlink != 1 || path_st.st_nlink != 1 ||
-	    fd_st.st_size != j->size || path_st.st_size != j->size)
+	    (dir_st.st_mode & 022) || !S_ISREG(fd_st.st_mode) ||
+	    !S_ISREG(path_st.st_mode) || fd_st.st_uid != geteuid() ||
+	    path_st.st_uid != geteuid() || (fd_st.st_mode & 077) ||
+	    (path_st.st_mode & 077) || fd_st.st_dev != j->device ||
+	    fd_st.st_ino != j->inode || path_st.st_dev != j->device ||
+	    path_st.st_ino != j->inode || fd_st.st_nlink != 1 ||
+	    path_st.st_nlink != 1 || fd_st.st_size != j->size ||
+	    path_st.st_size != j->size)
 		return -1;
 	return 0;
 }
@@ -195,13 +203,15 @@ static int se_arm_journal_file_unchanged(struct se_arm_journal *j)
 int se_arm_journal_create_at(int trusted_dir_fd, __u64 node_cookie,
 			     struct se_arm_journal *journal)
 {
-	return se_arm_journal_open_internal(trusted_dir_fd, node_cookie, journal, 1);
+	return se_arm_journal_open_internal(trusted_dir_fd, node_cookie,
+					    journal, 1);
 }
 
 int se_arm_journal_open_at(int trusted_dir_fd, __u64 node_cookie,
 			   struct se_arm_journal *journal)
 {
-	return se_arm_journal_open_internal(trusted_dir_fd, node_cookie, journal, 0);
+	return se_arm_journal_open_internal(trusted_dir_fd, node_cookie,
+					    journal, 0);
 }
 
 int se_arm_journal_append(void *ctx, enum se_arm_journal_phase phase,
@@ -218,15 +228,17 @@ int se_arm_journal_append(void *ctx, enum se_arm_journal_phase phase,
 		return -1;
 	}
 	struct se_arm_journal_record record = {
-		.magic = SE_ARM_J_MAGIC, .version = SE_ARM_J_VERSION,
-		.phase = phase, .node_cookie = j->node_cookie,
+		.magic = SE_ARM_J_MAGIC,
+		.version = SE_ARM_J_VERSION,
+		.phase = phase,
+		.node_cookie = j->node_cookie,
 		.sequence = request->sequence,
 	};
 	memcpy(&record.request, request, sizeof(record.request));
 	if (receipt)
 		record.receipt = *receipt;
-	record.crc32 = se_arm_crc32(&record,
-				     offsetof(struct se_arm_journal_record, crc32));
+	record.crc32 = se_arm_crc32(
+		&record, offsetof(struct se_arm_journal_record, crc32));
 	struct se_arm_journal next = *j;
 	if (se_arm_journal_apply(&next, &record))
 		return -1;

@@ -3,8 +3,7 @@
 #ifndef ENFORCE_EXEC_FULLPOLICY_EVALUATOR_H
 #define ENFORCE_EXEC_FULLPOLICY_EVALUATOR_H
 #include "matcher.h"
-#if defined(FM_GLOBAL_BLOB_LOOKUP) || \
-    defined(FM_GLOBAL_SCALAR_BLOB_LOOKUP)
+#if defined(FM_GLOBAL_BLOB_LOOKUP) || defined(FM_GLOBAL_SCALAR_BLOB_LOOKUP)
 #define FE_GLOBAL_MATCHER 1
 #endif
 /* Ordinary BPF images retain ABI2 behavior. Host oracle fixtures exercise the
@@ -409,8 +408,11 @@ int fe_argv_scan_block(const struct fe_facts *f, struct fe_scratch *s,
 	if (!f || !s || !state || block >= FE_ARGV_BLOCKS || state->error)
 		return -1;
 	struct fe_argv_check c = {
-		.facts = f, .scratch = s, .block = block,
-		.argument = state->argument, .start = state->start,
+		.facts = f,
+		.scratch = s,
+		.block = block,
+		.argument = state->argument,
+		.start = state->start,
 	};
 	if (FE_LOOP(FE_ARGV_BLOCK_BYTES, fe_argv_byte, &c) < 0 || c.error)
 		state->error = 1;
@@ -438,7 +440,7 @@ int fe_argv_valid(const struct fe_facts *f, struct fe_scratch *s)
 			return 0;
 	}
 	return !state.error && state.argument == f->argc &&
-		state.start == f->argv_bytes;
+	       state.start == f->argv_bytes;
 #else
 	struct fe_argv_check c = { .facts = f, .scratch = s };
 	if (FE_LOOP(16, fe_argv_block, &c) < 0)
@@ -486,8 +488,7 @@ int fe_bytes_equal_keys(
 #endif
 	const struct fe_string *left = (const void *)fe_blob(ctx, left_key);
 	const struct fe_string *right = (const void *)fe_blob(ctx, right_key);
-	if (!left || !right || left->length < length ||
-	    right->length < length)
+	if (!left || !right || left->length < length || right->length < length)
 		return -1;
 	return fe_bytes_equal(left->bytes, right->bytes, length);
 }
@@ -565,15 +566,15 @@ int fe_arg_one_global(const struct fe_facts *facts,
 {
 	if (!facts || !scratch || !request || facts->argc > 64 ||
 	    request->string_key >= FM_MAX_ENTRIES ||
-	    (request->kind != FE_ARG_EXACT &&
-	     request->kind != FE_ARG_PREFIX))
+	    (request->kind != FE_ARG_EXACT && request->kind != FE_ARG_PREFIX))
 		return -1;
 	__asm__ __volatile__("" : "+r"(argument));
 	if (argument >= 64 || argument >= facts->argc)
 		return 0;
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 	struct fm_global_token token = {
-		.slot = request->slot, .cookie = request->cookie,
+		.slot = request->slot,
+		.cookie = request->cookie,
 	};
 	void *context = &token;
 #else
@@ -637,7 +638,8 @@ int fe_match_arguments(const struct fe_facts *facts, struct fe_scratch *scratch,
 		return -1;
 #if defined(FE_BOUNDED_LOOP_CANDIDATE) && defined(FE_GLOBAL_MATCHER)
 	struct fe_arg_request request = {
-		.string_key = string_key, .kind = kind,
+		.string_key = string_key,
+		.kind = kind,
 	};
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 	if (!token || token->reserved || !token->cookie)
@@ -699,12 +701,14 @@ struct fe_alt_request {
 	fm_u32 slot, kind, path_selector, string_key;
 #endif
 };
-#if defined(FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC) && !defined(FM_WORK_RUN_STATE_DIAGNOSTIC)
+#if defined(FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC) && \
+	!defined(FM_WORK_RUN_STATE_DIAGNOSTIC)
 _Static_assert(sizeof(struct fe_alt_request) == 40,
 	       "staged alternative request contains scalar identity only");
-#elif defined(FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC) && defined(FM_WORK_RUN_STATE_DIAGNOSTIC)
+#elif defined(FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC) && \
+	defined(FM_WORK_RUN_STATE_DIAGNOSTIC)
 _Static_assert(sizeof(struct fe_alt_request) == 72 &&
-	       __builtin_offsetof(struct fe_alt_request, matcher) == 0,
+		       __builtin_offsetof(struct fe_alt_request, matcher) == 0,
 	       "WORK matcher request must retain scalar token prefix and state");
 #endif
 #ifdef __bpf__
@@ -727,17 +731,18 @@ int fe_match_alternative(const struct fe_facts *facts,
 #endif
 #else
 	struct fm_global_token token = {
-		.slot = request->slot, .cookie = request->cookie,
+		.slot = request->slot,
+		.cookie = request->cookie,
 	};
 	const struct fm_global_token *token_ptr = &token;
 #endif
 	void *context = (void *)
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-	#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
-		&request->matcher;
-	#else
+#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
+			&request->matcher;
+#else
 		token;
-	#endif
+#endif
 #else
 		token_ptr;
 #endif
@@ -779,12 +784,12 @@ int fe_match_alternative(const struct fe_facts *facts,
 		return fe_bytes_equal_keys(
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-	#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
+#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
 			request->matcher.token.slot,
 			request->matcher.token.cookie,
-	#else
+#else
 			request->token.slot, request->token.cookie,
-	#endif
+#endif
 #else
 			request->slot, request->cookie,
 #endif
@@ -794,10 +799,10 @@ int fe_match_alternative(const struct fe_facts *facts,
 	if (request->kind == FE_FS) {
 		fm_u32 bit = fe_fs_bit(string);
 		return bit && (facts->fs_known & bit) ?
-			!!(facts->fs_mask & bit) : -1;
+			       !!(facts->fs_mask & bit) :
+			       -1;
 	}
-	if (request->kind != FE_ARG_EXACT &&
-	    request->kind != FE_ARG_PREFIX)
+	if (request->kind != FE_ARG_EXACT && request->kind != FE_ARG_PREFIX)
 		return -1;
 	return fe_match_arguments(facts, scratch, key, request->kind
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
@@ -808,7 +813,7 @@ int fe_match_alternative(const struct fe_facts *facts,
 				  token_ptr
 #endif
 #endif
-				  );
+	);
 }
 /* Reuse the independently checked alternative across the complete 256-entry
  * list. The request carries only scalar selection; no readonly blob pointer
@@ -832,8 +837,8 @@ int fe_match_list_global(const struct fe_facts *facts,
 	for (fm_u32 i = 0; i < 256; i++) {
 		if (i >= count)
 			break;
-		int result = fe_match_alternative(facts, scratch, request,
-						  base + i);
+		int result =
+			fe_match_alternative(facts, scratch, request, base + i);
 		if (request->kind == FE_FS && result < 0) {
 			unknown_fs = 1;
 			continue;
@@ -846,11 +851,13 @@ int fe_match_list_global(const struct fe_facts *facts,
 #endif
 #if !(defined(FE_BOUNDED_LOOP_CANDIDATE) && defined(FE_GLOBAL_MATCHER))
 #if defined(__bpf__) && defined(FE_BOUNDED_LOOP_CANDIDATE)
-static __attribute__((noinline))
+static
+	__attribute__((noinline))
 #else
 static
 #endif
-long fe_match_step(fm_u32 i, void *opaque)
+	long
+	fe_match_step(fm_u32 i, void *opaque)
 {
 	struct fe_match_context *c = opaque;
 	if (i >= 256 || i >= c->list.count)
@@ -863,11 +870,14 @@ long fe_match_step(fm_u32 i, void *opaque)
 	}
 #endif
 	struct fe_alt_request request = {
-		.kind = c->kind, .path_selector = c->path_selector,
-		.string_key = c->string_key, .value = c->value,
+		.kind = c->kind,
+		.path_selector = c->path_selector,
+		.string_key = c->string_key,
+		.value = c->value,
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 		.slot = ((const struct fm_global_token *)c->blob_context)->slot,
-		.cookie = ((const struct fm_global_token *)c->blob_context)->cookie,
+		.cookie = ((const struct fm_global_token *)c->blob_context)
+				  ->cookie,
 #endif
 	};
 	int result = fe_match_alternative(c->facts, c->scratch, &request,
@@ -905,9 +915,11 @@ long fe_match_step(fm_u32 i, void *opaque)
 				result = fe_bytes_equal_keys(
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
 					((const struct fm_global_token *)
-					 c->blob_context)->slot,
+						 c->blob_context)
+						->slot,
 					((const struct fm_global_token *)
-					 c->blob_context)->cookie,
+						 c->blob_context)
+						->cookie,
 #endif
 					c->list.base + i, c->string_key,
 					s->length);
@@ -923,12 +935,12 @@ long fe_match_step(fm_u32 i, void *opaque)
 		} else {
 #ifdef FE_GLOBAL_MATCHER
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
-			result = fe_match_arguments(c->facts, c->scratch,
-				c->list.base + i, c->kind,
+			result = fe_match_arguments(
+				c->facts, c->scratch, c->list.base + i, c->kind,
 				(const struct fm_global_token *)c->blob_context);
 #else
 			result = fe_match_arguments(c->facts, c->scratch,
-				c->list.base + i, c->kind);
+						    c->list.base + i, c->kind);
 #endif
 #else
 			result = fe_match_arguments(c->facts, c->scratch, s,
@@ -1148,8 +1160,10 @@ static long fe_predicate_step(fm_u32 index, void *opaque)
 		if (!r->ancestor_depth || r->ancestor_depth > 16)
 			goto unknown;
 		struct fe_ancestor_context a = {
-			.blob_context = e->blob_context, .facts = f,
-			.scratch = e->scratch, .list = r->ancestor_path,
+			.blob_context = e->blob_context,
+			.facts = f,
+			.scratch = e->scratch,
+			.list = r->ancestor_path,
 			.depth = r->ancestor_depth,
 		};
 		if (FE_LOOP(16, fe_ancestor_step, &a) < 0)
@@ -1202,16 +1216,15 @@ FE_INLINE
 #else
 __attribute__((noinline))
 #endif
-int fe_rule_match_global(const struct fe_facts *f,
-						   struct fe_scratch *scratch,
-						   fm_u32 rule_key,
+int fe_rule_match_global(const struct fe_facts *f, struct fe_scratch *scratch,
+			 fm_u32 rule_key,
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
-						   fm_u64 policy_uid,
-				   const struct fm_global_token *token
+			 fm_u64 policy_uid, const struct fm_global_token *token
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-				   , struct fe_alt_request *request)
+			 ,
+			 struct fe_alt_request *request)
 #else
-				   )
+)
 #endif
 #else
 						   fm_u64 policy_uid)
@@ -1248,33 +1261,35 @@ int fe_rule_match_global(const struct fe_facts *f,
 	if (!token || token->reserved || !token->cookie)
 		return -1;
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-	#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
+#ifdef FM_WORK_RUN_STATE_DIAGNOSTIC
 	request->matcher.token = *token;
-	#else
+#else
 	request->token = *token;
-	#endif
+#endif
 #else
 	request->slot = token->slot;
 	request->cookie = token->cookie;
 #endif
 #endif
-#define FE_TEST(list, predicate)                                       \
-	do {                                                            \
-		request->kind = (predicate);                             \
+#define FE_TEST(list, predicate)                                          \
+	do {                                                              \
+		request->kind = (predicate);                              \
 		result = fe_match_list_global(f, scratch, request,        \
-					       (list).base, (list).count); \
-		if (result != 1)                                         \
-			return result;                                      \
+					      (list).base, (list).count); \
+		if (result != 1)                                          \
+			return result;                                    \
 	} while (0)
 #else
 	struct fe_match_context c = {
-		.blob_context = blob_context, .facts = f, .scratch = scratch,
+		.blob_context = blob_context,
+		.facts = f,
+		.scratch = scratch,
 	};
 #define FE_TEST(list, kind)                            \
 	do {                                           \
-		c.blob_context = blob_context;            \
-		c.facts = f;                              \
-		c.scratch = scratch;                      \
+		c.blob_context = blob_context;         \
+		c.facts = f;                           \
+		c.scratch = scratch;                   \
 		result = fe_match(&c, (list), (kind)); \
 		if (result != 1)                       \
 			return result;                 \
@@ -1315,8 +1330,7 @@ int fe_rule_match_global(const struct fe_facts *f,
 		const struct fe_string *container =
 			FE_CONTAINER_LOOKUP(blob_context);
 		request->string_key = header->container;
-		if (!container || !container->length ||
-		    container->length > 255)
+		if (!container || !container->length || container->length > 255)
 			return -1;
 #else
 		c.string = FE_CONTAINER_LOOKUP(blob_context);
@@ -1360,8 +1374,8 @@ int fe_rule_match_global(const struct fe_facts *f,
 			request->path_selector = 2 + i;
 			request->kind = FE_PATH;
 			result = fe_match_list_global(f, scratch, request,
-					r->ancestor_path.base,
-					r->ancestor_path.count);
+						      r->ancestor_path.base,
+						      r->ancestor_path.count);
 			if (result < 0)
 				return -1;
 			if (result == 1) {
@@ -1380,8 +1394,10 @@ int fe_rule_match_global(const struct fe_facts *f,
 		c.facts = f;
 		c.scratch = scratch;
 		struct fe_ancestor_context a = {
-			.blob_context = blob_context, .facts = f,
-			.scratch = scratch, .list = r->ancestor_path,
+			.blob_context = blob_context,
+			.facts = f,
+			.scratch = scratch,
+			.list = r->ancestor_path,
 			.depth = r->ancestor_depth,
 		};
 		if (FE_LOOP(16, fe_ancestor_step, &a) < 0)
@@ -1416,12 +1432,14 @@ FE_INLINE int fe_rule_match(struct fe_eval_context *e, const struct fe_rule *r,
 #ifdef FE_GLOBAL_MATCHER
 	(void)r;
 #ifdef FM_GLOBAL_SCALAR_BLOB_LOOKUP
-	return fe_rule_match_global(e->facts, e->scratch, rule_key, p->uid,
+	return fe_rule_match_global(
+		e->facts, e->scratch, rule_key, p->uid,
 		(const struct fm_global_token *)e->blob_context
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-		, e->alt_request
+		,
+		e->alt_request
 #endif
-		);
+	);
 #else
 	return fe_rule_match_global(e->facts, e->scratch, rule_key, p->uid);
 #endif
@@ -1444,7 +1462,8 @@ FE_INLINE int fe_rule_match(struct fe_eval_context *e, const struct fe_rule *r,
 #ifdef FE_RULE_STEP_INLINE_DIAGNOSTIC
 __attribute__((always_inline))
 #endif
-static long fe_rule_step(fm_u32 i, void *opaque)
+static long
+fe_rule_step(fm_u32 i, void *opaque)
 {
 	struct fe_eval_context *e = opaque;
 	struct fe_decision *d = &e->scratch->decision;
@@ -1503,7 +1522,7 @@ static long fe_rule_step(fm_u32 i, void *opaque)
 	if (!match)
 		return 0;
 	e->matched = 1;
-	#ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
+#ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
 	fm_u32 matched_word = (i >> 6) & 3U;
 	__asm__ __volatile__("" : "+r"(matched_word));
 	if (matched_word >= 4) {
@@ -1511,9 +1530,9 @@ static long fe_rule_step(fm_u32 i, void *opaque)
 		return 1;
 	}
 	d->matched_rules[matched_word] |= (fm_u64)1 << (i & 63);
-	#else
+#else
 	d->matched_rules[(i >> 6) & 3] |= (fm_u64)1 << (i & 63);
-	#endif
+#endif
 	if (r->deny) {
 		d->deny = 1;
 		if (r->mode > e->deny_mode)

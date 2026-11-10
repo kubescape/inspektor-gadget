@@ -18,7 +18,7 @@
  * map helper runs while locked. A post-helper contradiction retains the
  * lease and charge rather than claiming an unsafe zero receipt. */
 static __attribute__((noinline)) int se_op_zero_payload(__u32 slot,
-						   __u64 expected_cookie)
+							__u64 expected_cookie)
 {
 	if (slot >= SE_OL_TASKS || !expected_cookie)
 		return SE_OC_CORRUPT;
@@ -37,14 +37,15 @@ static __attribute__((noinline)) int se_op_zero_payload(__u32 slot,
 	locator = charge->locator;
 	incarnation = charge->incarnation;
 	int charged = !account->fault && !account->reserved &&
-		account->scope == scope && account->incarnation == incarnation &&
-		account->used && account->used <= SE_OC_QUOTA &&
-		se_oc_bitmap_count(account) == account->used &&
-		(account->bits[SE_OC_WORD(local)] & bit) &&
-		charge->state == SE_OC_OWNED &&
-		charge->cookie == expected_cookie &&
-		charge->last_returned < expected_cookie && scope &&
-		incarnation && locator;
+		      account->scope == scope &&
+		      account->incarnation == incarnation && account->used &&
+		      account->used <= SE_OC_QUOTA &&
+		      se_oc_bitmap_count(account) == account->used &&
+		      (account->bits[SE_OC_WORD(local)] & bit) &&
+		      charge->state == SE_OC_OWNED &&
+		      charge->cookie == expected_cookie &&
+		      charge->last_returned < expected_cookie && scope &&
+		      incarnation && locator;
 	bpf_spin_unlock(&account->lock);
 	if (!charged)
 		return SE_OC_PENDING;
@@ -54,9 +55,9 @@ static __attribute__((noinline)) int se_op_zero_payload(__u32 slot,
 	const __u32 prerequisite = SE_OL_ALL_DONE ^ SE_OL_PAYLOAD_ZERO_DONE;
 	bpf_spin_lock(&meta->lock);
 	int exact = meta->phase == SE_OL_ARCHIVE_ZEROED &&
-		se_oc_ready_meta(meta, account_slot, incarnation, scope,
-				 expected_cookie, locator) &&
-		meta->cleanup_done == prerequisite;
+		    se_oc_ready_meta(meta, account_slot, incarnation, scope,
+				     expected_cookie, locator) &&
+		    meta->cleanup_done == prerequisite;
 	if (exact)
 		meta->active_leases = 1;
 	bpf_spin_unlock(&meta->lock);
@@ -72,11 +73,11 @@ static __attribute__((noinline)) int se_op_zero_payload(__u32 slot,
 		meta->directory_state == SE_OL_DELETED &&
 		!meta->archive_ready && meta->active_leases == 1 &&
 		!meta->reader_holds && !meta->exclusive &&
-		!meta->exclusive_owner && !meta->reserved &&
-		!meta->work_refs && !meta->native_refs &&
-		!meta->cleanup_error && !meta->current_work_owned &&
-		!meta->current_work_slot && !meta->current_work_cookie &&
-		!meta->reserved2 && meta->cleanup_done == prerequisite;
+		!meta->exclusive_owner && !meta->reserved && !meta->work_refs &&
+		!meta->native_refs && !meta->cleanup_error &&
+		!meta->current_work_owned && !meta->current_work_slot &&
+		!meta->current_work_cookie && !meta->reserved2 &&
+		meta->cleanup_done == prerequisite;
 	if (exact) {
 		meta->active_leases = 0;
 		if (zeroed)

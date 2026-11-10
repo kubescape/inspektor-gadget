@@ -1,31 +1,31 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright 2026 The Inspektor Gadget authors
 #include "vmlinux.h"
-#if defined(ENFORCE_EXEC_SHARED_RECOVERY) && \
-    (ENFORCE_EXEC_SHARED_RECOVERY != 1 || \
-     !defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || \
-     !defined(ENFORCE_EXEC_SHARED_NODE) || \
-     !defined(ENFORCE_EXEC_PERSISTENT_OWNER) || \
-     (defined(ENFORCE_EXEC_POOL_DEVELOPMENT) && \
-      !defined(ENFORCE_EXEC_POOL_REAPER_CANDIDATE)))
+#if defined(ENFORCE_EXEC_SHARED_RECOVERY) &&        \
+	(ENFORCE_EXEC_SHARED_RECOVERY != 1 ||       \
+	 !defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || \
+	 !defined(ENFORCE_EXEC_SHARED_NODE) ||      \
+	 !defined(ENFORCE_EXEC_PERSISTENT_OWNER) || \
+	 (defined(ENFORCE_EXEC_POOL_DEVELOPMENT) && \
+	  !defined(ENFORCE_EXEC_POOL_REAPER_CANDIDATE)))
 #error "recovery requires the explicit shared ABI3 development image; pool needs the reaper candidate gate"
 #endif
-#if defined(ENFORCE_EXEC_POOL_REAPER_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_DEVELOPMENT) || \
-     !defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE) || \
-     !defined(ENFORCE_EXEC_SHARED_RECOVERY))
+#if defined(ENFORCE_EXEC_POOL_REAPER_CANDIDATE) &&              \
+	(!defined(ENFORCE_EXEC_POOL_DEVELOPMENT) ||             \
+	 !defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_SHARED_RECOVERY))
 #error "reaper candidate needs the combined typed pool and recovery development image"
 #endif
-#if defined(ENFORCE_EXEC_POOL_DEVELOPMENT) && \
-    (!defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || \
-     !defined(ENFORCE_EXEC_SHARED_NODE) || \
-     !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY))
+#if defined(ENFORCE_EXEC_POOL_DEVELOPMENT) &&       \
+	(!defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || \
+	 !defined(ENFORCE_EXEC_SHARED_NODE) ||      \
+	 !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY))
 #error "pool ABI is forbidden in default or product image"
 #endif
 #if defined(ENFORCE_EXEC_SHARED_SCALAR_EVAL_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_SHARED_NODE) || \
-     !defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || \
-     defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE))
+	(!defined(ENFORCE_EXEC_SHARED_NODE) ||            \
+	 !defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) ||       \
+	 defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE))
 #error "scalar shared evaluator is an exclusive shared development candidate"
 #endif
 #include <bpf/bpf_helpers.h>
@@ -45,19 +45,19 @@ static inline const struct fm_blob *full_lookup(void *, unsigned int);
 #ifdef ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE
 struct fm_global_token;
 struct se_policy_view;
-static inline struct se_policy_view *se_pool_view_from_token(
-	const struct fm_global_token *);
-static inline const struct fm_blob *se_pool_blob_from_token(
-	unsigned int, unsigned long long, unsigned int);
+static inline struct se_policy_view *
+se_pool_view_from_token(const struct fm_global_token *);
+static inline const struct fm_blob *
+se_pool_blob_from_token(unsigned int, unsigned long long, unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	se_pool_blob_from_token((slot), (cookie), (key))
 #elif defined(ENFORCE_EXEC_SHARED_SCALAR_EVAL_CANDIDATE)
 struct fm_global_token;
 struct se_policy_view;
-static inline struct se_policy_view *se_shared_view_from_token(
-	const struct fm_global_token *);
-static inline const struct fm_blob *se_shared_blob_from_token(
-	unsigned int, unsigned long long, unsigned int);
+static inline struct se_policy_view *
+se_shared_view_from_token(const struct fm_global_token *);
+static inline const struct fm_blob *
+se_shared_blob_from_token(unsigned int, unsigned long long, unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	se_shared_blob_from_token((slot), (cookie), (key))
 #else
@@ -250,7 +250,7 @@ static inline const struct fm_blob *full_lookup(void *ctx, unsigned int key)
 }
 /* EO_GLOBAL_BLOB_BEGIN */
 #if !defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE) && \
-    !defined(ENFORCE_EXEC_SHARED_SCALAR_EVAL_CANDIDATE)
+	!defined(ENFORCE_EXEC_SHARED_SCALAR_EVAL_CANDIDATE)
 static inline const struct fm_blob *full_lookup_global(unsigned int key)
 {
 #ifdef ENFORCE_EXEC_SHARED_NODE
@@ -309,8 +309,9 @@ static long read_argument(__u32 i, void *opaque)
 		c->error = 1;
 		return 1;
 	}
-	long n = bpf_copy_from_user_mm_str(
-		c->o->argument, 4097, (void *)c->pointer, mm, FE_COPY_PAD_ZEROS);
+	long n = bpf_copy_from_user_mm_str(c->o->argument, 4097,
+					   (void *)c->pointer, mm,
+					   FE_COPY_PAD_ZEROS);
 	// A full destination may be truncated. Reject rather than match a prefix.
 	if (n <= 0 || n >= 4097) {
 		c->error = 1;
@@ -340,7 +341,7 @@ static long read_argument(__u32 i, void *opaque)
 /* Keep the observation frame separate from the shared ingress/evaluator
  * frame; inlining their combined scratch exceeds the BPF stack limit. */
 static __attribute__((noinline)) int full_observe(struct linux_binprm *bprm,
-					struct observation *o)
+						  struct observation *o)
 {
 	o->facts.actor_image = -1;
 	o->facts.target_image = -1;
@@ -427,8 +428,9 @@ static __always_inline __u64 se_catalogue_epoch(__u64 scope, __u64 uid);
 #ifdef ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE
 #include "shared_pool_work_semantic_candidate.h"
 #include "shared_pool_eval_candidate.h"
-static inline const struct fm_blob *se_pool_blob_from_token(
-	unsigned int slot, unsigned long long cookie, unsigned int key)
+static inline const struct fm_blob *
+se_pool_blob_from_token(unsigned int slot, unsigned long long cookie,
+			unsigned int key)
 {
 	if (key >= FM_MAX_ENTRIES)
 		return 0;

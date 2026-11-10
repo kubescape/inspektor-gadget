@@ -2,11 +2,11 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_CORE_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_CORE_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || \
-    !defined(SE_OL_TASKS) || !defined(SE_OC_ACCOUNTS) || \
-    !defined(SE_OC_QUOTA) || !defined(SE_OWK_ACCOUNTS) || \
-    !defined(SE_OWK_QUOTA) || !defined(SE_OWK_WORKS)
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) ||                 \
+	!defined(ENFORCE_EXEC_ABI3_DEVELOPMENT) || !defined(SE_OL_TASKS) || \
+	!defined(SE_OC_ACCOUNTS) || !defined(SE_OC_QUOTA) ||                \
+	!defined(SE_OWK_ACCOUNTS) || !defined(SE_OWK_QUOTA) ||              \
+	!defined(SE_OWK_WORKS)
 #error "opaque owner core requires explicit candidate profile"
 #endif
 #ifndef FULL_EPOCH_ROLES_H
@@ -26,12 +26,13 @@ static __u64 *writer_lookup(const void *key);
 static int delete_key(const void *key);
 #define SE_OL_LOOKUP(key) opaque_lookup(key)
 #define SE_OL_META_LOOKUP(slot) meta_lookup(slot)
-#define SE_OW_ARCHIVE_COPY(slot,key) archive_copy(slot,key)
+#define SE_OW_ARCHIVE_COPY(slot, key) archive_copy(slot, key)
 #define SE_OW_ARCHIVE_ZERO(slot) archive_zero(slot)
 #define SE_OW_ARCHIVE_LOOKUP(slot) archive_lookup(slot)
 #define SE_OW_INSERT_ZERO(key) insert_zero(key)
 #define SE_OW_LOOKUP(key) writer_lookup(key)
-#define SE_OW_CAS(value,old,new_value) __sync_val_compare_and_swap(value,old,new_value)
+#define SE_OW_CAS(value, old, new_value) \
+	__sync_val_compare_and_swap(value, old, new_value)
 #define SE_OW_DELETE(key) delete_key(key)
 #include "shared_pool_opaque_writer_candidate.h"
 #include "shared_pool_opaque_replace_candidate.h"
@@ -81,12 +82,13 @@ struct observation {
 #endif
 };
 #ifdef ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE
-_Static_assert(sizeof(struct fe_stage_cursor) == 56 &&
-	       sizeof(((struct observation *)0)->stage_workspace) <= 4097 &&
-	       __builtin_offsetof(struct observation, argument) ==
-	       __builtin_offsetof(struct observation, stage_cursor) &&
-	       __builtin_offsetof(struct observation, stage_cursor) % 8 == 0,
-	       "staged cursor must reuse aligned WORK observation scratch");
+_Static_assert(
+	sizeof(struct fe_stage_cursor) == 56 &&
+		sizeof(((struct observation *)0)->stage_workspace) <= 4097 &&
+		__builtin_offsetof(struct observation, argument) ==
+			__builtin_offsetof(struct observation, stage_cursor) &&
+		__builtin_offsetof(struct observation, stage_cursor) % 8 == 0,
+	"staged cursor must reuse aligned WORK observation scratch");
 #endif
 #include "shared_invocation_wire.h"
 #endif

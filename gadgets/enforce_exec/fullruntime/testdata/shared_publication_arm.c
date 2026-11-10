@@ -23,12 +23,11 @@ static void bpf_spin_unlock(struct bpf_spin_lock *l)
 
 static void hold_ticket(struct se_binding_snapshots *b)
 {
-	b->records[0].tickets[0] = (struct se_pin_ticket){
-		.scope = 11,
-		.snapshot_serial = 1,
-		.object_generation = 3,
-		.phase = SE_TICKET_HELD
-	};
+	b->records[0].tickets[0] =
+		(struct se_pin_ticket){ .scope = 11,
+					.snapshot_serial = 1,
+					.object_generation = 3,
+					.phase = SE_TICKET_HELD };
 	b->records[0].metadata.root_epochs[0] = 1;
 	b->records[0].metadata.policy_uids[0] = 9;
 	b->records[0].metadata.container_length = 1;
@@ -53,7 +52,8 @@ static struct se_arm_request commit_request(void)
 
 int main(void)
 {
-	assert(SE_ARM_COMMIT != 16 && SE_ARM_WITHDRAW != 16 && SE_ARM_BIND != 16);
+	assert(SE_ARM_COMMIT != 16 && SE_ARM_WITHDRAW != 16 &&
+	       SE_ARM_BIND != 16);
 	struct se_route_anchor a = {};
 	struct se_binding_snapshots b = { .scope = 11, .next_serial = 1 };
 	b.records[0] = (struct se_snapshot){ .scope = 11,
@@ -106,8 +106,8 @@ int main(void)
 	/* A route admission that releases its lexical claim never acquires a
 	 * persistent snapshot reader. It still invalidates the route proof. */
 	struct se_route_claim lexical = {};
-	assert(se_route_claim_locked(&a, se_route_locator(0, a.incarnation),
-				     7, &lexical) == SE_ROUTE_OWNED);
+	assert(se_route_claim_locked(&a, se_route_locator(0, a.incarnation), 7,
+				     &lexical) == SE_ROUTE_OWNED);
 	assert(!se_route_release_locked(&a, &lexical));
 	assert(a.admission_serial == b.admission_serial + 1);
 	struct se_arm_request withdraw = commit_request();
@@ -140,7 +140,9 @@ int main(void)
 	assert(se_arm_index_decision(0, 2, &cell, 11, 9) == 1);
 	assert(se_arm_index_decision(&bank, 2, &cell, 11, 9) == 0);
 	assert(se_arm_index_decision(&bank, 3, &cell, 11, 9));
-	struct se_epoch_cell foreign_cell = { .scope = 12, .uid = 9, .epoch = 1 };
+	struct se_epoch_cell foreign_cell = { .scope = 12,
+					      .uid = 9,
+					      .epoch = 1 };
 	assert(se_arm_index_decision(0, 2, &foreign_cell, 11, 9));
 	__u64 uids[8] = { 9 };
 	assert(!se_arm_uids_match(&b.records[0], &withdraw, uids));

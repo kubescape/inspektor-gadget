@@ -17,35 +17,57 @@ static void setup(struct receipt_fixture *f)
 	*f = (struct receipt_fixture){};
 	f->key = seed_live_opaque_task_for_open();
 	assert(se_ol_task_open(&f->key, &f->owner) == SE_OL_OK);
-	routes[0] = (struct se_route_anchor){ .incarnation = 1, .cgroup_identity = 7,
-		.scope = 10, .payload_slot = 0, .payload_generation = 13, .active_serial = 1,
-		.execution_class = 1, .phase = SE_ROUTE_ACTIVE };
-	bindings[0] = (struct se_binding_snapshots){ .scope = 10, .generation = 13,
-		.active_serial = 1, .records = {{.scope = 10, .serial = 1, .generation = 13,
-			.phase = SE_SNAPSHOT_ACTIVE, .count = 1, .execution_class = 1,
-			.metadata = {.root_epochs = {13}, .policy_uids = {1}, .role_writers = 1,
-				.container_length = 1, .container = "/"}}} };
+	routes[0] = (struct se_route_anchor){ .incarnation = 1,
+					      .cgroup_identity = 7,
+					      .scope = 10,
+					      .payload_slot = 0,
+					      .payload_generation = 13,
+					      .active_serial = 1,
+					      .execution_class = 1,
+					      .phase = SE_ROUTE_ACTIVE };
+	bindings[0] = (struct se_binding_snapshots){
+		.scope = 10,
+		.generation = 13,
+		.active_serial = 1,
+		.records = { { .scope = 10,
+			       .serial = 1,
+			       .generation = 13,
+			       .phase = SE_SNAPSHOT_ACTIVE,
+			       .count = 1,
+			       .execution_class = 1,
+			       .metadata = { .root_epochs = { 13 },
+					     .policy_uids = { 1 },
+					     .role_writers = 1,
+					     .container_length = 1,
+					     .container = "/" } } }
+	};
 }
 static int classify(struct receipt_fixture *f,
-	const struct se_exec_terminal_receipt *receipt, __u64 bprm)
+		    const struct se_exec_terminal_receipt *receipt, __u64 bprm)
 {
 	return se_op_exec_reader_classify(&f->owner, &bindings[0], receipt,
-		f->key, bprm);
+					  f->key, bprm);
 }
 static void begin(struct receipt_fixture *f)
 {
 	struct se_route_claim claim = {};
 	bpf_spin_lock(&routes[0].lock);
 	assert(se_route_claim_locked(&routes[0], se_route_locator(0, 1), 7,
-		&claim) == SE_ROUTE_OWNED);
+				     &claim) == SE_ROUTE_OWNED);
 	bpf_spin_unlock(&routes[0].lock);
 	__u64 invocation = 0;
-	assert(se_op_exec_reader_begin(&f->owner, &claim, &bindings[0],
-		0x1234, &invocation) == SE_OL_OK);
-	f->receipt = (struct se_exec_terminal_receipt){.physical = f->key, .bprm = 0x1234,
-		.cookie = f->owner.lease.cookie, .locator = f->owner.lease.locator,
-		.invocation = invocation, .scope = 10, .generation = 13,
-		.phase = SE_EXEC_TERMINAL_REGISTERED };
+	assert(se_op_exec_reader_begin(&f->owner, &claim, &bindings[0], 0x1234,
+				       &invocation) == SE_OL_OK);
+	f->receipt = (struct se_exec_terminal_receipt){
+		.physical = f->key,
+		.bprm = 0x1234,
+		.cookie = f->owner.lease.cookie,
+		.locator = f->owner.lease.locator,
+		.invocation = invocation,
+		.scope = 10,
+		.generation = 13,
+		.phase = SE_EXEC_TERMINAL_REGISTERED
+	};
 }
 int main(void)
 {
@@ -94,14 +116,16 @@ int main(void)
 			f.receipt.phase = 99;
 			break;
 		}
-		assert(classify(&f, &f.receipt, 0x1234) == SE_EXEC_READER_RETAIN);
+		assert(classify(&f, &f.receipt, 0x1234) ==
+		       SE_EXEC_READER_RETAIN);
 		assert(!memcmp(&before, &payloads[0].semantic, sizeof(before)));
 	}
 	f.receipt = good;
 	for (unsigned int phase = SE_EXEC_TERMINAL_SUCCESS;
 	     phase <= SE_EXEC_TERMINAL_FAILURE; phase++) {
 		f.receipt.phase = phase;
-		assert(classify(&f, &f.receipt, 0x5678) == SE_EXEC_READER_TERMINAL);
+		assert(classify(&f, &f.receipt, 0x5678) ==
+		       SE_EXEC_READER_TERMINAL);
 		assert(classify(&f, &f.receipt, 0) == SE_EXEC_READER_TERMINAL);
 	}
 	assert(!memcmp(&before, &payloads[0].semantic, sizeof(before)));
@@ -123,9 +147,11 @@ int main(void)
 	f.owner.lease.cookie--;
 	assert(classify(&f, &f.receipt, 0x1234) == SE_EXEC_READER_CONTINUE);
 	f.receipt.phase = SE_EXEC_TERMINAL_FAILURE;
-	assert(se_op_exec_reader_finish_bounded(&f.owner, &bindings[0],
-		f.receipt.bprm, f.receipt.invocation, 0) == SE_OL_OK);
-	assert(!payloads[0].semantic.exec.owned && !payloads[0].semantic.reader.owned);
+	assert(se_op_exec_reader_finish_bounded(
+		       &f.owner, &bindings[0], f.receipt.bprm,
+		       f.receipt.invocation, 0) == SE_OL_OK);
+	assert(!payloads[0].semantic.exec.owned &&
+	       !payloads[0].semantic.reader.owned);
 	before = payloads[0].semantic;
 	/* Even already-settled terminal evidence must be retired by its owner,
 	 * not mistaken for a clean new begin or another interpreter iteration. */

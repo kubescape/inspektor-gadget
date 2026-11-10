@@ -10,8 +10,8 @@
 /* Exact unsigned inequality without a data-dependent BPF branch. The empty
  * asm keeps the two's-complement arithmetic from being folded back into an
  * equality jump by the compiler; on BPF this is XOR, NEG, OR, SHR. */
-static __attribute__((always_inline)) inline __u32 se_pool_catalogue_ne64(
-	__u64 a, __u64 b)
+static __attribute__((always_inline)) inline __u32
+se_pool_catalogue_ne64(__u64 a, __u64 b)
 {
 	__u64 difference = a ^ b, negative = difference;
 	asm volatile("" : "+r"(negative));
@@ -37,23 +37,26 @@ static __attribute__((always_inline)) inline int se_pool_catalogue_classify_row(
 	__u64 accepted = cache->rows[i].accepted_epoch;
 	__u32 present = se_pool_catalogue_ne64(row->uid, 0);
 	__u32 accepted_bit = se_pool_catalogue_ne64(accepted, 0);
-	__u32 invalid = se_pool_catalogue_ne64(cache->rows[i].uid,
-		row->uid) | (1U ^ se_pool_catalogue_ne64(accepted, ER_UNKNOWN));
-	invalid |= (1U ^ present) & (accepted_bit |
-		se_pool_catalogue_ne64(row->epoch, 0) |
-		se_pool_catalogue_ne64(row->role, 0) |
-		se_pool_catalogue_ne64(row->knowledge, 0) |
-		se_pool_catalogue_ne64(row->reserved, 0));
-	invalid |= present & ((1U ^ se_pool_catalogue_ne64(row->epoch, 0)) |
-		(1U ^ se_pool_catalogue_ne64(row->epoch, ER_UNKNOWN)) |
-		(1U ^ se_pool_catalogue_ne64(row->role, 0)) |
-		se_pool_catalogue_ne64(row->reserved, 0) |
-		(se_pool_catalogue_ne64(row->knowledge, ER_ROLE_KNOWN) &
-		 se_pool_catalogue_ne64(row->knowledge, ER_ROLE_UNKNOWN)) |
-		(accepted_bit & se_pool_catalogue_ne64(accepted, row->epoch)));
+	__u32 invalid = se_pool_catalogue_ne64(cache->rows[i].uid, row->uid) |
+			(1U ^ se_pool_catalogue_ne64(accepted, ER_UNKNOWN));
+	invalid |= (1U ^ present) &
+		   (accepted_bit | se_pool_catalogue_ne64(row->epoch, 0) |
+		    se_pool_catalogue_ne64(row->role, 0) |
+		    se_pool_catalogue_ne64(row->knowledge, 0) |
+		    se_pool_catalogue_ne64(row->reserved, 0));
+	invalid |=
+		present &
+		((1U ^ se_pool_catalogue_ne64(row->epoch, 0)) |
+		 (1U ^ se_pool_catalogue_ne64(row->epoch, ER_UNKNOWN)) |
+		 (1U ^ se_pool_catalogue_ne64(row->role, 0)) |
+		 se_pool_catalogue_ne64(row->reserved, 0) |
+		 (se_pool_catalogue_ne64(row->knowledge, ER_ROLE_KNOWN) &
+		  se_pool_catalogue_ne64(row->knowledge, ER_ROLE_UNKNOWN)) |
+		 (accepted_bit & se_pool_catalogue_ne64(accepted, row->epoch)));
 	for (__u32 j = 0; j < i; j++)
-		invalid |= present & (1U ^ se_pool_catalogue_ne64(
-			snapshot->rows[j].uid, row->uid));
+		invalid |= present &
+			   (1U ^ se_pool_catalogue_ne64(snapshot->rows[j].uid,
+							row->uid));
 	return invalid ? -1 : (int)accepted_bit;
 }
 
@@ -63,16 +66,16 @@ static __attribute__((always_inline)) inline int se_pool_catalogue_classify_row(
 /* Scope/generation are trusted only after the caller validates a live route
  * claim or an exact persistent reader on a lexical TASK/WORK owner. Do not
  * call this scalar core from a copied token or current-cgroup observation. */
-static __attribute__((always_inline)) inline int se_pool_catalogue_classify_after_authority(
-	struct er_canonical_view *view,
-	const struct se_pool_epoch_cache *cache,
+static __attribute__((always_inline)) inline int
+se_pool_catalogue_classify_after_authority(
+	struct er_canonical_view *view, const struct se_pool_epoch_cache *cache,
 	__u64 scope, __u64 generation)
 {
 	if (!view)
 		return ER_INVALID;
 	view->accepted_mask = 0;
-	if (!cache || !scope || !generation ||
-	    cache->scope != scope || cache->generation != generation)
+	if (!cache || !scope || !generation || cache->scope != scope ||
+	    cache->generation != generation)
 		return er_fail(&view->work, ER_INVALID);
 	struct er_work *snapshot = &view->work;
 	if (snapshot->error || !snapshot->authority_version ||
@@ -80,7 +83,8 @@ static __attribute__((always_inline)) inline int se_pool_catalogue_classify_afte
 		return er_fail(snapshot, ER_INVALID);
 	__u32 accepted_mask = 0;
 	for (__u32 i = 0; i < 16; i++) {
-		int accepted = se_pool_catalogue_classify_row(snapshot, cache, i);
+		int accepted =
+			se_pool_catalogue_classify_row(snapshot, cache, i);
 		if (accepted < 0)
 			return er_fail(snapshot, ER_INVALID);
 		accepted_mask |= ((__u32)accepted) << i;
@@ -89,10 +93,10 @@ static __attribute__((always_inline)) inline int se_pool_catalogue_classify_afte
 	snapshot->prepared = 1;
 	return 0;
 }
-static __attribute__((always_inline)) inline int se_pool_catalogue_classify(
-	struct er_canonical_view *view,
-	const struct se_pool_epoch_cache *cache,
-	const struct se_route_claim *claim)
+static __attribute__((always_inline)) inline int
+se_pool_catalogue_classify(struct er_canonical_view *view,
+			   const struct se_pool_epoch_cache *cache,
+			   const struct se_route_claim *claim)
 {
 	if (!view)
 		return ER_INVALID;
@@ -100,8 +104,8 @@ static __attribute__((always_inline)) inline int se_pool_catalogue_classify(
 		view->accepted_mask = 0;
 		return er_fail(&view->work, ER_INVALID);
 	}
-	return se_pool_catalogue_classify_after_authority(view, cache,
-		claim->scope, claim->generation);
+	return se_pool_catalogue_classify_after_authority(
+		view, cache, claim->scope, claim->generation);
 }
 
 /* Final-store preflight: require the exact cache used for this WORK snapshot,
@@ -117,17 +121,17 @@ static __attribute__((always_inline)) inline int se_pool_catalogue_classify(
 #define SE_POOL_PROJECTION_ATTR __attribute__((always_inline)) inline
 #define SE_POOL_PROJECTION_LINKAGE static
 #endif
-SE_POOL_PROJECTION_LINKAGE SE_POOL_PROJECTION_ATTR int se_pool_catalogue_projection_matches(
-	const struct er_canonical_view *view,
-	const struct er_work *projected,
-	const struct se_pool_epoch_cache *cache,
-	const struct se_route_claim *claim)
+SE_POOL_PROJECTION_LINKAGE SE_POOL_PROJECTION_ATTR int
+se_pool_catalogue_projection_matches(const struct er_canonical_view *view,
+				     const struct er_work *projected,
+				     const struct se_pool_epoch_cache *cache,
+				     const struct se_route_claim *claim)
 {
 	if (!view || !projected || !cache || !claim || !claim->owned ||
 	    claim->reserved || !claim->scope || !claim->generation ||
 	    cache->scope != claim->scope ||
-	    cache->generation != claim->generation ||
-	    view->work.error || !view->work.prepared ||
+	    cache->generation != claim->generation || view->work.error ||
+	    !view->work.prepared ||
 	    view->work.authority_version != claim->generation ||
 	    projected->error || !projected->prepared ||
 	    projected->base_version != view->work.base_version ||
@@ -150,7 +154,7 @@ SE_POOL_PROJECTION_LINKAGE SE_POOL_PROJECTION_ATTR int se_pool_catalogue_project
 			    output->reserved != source->reserved)
 				return 0;
 		} else if (output->uid || output->epoch || output->role ||
-		   output->knowledge || output->reserved) {
+			   output->knowledge || output->reserved) {
 			return 0;
 		}
 	}

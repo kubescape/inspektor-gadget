@@ -42,8 +42,7 @@ se_object_capacity(__u32 size_class)
 	}
 }
 static __attribute__((always_inline)) inline int
-se_object_begin_locked(struct se_object *s, __u64 attempt,
-					 __u32 length)
+se_object_begin_locked(struct se_object *s, __u64 attempt, __u32 length)
 {
 	__u32 capacity = se_object_capacity(s->size_class);
 	if (s->phase != SE_OBJECT_FREE || s->pins || s->commands ||
@@ -62,10 +61,9 @@ se_object_begin_locked(struct se_object *s, __u64 attempt,
 	return 0;
 }
 static __attribute__((always_inline)) inline int
-se_object_write_begin_locked(struct se_object *s,
-					       __u64 generation, __u64 attempt,
-					       __u32 index,
-					       struct se_write_claim *w)
+se_object_write_begin_locked(struct se_object *s, __u64 generation,
+			     __u64 attempt, __u32 index,
+			     struct se_write_claim *w)
 {
 	if (s->phase != SE_OBJECT_LOADING || s->generation != generation ||
 	    s->attempt != attempt || !generation || !attempt ||
@@ -85,8 +83,7 @@ se_object_write_begin_locked(struct se_object *s,
 /* Exact active sequence, not caller-owned alone, prevents copied stale tokens
  * refunding a later writer. Call only AFTER the last physical cell store. */
 static __attribute__((always_inline)) inline int
-se_object_write_finish_locked(struct se_object *s,
-						struct se_write_claim *w)
+se_object_write_finish_locked(struct se_object *s, struct se_write_claim *w)
 {
 	if (!w->owned || w->reserved || !w->sequence ||
 	    s->phase != SE_OBJECT_LOADING || s->slot != w->slot ||
@@ -103,10 +100,8 @@ se_object_write_finish_locked(struct se_object *s,
  * publication boundary checks complete sequential installation and scalar
  * metadata; it deliberately does not repeat the deep native bytecode walk. */
 static __attribute__((always_inline)) inline int
-se_object_finalize_locked(struct se_object *s,
-					    __u64 generation, __u64 attempt,
-					    __u32 rule_count,
-					    __u32 execution_class)
+se_object_finalize_locked(struct se_object *s, __u64 generation, __u64 attempt,
+			  __u32 rule_count, __u32 execution_class)
 {
 	if (!generation || !attempt || s->generation != generation ||
 	    s->attempt != attempt || s->writer_sequence || s->commands ||
@@ -127,8 +122,7 @@ se_object_finalize_locked(struct se_object *s,
 	return 0;
 }
 static __attribute__((always_inline)) inline int
-se_object_abort_locked(struct se_object *s, __u64 generation,
-					 __u64 attempt)
+se_object_abort_locked(struct se_object *s, __u64 generation, __u64 attempt)
 {
 	if (!generation || !attempt || s->generation != generation ||
 	    s->attempt != attempt || s->writer_sequence || s->pins ||
@@ -150,8 +144,7 @@ se_object_retire_locked(struct se_object *s, __u64 generation)
 	return 0;
 }
 static __attribute__((always_inline)) inline int
-se_object_reclaim_locked(struct se_object *s,
-					   __u64 generation)
+se_object_reclaim_locked(struct se_object *s, __u64 generation)
 {
 	if (!generation || s->generation != generation ||
 	    s->phase != SE_OBJECT_RETIRING || s->pins || s->commands ||

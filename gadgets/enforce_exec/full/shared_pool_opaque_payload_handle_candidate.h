@@ -27,8 +27,9 @@ struct se_ol_payload_handle {
 	__u32 locked;
 };
 
-static __attribute__((noinline)) int se_ol_payload_open(
-	struct se_ol_lease *lease, struct se_ol_payload_handle *handle)
+static __attribute__((noinline)) int
+se_ol_payload_open(struct se_ol_lease *lease,
+		   struct se_ol_payload_handle *handle)
 {
 	if (!lease || lease->held != 1 || !lease->meta || !handle ||
 	    handle->lease.held || handle->lease.meta || handle->payload ||
@@ -43,13 +44,13 @@ static __attribute__((noinline)) int se_ol_payload_open(
 	__u64 scope;
 	bpf_spin_lock(&meta->lock);
 	int live = meta->locator == lease->locator &&
-		meta->cookie == lease->cookie && meta->active_leases &&
-		meta->phase == SE_OL_LIVE &&
-		meta->directory_state == SE_OL_PUBLISHED &&
-		meta->archive_ready == 1 && !meta->exclusive &&
-		!meta->exclusive_owner && !meta->reserved &&
-		meta->account_scope && meta->account_incarnation &&
-		meta->account_slot < SE_OC_ACCOUNTS;
+		   meta->cookie == lease->cookie && meta->active_leases &&
+		   meta->phase == SE_OL_LIVE &&
+		   meta->directory_state == SE_OL_PUBLISHED &&
+		   meta->archive_ready == 1 && !meta->exclusive &&
+		   !meta->exclusive_owner && !meta->reserved &&
+		   meta->account_scope && meta->account_incarnation &&
+		   meta->account_slot < SE_OC_ACCOUNTS;
 	account_slot = meta->account_slot;
 	incarnation = meta->account_incarnation;
 	scope = meta->account_scope;
@@ -68,16 +69,16 @@ static __attribute__((noinline)) int se_ol_payload_open(
 	__u64 bit = 1ULL << (local % 64U);
 	bpf_spin_lock(&account->lock);
 	int charged = !account->fault && !account->reserved &&
-		account->scope == scope &&
-		account->incarnation == incarnation &&
-		account->used && account->used <= SE_OC_QUOTA &&
-		se_oc_bitmap_count(account) == account->used &&
-		(account->bits[SE_OC_WORD(local)] & bit) &&
-		charge->state == SE_OC_OWNED &&
-		charge->cookie == lease->cookie &&
-		charge->scope == scope &&
-		charge->incarnation == incarnation &&
-		charge->locator == lease->locator;
+		      account->scope == scope &&
+		      account->incarnation == incarnation && account->used &&
+		      account->used <= SE_OC_QUOTA &&
+		      se_oc_bitmap_count(account) == account->used &&
+		      (account->bits[SE_OC_WORD(local)] & bit) &&
+		      charge->state == SE_OC_OWNED &&
+		      charge->cookie == lease->cookie &&
+		      charge->scope == scope &&
+		      charge->incarnation == incarnation &&
+		      charge->locator == lease->locator;
 	bpf_spin_unlock(&account->lock);
 	if (!charged)
 		return SE_OL_CORRUPT;
@@ -87,14 +88,14 @@ static __attribute__((noinline)) int se_ol_payload_open(
 	/* Death may race the account and payload lookups. The lease prevents
 	 * physical reuse; begin rechecks LIVE before exposing any bytes. */
 	*handle = (struct se_ol_payload_handle){ .lease = *lease,
-		.payload = payload };
+						 .payload = payload };
 	lease->held = 0;
 	lease->meta = 0;
 	return SE_OL_OK;
 }
 
-static __attribute__((always_inline)) inline int se_ol_payload_begin(
-	struct se_ol_payload_handle *handle, void **payload)
+static __attribute__((always_inline)) inline int
+se_ol_payload_begin(struct se_ol_payload_handle *handle, void **payload)
 {
 	if (!handle || !payload || *payload || handle->locked ||
 	    handle->lease.held != 1 || !handle->lease.meta || !handle->payload)
@@ -102,11 +103,11 @@ static __attribute__((always_inline)) inline int se_ol_payload_begin(
 	struct se_ol_meta *meta = handle->lease.meta;
 	bpf_spin_lock(&meta->lock);
 	int live = meta->locator == handle->lease.locator &&
-		meta->cookie == handle->lease.cookie && meta->active_leases &&
-		meta->phase == SE_OL_LIVE &&
-		meta->directory_state == SE_OL_PUBLISHED &&
-		meta->archive_ready == 1 && !meta->exclusive &&
-		!meta->exclusive_owner && !meta->reserved;
+		   meta->cookie == handle->lease.cookie &&
+		   meta->active_leases && meta->phase == SE_OL_LIVE &&
+		   meta->directory_state == SE_OL_PUBLISHED &&
+		   meta->archive_ready == 1 && !meta->exclusive &&
+		   !meta->exclusive_owner && !meta->reserved;
 	if (!live) {
 		bpf_spin_unlock(&meta->lock);
 		return SE_OL_STALE;
@@ -128,8 +129,8 @@ static __attribute__((always_inline)) inline int se_ol_payload_begin(
 /* Host regression convenience only. A BPF callback that has successfully
  * begun this lexical borrow must clear it and unlock unconditionally: a
  * fallible end leaves a verifier-visible return under the spinlock. */
-static __attribute__((always_inline)) inline int se_ol_payload_end(
-	struct se_ol_payload_handle *handle, void **payload)
+static __attribute__((always_inline)) inline int
+se_ol_payload_end(struct se_ol_payload_handle *handle, void **payload)
 {
 	if (!handle || !payload || handle->locked != 1 ||
 	    *payload != handle->payload || handle->lease.held != 1 ||
@@ -141,8 +142,8 @@ static __attribute__((always_inline)) inline int se_ol_payload_end(
 	return SE_OL_OK;
 }
 
-static __attribute__((noinline)) int se_ol_payload_close(
-	struct se_ol_payload_handle *handle)
+static __attribute__((noinline)) int
+se_ol_payload_close(struct se_ol_payload_handle *handle)
 {
 	if (!handle || handle->locked || handle->lease.held != 1 ||
 	    !handle->payload)

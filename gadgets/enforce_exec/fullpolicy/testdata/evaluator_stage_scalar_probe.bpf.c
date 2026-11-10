@@ -5,13 +5,13 @@
 #define BPF_MAP_TYPE_ARRAY 2
 #define BPF_F_RDONLY_PROG (1U << 7)
 struct fm_blob;
-static inline const struct fm_blob *stage_blob(unsigned int slot,
-		unsigned long long cookie, unsigned int key);
+static inline const struct fm_blob *
+stage_blob(unsigned int slot, unsigned long long cookie, unsigned int key);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	stage_blob((slot), (cookie), (key))
-#define FM_BLOB_LOOKUP(context, key) \
+#define FM_BLOB_LOOKUP(context, key)                                  \
 	stage_blob(((const struct fm_global_token *)(context))->slot, \
-		((const struct fm_global_token *)(context))->cookie, (key))
+		   ((const struct fm_global_token *)(context))->cookie, (key))
 #include "../bpf/evaluator_stage_candidate.h"
 #define SEC(name) __attribute__((section(name), used))
 #define MAP_UINT(name, value) int(*name)[value]
@@ -42,8 +42,8 @@ struct {
 	MAP_TYPE(value, struct fe_stage_cursor);
 } stage_cursor SEC(".maps");
 static void *(*map_lookup)(void *, const void *) = (void *)1;
-static inline const struct fm_blob *stage_blob(unsigned int slot,
-		unsigned long long cookie, unsigned int key)
+static inline const struct fm_blob *
+stage_blob(unsigned int slot, unsigned long long cookie, unsigned int key)
 {
 	if (slot != 0 || cookie != 101 || key >= FM_MAX_ENTRIES)
 		return 0;

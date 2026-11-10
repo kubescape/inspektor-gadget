@@ -2,11 +2,11 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_PROPOSE_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_PROPOSE_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_FULLPOLICY_EVALUATOR_STAGE_CANDIDATE_H) || \
-    !defined(ENFORCE_EXEC_SHARED_POOL_OPAQUE_WORK_EVAL_CANDIDATE_H) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_READER_CANDIDATE_H)
+#if !defined(ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE) ||                      \
+	!defined(ENFORCE_EXEC_FULLPOLICY_EVALUATOR_STAGE_CANDIDATE_H) ||      \
+	!defined(ENFORCE_EXEC_SHARED_POOL_OPAQUE_WORK_EVAL_CANDIDATE_H) ||    \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE) || \
+	!defined(ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_READER_CANDIDATE_H)
 #error "opaque proposal requires staged evaluation and exact WORK/reader handles"
 #endif
 
@@ -25,9 +25,10 @@ enum { SE_OWK_PROPOSAL_CONSUMED = FE_STAGE_FINISHED + 1 };
  * release readers, retire receipts or complete WORK. In particular the caller
  * must preserve prior verbatim and settle success only from an actual terminal
  * producer. Every failure leaves the exact handles with the caller. */
-static __attribute__((always_inline)) inline int se_owk_exec_propose_reader(
-	struct se_owk_semantic_handle *handle,
-	const struct se_exec_terminal_receipt *receipt, __u64 physical, int prior)
+static __attribute__((always_inline)) inline int
+se_owk_exec_propose_reader(struct se_owk_semantic_handle *handle,
+			   const struct se_exec_terminal_receipt *receipt,
+			   __u64 physical, int prior)
 {
 	if (!handle || !receipt || !physical || !handle->payload ||
 	    receipt->physical != physical || !receipt->cookie ||
@@ -54,8 +55,8 @@ static __attribute__((always_inline)) inline int se_owk_exec_propose_reader(
 	    cursor->generation != receipt->generation ||
 	    cursor->policies != view->header.policies ||
 	    cursor->rules != view->header.rules ||
-	    cursor->next_rule != cursor->rules ||
-	    history->reserved || history->physical_cookie != receipt->cookie ||
+	    cursor->next_rule != cursor->rules || history->reserved ||
+	    history->physical_cookie != receipt->cookie ||
 	    history->scope_cookie != receipt->scope ||
 	    history->view.work.authority_version != receipt->generation ||
 	    !history->transaction.owned ||
@@ -67,13 +68,14 @@ static __attribute__((always_inline)) inline int se_owk_exec_propose_reader(
 	/* Bounded behind a compiler barrier (se_policy_bound). */
 	for (__u32 i = 0, bound = se_policy_bound(view->header.policies);
 	     i < bound && i < 8; i++) {
-		if (view->policies[i].uid != history->transaction.policies[i].uid ||
+		if (view->policies[i].uid !=
+			    history->transaction.policies[i].uid ||
 		    view->policies[i].root_epoch !=
-			history->transaction.policies[i].epoch)
+			    history->transaction.policies[i].epoch)
 			return SE_OL_CORRUPT;
 	}
-	int status = se_owk_reader_catalogue_authority(handle,
-		receipt->generation);
+	int status =
+		se_owk_reader_catalogue_authority(handle, receipt->generation);
 	if (status != SE_OL_OK)
 		return status;
 	struct se_task_state *task = 0;
@@ -81,13 +83,14 @@ static __attribute__((always_inline)) inline int se_owk_exec_propose_reader(
 	if (status != SE_OL_OK)
 		return status;
 	int exact = task->physical_cookie == receipt->cookie &&
-		task->scope_cookie == receipt->scope &&
-		task->eligibility_version == history->eligibility_version &&
-		task->flags == history->flags &&
-		task->committed.version == history->view.work.base_version &&
-		task->exec.owned &&
-		!__builtin_memcmp(&task->exec, &history->transaction,
-			sizeof(task->exec));
+		    task->scope_cookie == receipt->scope &&
+		    task->eligibility_version == history->eligibility_version &&
+		    task->flags == history->flags &&
+		    task->committed.version ==
+			    history->view.work.base_version &&
+		    task->exec.owned &&
+		    !__builtin_memcmp(&task->exec, &history->transaction,
+				      sizeof(task->exec));
 	if (!exact) {
 		se_op_task_semantic_end(owner, &task);
 		return SE_OL_STALE;

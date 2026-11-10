@@ -3,7 +3,7 @@
 #ifndef ENFORCE_EXEC_SHARED_POOL_TASK_REAP_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_TASK_REAP_CANDIDATE_H
 #if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) || \
-    !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY)
+	!defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY)
 #error "task refund tail is candidate-only"
 #endif
 #include "shared_pool_task_core.h"
@@ -13,25 +13,31 @@
  * instruction budget; each call stays within BPF's five-register ABI. */
 
 #ifndef SE_POOL_TASK_TAIL_AFTER_CHARGE
-#define SE_POOL_TASK_TAIL_AFTER_CHARGE() do {} while (0)
+#define SE_POOL_TASK_TAIL_AFTER_CHARGE() \
+	do {                             \
+	} while (0)
 #endif
 #ifndef SE_POOL_TASK_TAIL_AFTER_META
-#define SE_POOL_TASK_TAIL_AFTER_META() do {} while (0)
+#define SE_POOL_TASK_TAIL_AFTER_META() \
+	do {                           \
+	} while (0)
 #endif
 #ifndef SE_POOL_TASK_TAIL_BEFORE_META_FREE
-#define SE_POOL_TASK_TAIL_BEFORE_META_FREE() do {} while (0)
+#define SE_POOL_TASK_TAIL_BEFORE_META_FREE() \
+	do {                                 \
+	} while (0)
 #endif
 
 SE_POOL_INLINE int se_pool_task_initial_zero(const struct se_pool_task_meta *m)
 {
 	return !m->cookie && !m->physical_address && !m->account_scope &&
-		!m->slot && !m->account_slot && !m->account_incarnation &&
-		!m->active_leases && !m->work_refs && !m->native_refs &&
-		!m->cleanup_done && !m->flags && !m->directory_holds &&
-		!m->reserved0 && !m->next_work_sequence &&
-		!m->current_work_cookie && !m->current_work_slot &&
-		!m->current_work_owned && !m->cleanup_error && !m->reserved1 &&
-		!m->last_reap_sequence && !m->reserved2 && !m->reserved3;
+	       !m->slot && !m->account_slot && !m->account_incarnation &&
+	       !m->active_leases && !m->work_refs && !m->native_refs &&
+	       !m->cleanup_done && !m->flags && !m->directory_holds &&
+	       !m->reserved0 && !m->next_work_sequence &&
+	       !m->current_work_cookie && !m->current_work_slot &&
+	       !m->current_work_owned && !m->cleanup_error && !m->reserved1 &&
+	       !m->last_reap_sequence && !m->reserved2 && !m->reserved3;
 }
 
 /* Single-flight reaper tail. The caller must have completed real semantic,
@@ -42,9 +48,11 @@ SE_POOL_INLINE int se_pool_task_initial_zero(const struct se_pool_task_meta *m)
  * Each invocation advances at most one durable boundary. The charge bit and
  * original account remain occupied until the final route-locked refund. No
  * helper runs under a spinlock and the two locks are never nested. */
-static __attribute__((noinline)) int se_pool_task_refund_tail(struct se_route_anchor *route,
-		struct se_pool_bitmap *bits, struct se_pool_charge *charge,
-		struct se_pool_task_meta *meta, __u32 slot)
+static __attribute__((noinline)) int
+se_pool_task_refund_tail(struct se_route_anchor *route,
+			 struct se_pool_bitmap *bits,
+			 struct se_pool_charge *charge,
+			 struct se_pool_task_meta *meta, __u32 slot)
 {
 	if (slot >= SE_POOL_T)
 		return SE_POOL_CORRUPT;
@@ -100,7 +108,7 @@ static __attribute__((noinline)) int se_pool_task_refund_tail(struct se_route_an
 	       !meta->current_work_cookie && !meta->current_work_slot &&
 	       !meta->cleanup_error && meta->cleanup_done == 63u;
 	int meta_valid = task_cookie && se_pool_meta_valid(meta) &&
-		meta->slot == slot && task_account == account;
+			 meta->slot == slot && task_account == account;
 	initial_zero = se_pool_task_initial_zero(meta);
 	bpf_spin_unlock(&meta->lock);
 	SE_POOL_TASK_TAIL_AFTER_META();
@@ -123,8 +131,8 @@ static __attribute__((noinline)) int se_pool_task_refund_tail(struct se_route_an
 	}
 	if (state == SE_POOL_CH_FREE) {
 		int free_meta = phase == SE_POOL_FREE &&
-			((initial_zero && !last) || (meta_valid && done &&
-			 task_cookie == last));
+				((initial_zero && !last) ||
+				 (meta_valid && done && task_cookie == last));
 		if (!cookie && !scope && !incarnation && !occupied &&
 		    last <= SE_POOL_LIMIT && free_meta) {
 			bpf_spin_unlock(&route->lock);
@@ -132,11 +140,10 @@ static __attribute__((noinline)) int se_pool_task_refund_tail(struct se_route_an
 		}
 		goto fault;
 	}
-	if (!occupied || !used || used > SE_POOL_QT ||
-	    !cookie || cookie > SE_POOL_LIMIT || last >= cookie ||
-	    !scope || scope != route_scope || !incarnation ||
-	    incarnation != route_incarnation ||
-	    route->payload_slot != account)
+	if (!occupied || !used || used > SE_POOL_QT || !cookie ||
+	    cookie > SE_POOL_LIMIT || last >= cookie || !scope ||
+	    scope != route_scope || !incarnation ||
+	    incarnation != route_incarnation || route->payload_slot != account)
 		goto fault;
 	if (state == SE_POOL_CH_BUILDING) {
 		if (se_pool_task_bits_locked(bits) != used)
@@ -156,7 +163,8 @@ static __attribute__((noinline)) int se_pool_task_refund_tail(struct se_route_an
 		bpf_spin_unlock(&route->lock);
 		return SE_POOL_PENDING_CLEANUP;
 	}
-	if (!done || (phase == SE_POOL_FREE && state != SE_POOL_CH_RETURN_READY))
+	if (!done ||
+	    (phase == SE_POOL_FREE && state != SE_POOL_CH_RETURN_READY))
 		goto fault;
 	if (state == SE_POOL_CH_OWNED) {
 		charge->state = SE_POOL_CH_RETURN_READY;
@@ -167,14 +175,16 @@ static __attribute__((noinline)) int se_pool_task_refund_tail(struct se_route_an
 		bpf_spin_unlock(&route->lock);
 		SE_POOL_TASK_TAIL_BEFORE_META_FREE();
 		bpf_spin_lock(&meta->lock);
-		int still_done = meta->phase == SE_POOL_REFUND_PENDING &&
-			se_pool_meta_valid(meta) &&
-			meta->cookie == cookie && meta->account_scope == scope &&
+		int still_done =
+			meta->phase == SE_POOL_REFUND_PENDING &&
+			se_pool_meta_valid(meta) && meta->cookie == cookie &&
+			meta->account_scope == scope &&
 			meta->account_incarnation == incarnation &&
 			meta->slot == slot && meta->account_slot == account &&
 			!meta->active_leases && !meta->work_refs &&
 			!meta->native_refs && !meta->directory_holds &&
-			!meta->current_work_owned && !meta->current_work_cookie &&
+			!meta->current_work_owned &&
+			!meta->current_work_cookie &&
 			!meta->current_work_slot && !meta->cleanup_error &&
 			meta->cleanup_done == 63u;
 		if (still_done)
@@ -224,12 +234,12 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
 		return SE_POOL_CORRUPT;
 	__u32 account = slot / SE_POOL_QT, zero = 0;
 	struct se_route_anchor *route = se_route_anchor_lookup(&account);
-	struct se_pool_bitmap *bits = bpf_map_lookup_elem(&se_pool_bitmaps,
-							&account);
-	struct se_pool_charge *charge = bpf_map_lookup_elem(&se_pool_charges,
-							&slot);
-	struct se_pool_task_meta *meta = bpf_map_lookup_elem(&se_pool_task_meta,
-							&slot);
+	struct se_pool_bitmap *bits =
+		bpf_map_lookup_elem(&se_pool_bitmaps, &account);
+	struct se_pool_charge *charge =
+		bpf_map_lookup_elem(&se_pool_charges, &slot);
+	struct se_pool_task_meta *meta =
+		bpf_map_lookup_elem(&se_pool_task_meta, &slot);
 	struct se_pool_task_payload *payload =
 		bpf_map_lookup_elem(&se_pool_task_payload, &slot);
 	if (!route || !bits || !charge || !meta || !payload)
@@ -242,21 +252,23 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
 	__u32 leases = meta->active_leases, flags = meta->flags;
 	__u32 cleanup_done = meta->cleanup_done;
 	int unpublished = se_pool_meta_valid(meta) && meta->slot == slot &&
-		meta->account_slot == account && !meta->flags &&
-		!meta->active_leases && !meta->directory_holds &&
-		!meta->work_refs && !meta->native_refs &&
-		!meta->current_work_owned && !meta->current_work_cookie &&
-		!meta->current_work_slot && !meta->cleanup_error;
+			  meta->account_slot == account && !meta->flags &&
+			  !meta->active_leases && !meta->directory_holds &&
+			  !meta->work_refs && !meta->native_refs &&
+			  !meta->current_work_owned &&
+			  !meta->current_work_cookie &&
+			  !meta->current_work_slot && !meta->cleanup_error;
 	bpf_spin_unlock(&meta->lock);
 	if (phase == SE_POOL_REFUND_PENDING || phase == SE_POOL_FREE)
-		return se_pool_task_refund_tail(route, bits, charge, meta, slot);
+		return se_pool_task_refund_tail(route, bits, charge, meta,
+						slot);
 	if (phase != SE_POOL_ABORTED && phase != SE_POOL_CLEANING)
 		return SE_POOL_NOT_ELIGIBLE;
-	if (!unpublished && phase == SE_POOL_CLEANING &&
-	    leases == 1 && !flags &&
-	    cleanup_done == (SE_POOL_EXEC_DONE |
-		SE_POOL_CONSTRUCTION_DONE | SE_POOL_WORK_DONE |
-		SE_POOL_NATIVE_DONE | SE_POOL_DIR_DONE))
+	if (!unpublished && phase == SE_POOL_CLEANING && leases == 1 &&
+	    !flags &&
+	    cleanup_done == (SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE |
+			     SE_POOL_WORK_DONE | SE_POOL_NATIVE_DONE |
+			     SE_POOL_DIR_DONE))
 		return SE_POOL_PENDING_CLEANUP;
 	if (!unpublished)
 		return SE_POOL_CORRUPT;
@@ -272,15 +284,15 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
 	__u64 bit = 1ULL << (local % 64u);
 	bpf_spin_lock(&route->lock);
 	int charged = !route->reserved && route->scope == scope &&
-		route->incarnation == incarnation &&
-		route->payload_slot == account && route->tasks_used &&
-		route->tasks_used <= SE_POOL_QT &&
-		(bits->words[word] & bit) &&
-		charge->current_cookie == cookie &&
-		charge->last_returned_cookie < cookie &&
-		charge->account_scope == scope &&
-		charge->account_incarnation == incarnation &&
-		charge->state == SE_POOL_CH_OWNED;
+		      route->incarnation == incarnation &&
+		      route->payload_slot == account && route->tasks_used &&
+		      route->tasks_used <= SE_POOL_QT &&
+		      (bits->words[word] & bit) &&
+		      charge->current_cookie == cookie &&
+		      charge->last_returned_cookie < cookie &&
+		      charge->account_scope == scope &&
+		      charge->account_incarnation == incarnation &&
+		      charge->state == SE_POOL_CH_OWNED;
 	bpf_spin_unlock(&route->lock);
 	if (!charged)
 		return SE_POOL_CORRUPT;
@@ -288,17 +300,19 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
 	if (phase == SE_POOL_ABORTED) {
 		bpf_spin_lock(&meta->lock);
 		int valid = se_pool_meta_valid(meta) && meta->slot == slot &&
-			meta->phase == SE_POOL_ABORTED && meta->cookie == cookie &&
-			meta->account_scope == scope &&
-			meta->account_incarnation == incarnation &&
-			!meta->flags && !meta->cleanup_done &&
-			!meta->active_leases && !meta->directory_holds &&
-			!meta->work_refs && !meta->native_refs &&
-			!meta->current_work_owned && !meta->cleanup_error;
+			    meta->phase == SE_POOL_ABORTED &&
+			    meta->cookie == cookie &&
+			    meta->account_scope == scope &&
+			    meta->account_incarnation == incarnation &&
+			    !meta->flags && !meta->cleanup_done &&
+			    !meta->active_leases && !meta->directory_holds &&
+			    !meta->work_refs && !meta->native_refs &&
+			    !meta->current_work_owned && !meta->cleanup_error;
 		if (valid) {
-			meta->cleanup_done = SE_POOL_EXEC_DONE |
-				SE_POOL_CONSTRUCTION_DONE | SE_POOL_WORK_DONE |
-				SE_POOL_NATIVE_DONE | SE_POOL_DIR_DONE;
+			meta->cleanup_done =
+				SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE |
+				SE_POOL_WORK_DONE | SE_POOL_NATIVE_DONE |
+				SE_POOL_DIR_DONE;
 			meta->phase = SE_POOL_CLEANING;
 		}
 		bpf_spin_unlock(&meta->lock);
@@ -309,16 +323,16 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
 	 * helper outside it. This claim is a real lease, not a terminal bit. */
 	bpf_spin_lock(&meta->lock);
 	int valid = se_pool_meta_valid(meta) && meta->slot == slot &&
-		meta->phase == SE_POOL_CLEANING && meta->cookie == cookie &&
-		meta->account_scope == scope &&
-		meta->account_incarnation == incarnation &&
-		!meta->flags &&
-		meta->cleanup_done == (SE_POOL_EXEC_DONE |
-			SE_POOL_CONSTRUCTION_DONE | SE_POOL_WORK_DONE |
-			SE_POOL_NATIVE_DONE | SE_POOL_DIR_DONE) &&
-		!meta->active_leases && !meta->directory_holds &&
-		!meta->work_refs && !meta->native_refs &&
-		!meta->current_work_owned && !meta->cleanup_error;
+		    meta->phase == SE_POOL_CLEANING && meta->cookie == cookie &&
+		    meta->account_scope == scope &&
+		    meta->account_incarnation == incarnation && !meta->flags &&
+		    meta->cleanup_done ==
+			    (SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE |
+			     SE_POOL_WORK_DONE | SE_POOL_NATIVE_DONE |
+			     SE_POOL_DIR_DONE) &&
+		    !meta->active_leases && !meta->directory_holds &&
+		    !meta->work_refs && !meta->native_refs &&
+		    !meta->current_work_owned && !meta->cleanup_error;
 	if (valid)
 		meta->active_leases = 1;
 	bpf_spin_unlock(&meta->lock);
@@ -326,17 +340,18 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
 		return SE_POOL_PENDING_CLEANUP;
 	const struct se_pool_task_payload *empty =
 		bpf_map_lookup_elem(&se_pool_task_zero, &zero);
-	int zeroed = empty && !bpf_map_update_elem(&se_pool_task_payload,
-						   &slot, empty, BPF_ANY);
+	int zeroed = empty && !bpf_map_update_elem(&se_pool_task_payload, &slot,
+						   empty, BPF_ANY);
 	bpf_spin_lock(&meta->lock);
 	valid = se_pool_meta_valid(meta) && meta->slot == slot &&
 		meta->phase == SE_POOL_CLEANING && meta->cookie == cookie &&
 		meta->account_scope == scope &&
-		meta->account_incarnation == incarnation &&
-		!meta->flags && meta->active_leases == 1 &&
-		meta->cleanup_done == (SE_POOL_EXEC_DONE |
-			SE_POOL_CONSTRUCTION_DONE | SE_POOL_WORK_DONE |
-			SE_POOL_NATIVE_DONE | SE_POOL_DIR_DONE);
+		meta->account_incarnation == incarnation && !meta->flags &&
+		meta->active_leases == 1 &&
+		meta->cleanup_done ==
+			(SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE |
+			 SE_POOL_WORK_DONE | SE_POOL_NATIVE_DONE |
+			 SE_POOL_DIR_DONE);
 	if (valid) {
 		meta->active_leases = 0;
 		if (zeroed) {
@@ -358,8 +373,8 @@ static __attribute__((noinline)) int se_pool_task_abort_reap_step(__u32 slot)
  * under the original route lock, then task identity/exec state is rechecked
  * under its metadata lock. No locks are nested and no helper runs under one.
  * This does not certify WORK, native/source, directory or payload cleanup. */
-static __attribute__((noinline)) int se_pool_task_exec_reap_step(
-	const struct se_pool_token *token)
+static __attribute__((noinline)) int
+se_pool_task_exec_reap_step(const struct se_pool_token *token)
 {
 	if (!se_pool_token_valid(token))
 		return SE_POOL_STALE;
@@ -377,10 +392,10 @@ static __attribute__((noinline)) int se_pool_task_exec_reap_step(
 		return SE_POOL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
 	int exact = se_pool_match(meta, token) && se_pool_meta_valid(meta) &&
-		meta->account_slot == account &&
-		payload->semantic.physical_cookie == token->cookie &&
-		payload->semantic.scope_cookie == meta->account_scope &&
-		payload->semantic.scope_slot == account;
+		    meta->account_slot == account &&
+		    payload->semantic.physical_cookie == token->cookie &&
+		    payload->semantic.scope_cookie == meta->account_scope &&
+		    payload->semantic.scope_slot == account;
 	__u32 phase = meta->phase, leases = meta->active_leases;
 	__u32 done = meta->cleanup_done;
 	__u64 scope = meta->account_scope;
@@ -405,19 +420,19 @@ static __attribute__((noinline)) int se_pool_task_exec_reap_step(
 	__u64 bit = 1ULL << (local % 64u);
 	bpf_spin_lock(&route->lock);
 	int charged = !route->reserved && route->scope == scope &&
-		route->incarnation == incarnation &&
-		route->payload_slot == account && route->tasks_used &&
-		(bits->words[word] & bit) &&
-		charge->current_cookie == token->cookie &&
-		charge->account_scope == scope &&
-		charge->account_incarnation == incarnation &&
-		charge->state == SE_POOL_CH_OWNED;
+		      route->incarnation == incarnation &&
+		      route->payload_slot == account && route->tasks_used &&
+		      (bits->words[word] & bit) &&
+		      charge->current_cookie == token->cookie &&
+		      charge->account_scope == scope &&
+		      charge->account_incarnation == incarnation &&
+		      charge->state == SE_POOL_CH_OWNED;
 	int reader_clear = !payload->semantic.reader.owned &&
-		!payload->semantic.reader.reserved &&
-		!payload->semantic.reader_invocation;
+			   !payload->semantic.reader.reserved &&
+			   !payload->semantic.reader_invocation;
 	int reader_inconsistent =
 		!!payload->semantic.reader.owned !=
-		!!payload->semantic.reader_invocation ||
+			!!payload->semantic.reader_invocation ||
 		payload->semantic.reader.reserved;
 	bpf_spin_unlock(&route->lock);
 	if (!charged || reader_inconsistent)
@@ -426,8 +441,7 @@ static __attribute__((noinline)) int se_pool_task_exec_reap_step(
 		return SE_POOL_PENDING_CLEANUP;
 	bpf_spin_lock(&meta->lock);
 	exact = se_pool_match(meta, token) && se_pool_meta_valid(meta) &&
-		meta->account_slot == account &&
-		meta->account_scope == scope &&
+		meta->account_slot == account && meta->account_scope == scope &&
 		meta->account_incarnation == incarnation &&
 		(meta->phase == SE_POOL_DEAD ||
 		 meta->phase == SE_POOL_CLEANING) &&
@@ -451,8 +465,8 @@ static __attribute__((noinline)) int se_pool_task_exec_reap_step(
  * release. A charged but unattached constructor retains the TASK lease until
  * abort, so zero leases plus zero owner refs/current token is decisive here.
  * WORK payload and credit reclamation remain the WORK visitor's job. */
-static __attribute__((noinline)) int se_pool_task_work_reap_step(
-	const struct se_pool_token *token)
+static __attribute__((noinline)) int
+se_pool_task_work_reap_step(const struct se_pool_token *token)
 {
 	if (!se_pool_token_valid(token))
 		return SE_POOL_STALE;
@@ -465,21 +479,22 @@ static __attribute__((noinline)) int se_pool_task_work_reap_step(
 		return SE_POOL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
 	int exact = se_pool_match(meta, token) && se_pool_meta_valid(meta) &&
-		payload->semantic.physical_cookie == token->cookie &&
-		payload->semantic.scope_cookie == meta->account_scope &&
-		payload->semantic.scope_slot == meta->account_slot;
+		    payload->semantic.physical_cookie == token->cookie &&
+		    payload->semantic.scope_cookie == meta->account_scope &&
+		    payload->semantic.scope_slot == meta->account_slot;
 	int ready = meta->phase == SE_POOL_CLEANING &&
-		(meta->cleanup_done &
-		 (SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE)) ==
-		(SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE) &&
-		!meta->active_leases && !meta->work_refs &&
-		!meta->current_work_owned && !meta->current_work_cookie &&
-		!meta->current_work_slot;
+		    (meta->cleanup_done &
+		     (SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE)) ==
+			    (SE_POOL_EXEC_DONE | SE_POOL_CONSTRUCTION_DONE) &&
+		    !meta->active_leases && !meta->work_refs &&
+		    !meta->current_work_owned && !meta->current_work_cookie &&
+		    !meta->current_work_slot;
 	if (exact && ready)
 		meta->cleanup_done |= SE_POOL_WORK_DONE;
 	bpf_spin_unlock(&meta->lock);
 	return !exact ? SE_POOL_STALE :
-		ready ? SE_POOL_OK : SE_POOL_PENDING_CLEANUP;
+	       ready  ? SE_POOL_OK :
+			SE_POOL_PENDING_CLEANUP;
 }
 
 /* Terminal live-TASK path after the separate exec, construction, WORK and
@@ -487,8 +502,8 @@ static __attribute__((noinline)) int se_pool_task_work_reap_step(
  * has no producer here: zero native_refs alone is deliberately insufficient.
  * A trusted single-flight reaper must retain this exact token across calls.
  * Each call advances at most one durable boundary. */
-static __attribute__((noinline)) int se_pool_task_live_reap_step(
-	const struct se_pool_token *token)
+static __attribute__((noinline)) int
+se_pool_task_live_reap_step(const struct se_pool_token *token)
 {
 	if (!se_pool_token_valid(token))
 		return SE_POOL_STALE;
@@ -509,25 +524,27 @@ static __attribute__((noinline)) int se_pool_task_live_reap_step(
 		return SE_POOL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
 	int exact = se_pool_match(meta, token) && se_pool_meta_valid(meta) &&
-		meta->account_slot == account &&
-		(meta->flags & SE_POOL_PUBLISHED);
+		    meta->account_slot == account &&
+		    (meta->flags & SE_POOL_PUBLISHED);
 	__u32 phase = meta->phase, done = meta->cleanup_done;
 	__u64 scope = meta->account_scope;
 	__u32 incarnation = meta->account_incarnation;
 	int refs_clear = !meta->active_leases && !meta->work_refs &&
-		!meta->native_refs && !meta->directory_holds &&
-		!meta->current_work_owned && !meta->current_work_cookie &&
-		!meta->current_work_slot && !meta->cleanup_error;
+			 !meta->native_refs && !meta->directory_holds &&
+			 !meta->current_work_owned &&
+			 !meta->current_work_cookie &&
+			 !meta->current_work_slot && !meta->cleanup_error;
 	bpf_spin_unlock(&meta->lock);
 	if (!exact)
 		return SE_POOL_STALE;
 	if (phase == SE_POOL_REFUND_PENDING || phase == SE_POOL_FREE)
-		return se_pool_task_refund_tail(route, bits, charge, meta, slot);
+		return se_pool_task_refund_tail(route, bits, charge, meta,
+						slot);
 	if (phase != SE_POOL_CLEANING)
 		return SE_POOL_NOT_ELIGIBLE;
 	const __u32 obligations = SE_POOL_EXEC_DONE |
-		SE_POOL_CONSTRUCTION_DONE | SE_POOL_WORK_DONE |
-		SE_POOL_NATIVE_DONE;
+				  SE_POOL_CONSTRUCTION_DONE |
+				  SE_POOL_WORK_DONE | SE_POOL_NATIVE_DONE;
 	if ((done & obligations) != obligations)
 		return SE_POOL_PENDING_CLEANUP;
 	if (!refs_clear)
@@ -544,13 +561,13 @@ static __attribute__((noinline)) int se_pool_task_live_reap_step(
 	__u64 bit = 1ULL << (local % 64u);
 	bpf_spin_lock(&route->lock);
 	int charged = !route->reserved && route->scope == scope &&
-		route->incarnation == incarnation &&
-		route->payload_slot == account && route->tasks_used &&
-		(bits->words[word] & bit) &&
-		charge->current_cookie == token->cookie &&
-		charge->account_scope == scope &&
-		charge->account_incarnation == incarnation &&
-		charge->state == SE_POOL_CH_OWNED;
+		      route->incarnation == incarnation &&
+		      route->payload_slot == account && route->tasks_used &&
+		      (bits->words[word] & bit) &&
+		      charge->current_cookie == token->cookie &&
+		      charge->account_scope == scope &&
+		      charge->account_incarnation == incarnation &&
+		      charge->state == SE_POOL_CH_OWNED;
 	bpf_spin_unlock(&route->lock);
 	if (!charged)
 		return SE_POOL_CORRUPT;
@@ -585,8 +602,8 @@ static __attribute__((noinline)) int se_pool_task_live_reap_step(
 	bpf_spin_unlock(&meta->lock);
 	if (!exact)
 		return SE_POOL_PENDING_CLEANUP;
-	int zeroed = !bpf_map_update_elem(&se_pool_task_payload, &slot,
-						 empty, BPF_ANY);
+	int zeroed = !bpf_map_update_elem(&se_pool_task_payload, &slot, empty,
+					  BPF_ANY);
 	bpf_spin_lock(&meta->lock);
 	exact = se_pool_match(meta, token) && se_pool_meta_valid(meta) &&
 		meta->phase == SE_POOL_CLEANING &&

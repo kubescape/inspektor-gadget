@@ -35,8 +35,8 @@ SEC("fexit/bprm_execve")
 int opaque_fexit_failure_primitive(__u64 *ctx)
 {
 	__u32 zero = 0;
-	const struct primitive_gate *gate = bpf_map_lookup_elem(
-		&fexit_primitive_gate, &zero);
+	const struct primitive_gate *gate =
+		bpf_map_lookup_elem(&fexit_primitive_gate, &zero);
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	if (!gate || !gate->cgroup || !gate->tgid ||
 	    bpf_get_current_cgroup_id() != gate->cgroup ||
@@ -48,8 +48,8 @@ int opaque_fexit_failure_primitive(__u64 *ctx)
 		return 0;
 	__s64 result = gate->return_bits == 32 ? (__s64)(__s32)raw : (__s64)raw;
 	__u64 physical = (__u64)bpf_get_current_task_btf();
-	struct primitive_witness *witness = bpf_map_lookup_elem(
-		&fexit_primitive_witness, &zero);
+	struct primitive_witness *witness =
+		bpf_map_lookup_elem(&fexit_primitive_witness, &zero);
 	if (!witness)
 		return 0;
 	bpf_spin_lock(&witness->lock);

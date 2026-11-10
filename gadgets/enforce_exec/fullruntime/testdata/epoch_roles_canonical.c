@@ -56,7 +56,8 @@ static void malformed_late_patch_index(void)
 		/* The first target changes a fact, but the late invalid index must
 		 * reject before any store, not alias through the publisher's mask. */
 		patch.changes[1].index = invalid_indices[i];
-		assert(er_canonical_patch_publish(&state, &patch, 7) == ER_INVALID);
+		assert(er_canonical_patch_publish(&state, &patch, 7) ==
+		       ER_INVALID);
 		assert(!memcmp(&saved, &state, sizeof(state)));
 	}
 	catalogue[60] = catalogue[61] = 0;

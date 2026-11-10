@@ -22,7 +22,8 @@ struct se_pool_task_wire {
 		};
 		struct {
 			struct se_task_state semantic;
-			__u8 semantic_extension[1280 - sizeof(struct se_task_state)];
+			__u8 semantic_extension[1280 -
+						sizeof(struct se_task_state)];
 		};
 	};
 #else
@@ -35,25 +36,30 @@ _Static_assert(sizeof(struct se_ol_task_identity) == 48,
 _Static_assert(sizeof(struct se_pool_task_wire) == 1280,
 	       "selected TASK payload wire size");
 _Static_assert(__builtin_offsetof(struct se_pool_task_wire, identity) == 0 &&
-	       __builtin_offsetof(struct se_pool_task_wire, bytes) == 48,
+		       __builtin_offsetof(struct se_pool_task_wire, bytes) ==
+			       48,
 	       "selected TASK payload identity offset");
 #if defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE) || \
 	defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE)
-_Static_assert(sizeof(struct se_task_state) == 960 &&
-	       __builtin_offsetof(struct se_pool_task_wire, semantic) == 0 &&
-	       __builtin_offsetof(struct se_pool_task_wire, semantic_extension) ==
-		       960 &&
-	       __builtin_offsetof(struct se_pool_task_wire, semantic.committed) ==
-		       __builtin_offsetof(struct se_pool_task_wire, bytes) &&
-	       __builtin_offsetof(struct se_pool_task_wire,
-			    semantic.physical_cookie) ==
-		       __builtin_offsetof(struct se_pool_task_wire,
-			    identity.physical_cookie) &&
-	       __builtin_offsetof(struct se_pool_task_wire, semantic.scope_cookie) ==
-		       __builtin_offsetof(struct se_pool_task_wire,
-			    identity.scope_cookie) &&
-	       __builtin_offsetof(struct se_pool_task_wire, semantic.flags) ==
-		       __builtin_offsetof(struct se_pool_task_wire, identity.flags),
-	       "typed TASK semantic must overlay the opaque identity wire");
+_Static_assert(
+	sizeof(struct se_task_state) == 960 &&
+		__builtin_offsetof(struct se_pool_task_wire, semantic) == 0 &&
+		__builtin_offsetof(struct se_pool_task_wire,
+				   semantic_extension) == 960 &&
+		__builtin_offsetof(struct se_pool_task_wire,
+				   semantic.committed) ==
+			__builtin_offsetof(struct se_pool_task_wire, bytes) &&
+		__builtin_offsetof(struct se_pool_task_wire,
+				   semantic.physical_cookie) ==
+			__builtin_offsetof(struct se_pool_task_wire,
+					   identity.physical_cookie) &&
+		__builtin_offsetof(struct se_pool_task_wire,
+				   semantic.scope_cookie) ==
+			__builtin_offsetof(struct se_pool_task_wire,
+					   identity.scope_cookie) &&
+		__builtin_offsetof(struct se_pool_task_wire, semantic.flags) ==
+			__builtin_offsetof(struct se_pool_task_wire,
+					   identity.flags),
+	"typed TASK semantic must overlay the opaque identity wire");
 #endif
 #endif

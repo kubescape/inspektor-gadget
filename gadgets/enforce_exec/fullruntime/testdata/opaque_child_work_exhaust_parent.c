@@ -20,7 +20,8 @@ int main(int argc, char **argv)
 	pid_t children[32] = {};
 	int live = 0;
 	for (int i = 0; i < (immediate ? 32 : 34); i++) {
-		if (getline(&line, &capacity, stdin) < 0 || strcmp(line, "GO\n"))
+		if (getline(&line, &capacity, stdin) < 0 ||
+		    strcmp(line, "GO\n"))
 			return 98;
 		pid_t child = fork();
 		if (child < 0) {
@@ -39,7 +40,11 @@ int main(int argc, char **argv)
 				if (waitpid(child, &status, 0) != child)
 					return 94;
 				printf("STEP:%d:%d:0\n", i,
-				       WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 3);
+				       WIFEXITED(status) &&
+						       WEXITSTATUS(status) ==
+							       0 ?
+					       0 :
+					       3);
 				fflush(stdout);
 				continue;
 			}
@@ -51,7 +56,8 @@ int main(int argc, char **argv)
 		}
 		if (immediate || (i != 32 && i != 33))
 			continue;
-		if (getline(&line, &capacity, stdin) < 0 || strcmp(line, "REAP\n"))
+		if (getline(&line, &capacity, stdin) < 0 ||
+		    strcmp(line, "REAP\n"))
 			return 98;
 		for (int j = 0; j < live; j++) {
 			if (kill(children[j], SIGTERM))

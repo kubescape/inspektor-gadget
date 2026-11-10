@@ -8,7 +8,7 @@
 #if !defined(SE_OL_TASKS) || !defined(SE_OC_ACCOUNTS) || !defined(SE_OC_QUOTA)
 #error "opaque TASK map geometry must be explicit"
 #endif
-_Static_assert((__u64)SE_OC_ACCOUNTS * SE_OC_QUOTA == SE_OL_TASKS,
+_Static_assert((__u64)SE_OC_ACCOUNTS *SE_OC_QUOTA == SE_OL_TASKS,
 	       "opaque TASK account partition");
 
 /* One original-key HASH locator plus fixed TASK and WORK owners. A selected
@@ -72,12 +72,12 @@ struct {
 } se_opaque_sequence SEC(".maps");
 
 #if !defined(SE_OWK_ACCOUNTS) || !defined(SE_OWK_QUOTA) || \
-    !defined(SE_OWK_WORKS)
+	!defined(SE_OWK_WORKS)
 #error "opaque WORK map geometry must be explicit"
 #endif
-_Static_assert(SE_OWK_ACCOUNTS == SE_OC_ACCOUNTS &&
-	       SE_OWK_QUOTA > 0 && SE_OWK_QUOTA <= 64 &&
-	       (__u64)SE_OWK_ACCOUNTS * SE_OWK_QUOTA == SE_OWK_WORKS,
+_Static_assert(SE_OWK_ACCOUNTS == SE_OC_ACCOUNTS && SE_OWK_QUOTA > 0 &&
+		       SE_OWK_QUOTA <= 64 &&
+		       (__u64)SE_OWK_ACCOUNTS * SE_OWK_QUOTA == SE_OWK_WORKS,
 	       "opaque WORK account partition");
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);

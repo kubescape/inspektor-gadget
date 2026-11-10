@@ -2,9 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_WORK_SEMANTIC_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_WORK_SEMANTIC_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) || \
-    !defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY) || \
-    !defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE)
+#if !defined(ENFORCE_EXEC_POOL_DEVELOPMENT) ||            \
+	!defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY) || \
+	!defined(ENFORCE_EXEC_POOL_SEMANTIC_VIEW_CANDIDATE)
 #error "typed WORK semantic adapter is candidate-only"
 #endif
 
@@ -13,9 +13,9 @@
  * exact TASK handle owns the physical pool lease; work_borrows prevents its
  * close until the WORK ticket has reached done/abort. No second TASK charge
  * or active_leases increment is invented. */
-SE_PW_INLINE int se_pool_work_lease_from_task(
-	struct se_pool_task_semantic_handle *task_handle,
-	struct se_pw_task_lease *lease)
+SE_PW_INLINE int
+se_pool_work_lease_from_task(struct se_pool_task_semantic_handle *task_handle,
+			     struct se_pw_task_lease *lease)
 {
 	if (!task_handle || !lease || task_handle->lease.held != 1 ||
 	    task_handle->locked || task_handle->work_borrows ||
@@ -25,12 +25,15 @@ SE_PW_INLINE int se_pool_work_lease_from_task(
 	struct se_pool_token token = task_handle->lease.token;
 	bpf_spin_lock(&meta->lock);
 	int valid = se_pool_match(meta, &token) && se_pool_meta_valid(meta) &&
-		meta->phase == SE_POOL_LIVE && meta->active_leases &&
-		task_handle->payload->semantic.physical_cookie == token.cookie &&
-		task_handle->payload->semantic.scope_cookie == meta->account_scope &&
-		task_handle->payload->semantic.scope_slot == meta->account_slot &&
-		(task_handle->payload->semantic.flags & SE_TASK_LIVE) &&
-		!task_handle->payload->semantic.identity_reserved;
+		    meta->phase == SE_POOL_LIVE && meta->active_leases &&
+		    task_handle->payload->semantic.physical_cookie ==
+			    token.cookie &&
+		    task_handle->payload->semantic.scope_cookie ==
+			    meta->account_scope &&
+		    task_handle->payload->semantic.scope_slot ==
+			    meta->account_slot &&
+		    (task_handle->payload->semantic.flags & SE_TASK_LIVE) &&
+		    !task_handle->payload->semantic.identity_reserved;
 	if (valid) {
 		*lease = (struct se_pw_task_lease){
 			.cookie = token.cookie,
@@ -50,14 +53,15 @@ SE_PW_INLINE int se_pool_work_lease_from_task(
 /* Close only after the exact WORK ticket has been consumed by done/abort.
  * The zero ticket is permitted only when selection/begin failed before charge;
  * product callers must source-audit that branch rather than fabricate zero. */
-SE_PW_INLINE int se_pool_work_lease_to_task(
-	struct se_pool_task_semantic_handle *task_handle,
-	struct se_pw_task_lease *lease, const struct se_pw_ticket *ticket)
+SE_PW_INLINE int
+se_pool_work_lease_to_task(struct se_pool_task_semantic_handle *task_handle,
+			   struct se_pw_task_lease *lease,
+			   const struct se_pw_ticket *ticket)
 {
-	if (!task_handle || !lease || !ticket ||
-	    task_handle->lease.held != 1 || task_handle->locked ||
-	    task_handle->work_borrows != 1 || lease->held != 1 ||
-	    !task_handle->meta || !task_handle->payload || ticket->held ||
+	if (!task_handle || !lease || !ticket || task_handle->lease.held != 1 ||
+	    task_handle->locked || task_handle->work_borrows != 1 ||
+	    lease->held != 1 || !task_handle->meta || !task_handle->payload ||
+	    ticket->held ||
 	    (ticket->cookie &&
 	     (ticket->reserved || ticket->cookie > SE_PW_U64_LIMIT ||
 	      ticket->scope != lease->scope ||
@@ -71,9 +75,9 @@ SE_PW_INLINE int se_pool_work_lease_to_task(
 	struct se_pool_task_meta *meta = task_handle->meta;
 	bpf_spin_lock(&meta->lock);
 	int valid = se_pool_match(meta, &task_handle->lease.token) &&
-		se_pool_meta_valid(meta) && meta->active_leases &&
-		se_pw_lease_matches(meta, lease) &&
-		!meta->current_work_owned;
+		    se_pool_meta_valid(meta) && meta->active_leases &&
+		    se_pw_lease_matches(meta, lease) &&
+		    !meta->current_work_owned;
 	if (valid) {
 		lease->held = 0;
 		task_handle->work_borrows = 0;
@@ -99,17 +103,17 @@ struct se_pool_work_refs {
 	const struct se_pool_work_payload *zero;
 };
 
-SE_PW_INLINE int se_pool_work_prefetch(
-	const struct se_pw_task_lease *lease, __u32 slot,
-	struct se_pool_work_refs *refs)
+SE_PW_INLINE int se_pool_work_prefetch(const struct se_pw_task_lease *lease,
+				       __u32 slot,
+				       struct se_pool_work_refs *refs)
 {
-	if (!lease || !refs || lease->held != 1 ||
-	    lease->slot >= SE_POOL_T || lease->account_slot >= SE_POOL_B ||
-	    slot >= SE_POOL_W || slot / SE_POOL_QW != lease->account_slot)
+	if (!lease || !refs || lease->held != 1 || lease->slot >= SE_POOL_T ||
+	    lease->account_slot >= SE_POOL_B || slot >= SE_POOL_W ||
+	    slot / SE_POOL_QW != lease->account_slot)
 		return SE_PW_STALE;
 	if (refs->route || refs->bitmap || refs->charge || refs->sequence ||
-	    refs->task || refs->previous_task || refs->work ||
-	    refs->payload || refs->zero)
+	    refs->task || refs->previous_task || refs->work || refs->payload ||
+	    refs->zero)
 		return SE_PW_FAULT;
 	__u32 account = lease->account_slot, zero = 0;
 	__u32 task_slot = lease->slot, charge_slot = SE_POOL_T + slot;
@@ -123,9 +127,8 @@ SE_PW_INLINE int se_pool_work_prefetch(
 		.payload = bpf_map_lookup_elem(&se_pool_work_payload, &slot),
 		.zero = bpf_map_lookup_elem(&se_pool_work_zero, &zero),
 	};
-	if (!found.route || !found.bitmap || !found.charge ||
-	    !found.sequence || !found.task || !found.work ||
-	    !found.payload || !found.zero)
+	if (!found.route || !found.bitmap || !found.charge || !found.sequence ||
+	    !found.task || !found.work || !found.payload || !found.zero)
 		return SE_PW_FAULT;
 	bpf_spin_lock(&found.work->lock);
 	__u64 old_cookie = found.work->cookie;
@@ -133,9 +136,10 @@ SE_PW_INLINE int se_pool_work_prefetch(
 	bpf_spin_unlock(&found.work->lock);
 	if (old_cookie && old_slot >= SE_POOL_T)
 		return SE_PW_FAULT;
-	found.previous_task = old_cookie ?
-		bpf_map_lookup_elem(&se_pool_task_meta, &old_slot) :
-		found.task;
+	found.previous_task =
+		old_cookie ?
+			bpf_map_lookup_elem(&se_pool_task_meta, &old_slot) :
+			found.task;
 	if (!found.previous_task)
 		return SE_PW_FAULT;
 	*refs = found;
@@ -168,35 +172,34 @@ SE_PW_INLINE int se_pool_work_semantic_initialize(
 		return SE_PW_FAULT;
 	bpf_spin_lock(&task->lock);
 	int owner = se_pw_lease_matches(task, lease) &&
-		task->phase == SE_PW_TASK_LIVE && task->active_leases &&
-		task->current_work_owned == 1 &&
-		task->current_work_cookie == ticket->cookie &&
-		task->current_work_slot == slot && task->work_refs;
+		    task->phase == SE_PW_TASK_LIVE && task->active_leases &&
+		    task->current_work_owned == 1 &&
+		    task->current_work_cookie == ticket->cookie &&
+		    task->current_work_slot == slot && task->work_refs;
 	bpf_spin_unlock(&task->lock);
 	if (!owner)
 		return SE_PW_FAULT;
 	bpf_spin_lock(&work->lock);
-	int valid = work->phase == SE_PW_INITIALIZING &&
-		work->active_leases == 1 && work->owner_ref_held == 1 &&
-		se_pw_same_work(work, ticket) && work->cookie == ticket->cookie &&
-		work->invocation_sequence &&
+	int valid =
+		work->phase == SE_PW_INITIALIZING && work->active_leases == 1 &&
+		work->owner_ref_held == 1 && se_pw_same_work(work, ticket) &&
+		work->cookie == ticket->cookie && work->invocation_sequence &&
 		work->invocation_sequence <= SE_PW_U64_LIMIT;
 	bpf_spin_unlock(&work->lock);
 	if (!valid)
 		return SE_PW_FAULT;
 	const struct se_pool_work_payload *empty =
 		bpf_map_lookup_elem(&se_pool_work_zero, &zero);
-	if (!empty || bpf_map_update_elem(&se_pool_work_payload, &slot, empty,
-					BPF_ANY))
+	if (!empty ||
+	    bpf_map_update_elem(&se_pool_work_payload, &slot, empty, BPF_ANY))
 		return SE_PW_FAULT;
 	struct se_pool_work_payload *fresh =
 		bpf_map_lookup_elem(&se_pool_work_payload, &slot);
 	if (!fresh)
 		return SE_PW_FAULT;
 	bpf_spin_lock(&work->lock);
-	valid = work->phase == SE_PW_INITIALIZING &&
-		work->active_leases == 1 && work->owner_ref_held == 1 &&
-		se_pw_same_work(work, ticket) &&
+	valid = work->phase == SE_PW_INITIALIZING && work->active_leases == 1 &&
+		work->owner_ref_held == 1 && se_pw_same_work(work, ticket) &&
 		work->invocation_sequence &&
 		work->invocation_sequence <= SE_PW_U64_LIMIT;
 	if (valid) {
@@ -225,13 +228,12 @@ SE_PW_INLINE int se_pool_work_semantic_active(
 	if (!route || !charge)
 		return SE_PW_FAULT;
 	int valid = task && lease && work && payload &&
-		se_pw_ticket_valid(ticket);
+		    se_pw_ticket_valid(ticket);
 	if (valid) {
 		bpf_spin_lock(&task->lock);
 		valid = se_pw_lease_matches(task, lease) &&
-			task->phase == SE_PW_TASK_LIVE &&
-			task->active_leases && task->work_refs &&
-			work->owner_ref_held == 1 &&
+			task->phase == SE_PW_TASK_LIVE && task->active_leases &&
+			task->work_refs && work->owner_ref_held == 1 &&
 			ticket->owner_cookie == lease->cookie &&
 			ticket->owner_address == lease->physical_address &&
 			ticket->owner_slot == lease->slot;
@@ -244,7 +246,8 @@ SE_PW_INLINE int se_pool_work_semantic_active(
 			se_pw_same_work(work, ticket) &&
 			payload->semantic.scope == ticket->scope &&
 			payload->semantic.cookie == ticket->cookie &&
-			payload->semantic.sequence == work->invocation_sequence &&
+			payload->semantic.sequence ==
+				work->invocation_sequence &&
 			payload->semantic.slot == ticket->slot &&
 			!payload->semantic.reserved;
 		bpf_spin_unlock(&work->lock);
@@ -296,7 +299,7 @@ SE_PW_INLINE int se_pool_work_semantic_open(
 	    handle->task_lease || handle->ticket)
 		return SE_PW_FAULT;
 	int status = se_pool_work_semantic_active(task, lease, work, payload,
-						 ticket, route, charge);
+						  ticket, route, charge);
 	if (status != SE_PW_OK)
 		return status;
 	handle->task = task;
@@ -310,18 +313,18 @@ SE_PW_INLINE int se_pool_work_semantic_open(
 	return SE_PW_OK;
 }
 
-SE_PW_INLINE int se_pool_work_semantic_done(
-	struct se_pool_work_semantic_handle *handle)
+SE_PW_INLINE int
+se_pool_work_semantic_done(struct se_pool_work_semantic_handle *handle)
 {
 	if (!handle || handle->held != 1 || !handle->task || !handle->work ||
 	    !handle->payload || !handle->route || !handle->charge ||
 	    !handle->task_lease || !handle->ticket)
 		return SE_PW_FAULT;
-	int status = se_pool_work_semantic_active(handle->task,
-		handle->task_lease, handle->work, handle->payload,
+	int status = se_pool_work_semantic_active(
+		handle->task, handle->task_lease, handle->work, handle->payload,
 		handle->ticket, handle->route, handle->charge);
-	int closed = se_pw_done(handle->task, handle->work,
-				handle->task_lease, handle->ticket);
+	int closed = se_pw_done(handle->task, handle->work, handle->task_lease,
+				handle->ticket);
 	if (closed != SE_PW_OK) {
 		bpf_spin_lock(&handle->route->lock);
 		if (se_pw_ticket_valid(handle->ticket) &&

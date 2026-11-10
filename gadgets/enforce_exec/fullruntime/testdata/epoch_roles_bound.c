@@ -119,7 +119,8 @@ int main(void)
 		state.rows[i] = er_known_row(i + 1, 5, 100 + i);
 	}
 	for (int i = 0; i < ER_ACTIVE; i++)
-		state.rows[ACCEPTED_UIDS + i] = er_known_row(20 + i, 6, 200 + i);
+		state.rows[ACCEPTED_UIDS + i] =
+			er_known_row(20 + i, 6, 200 + i);
 	c = (struct er_candidate){ .count = ER_ACTIVE };
 	for (int i = 0; i < ER_ACTIVE; i++)
 		c.active[i] = (struct er_authority){ 30 + i, 7, 300 + i, 1, 0 };
@@ -127,13 +128,16 @@ int main(void)
 	assert(!er_stage_roots(&work, &c, 1));
 	assert(!er_publish(&state, &work, 100));
 	for (int i = 0; i < ER_SLOTS; i++)
-		assert(state.rows[i].uid == (__u64)(i < ACCEPTED_UIDS ? i + 1 : 30 + i - ACCEPTED_UIDS));
+		assert(state.rows[i].uid ==
+		       (__u64)(i < ACCEPTED_UIDS ? i + 1 :
+						   30 + i - ACCEPTED_UIDS));
 	check_bound(&state, &c);
 	/* Roots the candidate still authorizes are kept in place; a stale root
 	 * (38) of an older candidate is pruned, and its slot takes the new 39. */
 	struct er_candidate both = c;
 	for (int i = 0; i < ER_ACTIVE; i++)
-		state.rows[ACCEPTED_UIDS + i] = er_known_row(30 + i, 7, 300 + i);
+		state.rows[ACCEPTED_UIDS + i] =
+			er_known_row(30 + i, 7, 300 + i);
 	both.count = ER_ACTIVE;
 	both.active[ER_ACTIVE - 1] = (struct er_authority){ 39, 7, 399, 1, 0 };
 	state.rows[ACCEPTED_UIDS + ER_ACTIVE - 1] = er_known_row(38, 7, 398);
@@ -184,7 +188,8 @@ int main(void)
 			struct er_canonical_view view = {};
 			er_snapshot(&view.work, &state, version);
 			assert(!er_canonical_stage_prepare(&view, &c, 1));
-			assert(!er_canonical_stage_publish(&state, &view, version));
+			assert(!er_canonical_stage_publish(&state, &view,
+							   version));
 			check_bound(&state, &c);
 		}
 #endif
@@ -198,7 +203,8 @@ int main(void)
 		 * room; a refused activation leaves them unaccepted (prunable). */
 		for (__u32 i = 0; i < c.count; i++)
 			if (c.active[i].new_uid && next(2))
-				(void)activate(c.active[i].uid, c.active[i].epoch);
+				(void)activate(c.active[i].uid,
+					       c.active[i].epoch);
 		version++;
 	}
 	assert(accepted_count == ACCEPTED_UIDS);

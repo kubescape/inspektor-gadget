@@ -10,7 +10,8 @@
 #include <linux/sched.h>
 #include "argv_wire.h"
 
-static int ig_argv_fail(struct ig_argv_result *out, int error, unsigned int status)
+static int ig_argv_fail(struct ig_argv_result *out, int error,
+			unsigned int status)
 {
 	memset(out, 0, sizeof(*out));
 	out->abi = IG_ARGV_ABI;
@@ -20,8 +21,8 @@ static int ig_argv_fail(struct ig_argv_result *out, int error, unsigned int stat
 }
 
 __bpf_kfunc_start_defs();
-__bpf_kfunc int ig_capture_pending_argv(struct linux_binprm *bprm,
-	void *output, unsigned int output__sz)
+__bpf_kfunc int ig_capture_pending_argv(struct linux_binprm *bprm, void *output,
+					unsigned int output__sz)
 {
 	struct ig_argv_result *out = output;
 	struct mm_struct *mm;
@@ -35,7 +36,8 @@ __bpf_kfunc int ig_capture_pending_argv(struct linux_binprm *bprm,
 	out->abi = IG_ARGV_ABI;
 	/* LSM trusted bprm is live for this synchronous callback. Do not accept
 	 * a committed/current mm or retain any pointer after the call. */
-	if (!bprm || !current->in_execve || !bprm->mm || bprm->mm == current->mm)
+	if (!bprm || !current->in_execve || !bprm->mm ||
+	    bprm->mm == current->mm)
 		return ig_argv_fail(out, -EINVAL, IG_ARGV_UNKNOWN);
 	mm = bprm->mm;
 	start = bprm->p;
@@ -60,21 +62,24 @@ __bpf_kfunc int ig_capture_pending_argv(struct linux_binprm *bprm,
 		address = start + cursor.bytes;
 		offset = offset_in_page(address);
 		available = min_t(unsigned int, PAGE_SIZE - offset,
-			IG_ARGV_MAX_BYTES - cursor.bytes);
+				  IG_ARGV_MAX_BYTES - cursor.bytes);
 		/* No external rendezvous or blocking mmap-lock acquisition. GUP is
 		 * sleepable even with NOFAULT; this is not a latency guarantee. */
 		if (!mmap_read_trylock(mm))
 			return ig_argv_fail(out, -EAGAIN, IG_ARGV_UNKNOWN);
 		count = get_user_pages_remote(mm, address & PAGE_MASK, 1,
-			FOLL_NOFAULT | FOLL_NOWAIT, &page, &locked);
+					      FOLL_NOFAULT | FOLL_NOWAIT, &page,
+					      &locked);
 		if (locked)
 			mmap_read_unlock(mm);
 		if (count != 1)
-			return ig_argv_fail(out, count < 0 ? (int)count : -EFAULT,
-				IG_ARGV_UNKNOWN);
+			return ig_argv_fail(out,
+					    count < 0 ? (int)count : -EFAULT,
+					    IG_ARGV_UNKNOWN);
 		mapping = kmap_local_page(page);
 		for (i = 0; i < available; i++) {
-			copied = ig_argv_append(out, &cursor, mapping[offset + i]);
+			copied = ig_argv_append(out, &cursor,
+						mapping[offset + i]);
 			if (copied)
 				break;
 		}
@@ -102,7 +107,9 @@ static int __init ig_argv_init(void)
 {
 	return register_btf_kfunc_id_set(BPF_PROG_TYPE_LSM, &ig_argv_kfunc_set);
 }
-static void __exit ig_argv_exit(void) {}
+static void __exit ig_argv_exit(void)
+{
+}
 module_init(ig_argv_init);
 module_exit(ig_argv_exit);
 MODULE_LICENSE("GPL");

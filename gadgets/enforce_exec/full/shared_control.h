@@ -185,8 +185,9 @@ static inline int se_profile_matches(const struct se_node_config *c)
 #ifdef SE_OBJECT_RANGE_INLINE_DIAGNOSTIC
 __attribute__((always_inline))
 #endif
-static inline int se_object_range(const struct se_node_config *c, __u32 slot,
-				  __u32 *size_class, __u32 *base)
+static inline int
+se_object_range(const struct se_node_config *c, __u32 slot, __u32 *size_class,
+		__u32 *base)
 {
 	__u64 offset = 0;
 	__u32 index = slot;
@@ -207,8 +208,8 @@ static inline int se_object_range(const struct se_node_config *c, __u32 slot,
  * call chain on older kernels; never pass a borrowed map-value pointer into
  * this subprogram. */
 #ifdef ENFORCE_EXEC_SHARED_RECOVERY
-static __attribute__((noinline)) int se_command_recovery_authorized(
-	__u64 node_cookie)
+static __attribute__((noinline)) int
+se_command_recovery_authorized(__u64 node_cookie)
 {
 	return se_rm_command_authorized(node_cookie);
 }
@@ -397,7 +398,7 @@ int se_command(void *unused)
 					    &input->metadata, input->count,
 					    input->generation + 1))
 					return 1;
-				/* Literal slot offsets: older verifiers cannot prove a
+					/* Literal slot offsets: older verifiers cannot prove a
 				 * variable stack cursor remains inside handles[8]. */
 #ifdef __clang__
 #pragma unroll

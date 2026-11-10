@@ -17,7 +17,8 @@ static int child_loop(int after)
 			return 0;
 		if (strcmp(line, "EXEC\n"))
 			return 91;
-		execl("/proc/self/exe", "opaque-birth-negative", "child", (char *)0);
+		execl("/proc/self/exe", "opaque-birth-negative", "child",
+		      (char *)0);
 		printf("EXEC-ERR:%ld:%d\n", (long)getpid(), errno);
 		fflush(stdout);
 	}

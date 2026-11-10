@@ -20,57 +20,49 @@ enum se_oc_reap_result {
 /* These are checks, not producers. No generic setter may fabricate a source
  * cleanup bit. The caller must arrive here through the trusted reaper after
  * actual exec/construction/WORK/native/directory/payload owners complete. */
-static __attribute__((always_inline)) inline int se_oc_ready_meta(
-					    const struct se_ol_meta *meta,
-				    __u32 account_slot, __u32 incarnation,
-				    __u64 scope, __u64 cookie,
-				    __u64 locator)
+static __attribute__((always_inline)) inline int
+se_oc_ready_meta(const struct se_ol_meta *meta, __u32 account_slot,
+		 __u32 incarnation, __u64 scope, __u64 cookie, __u64 locator)
 {
 	return meta->cookie == cookie && meta->locator == locator &&
-		meta->account_scope == scope &&
-		meta->account_slot == account_slot &&
-		meta->account_incarnation == incarnation &&
-		meta->directory_state == SE_OL_DELETED &&
-		!meta->archive_ready && !meta->reader_holds &&
-		!meta->active_leases && !meta->exclusive &&
-		!meta->exclusive_owner && !meta->reserved &&
-		!meta->work_refs && !meta->native_refs &&
-		!meta->cleanup_error && !meta->current_work_slot &&
-		!meta->current_work_owned && !meta->current_work_cookie &&
-		!meta->reserved2 &&
-		!(meta->cleanup_done & ~SE_OL_ALL_DONE);
+	       meta->account_scope == scope &&
+	       meta->account_slot == account_slot &&
+	       meta->account_incarnation == incarnation &&
+	       meta->directory_state == SE_OL_DELETED && !meta->archive_ready &&
+	       !meta->reader_holds && !meta->active_leases &&
+	       !meta->exclusive && !meta->exclusive_owner && !meta->reserved &&
+	       !meta->work_refs && !meta->native_refs && !meta->cleanup_error &&
+	       !meta->current_work_slot && !meta->current_work_owned &&
+	       !meta->current_work_cookie && !meta->reserved2 &&
+	       !(meta->cleanup_done & ~SE_OL_ALL_DONE);
 }
 
-static __attribute__((always_inline)) inline int se_oc_free_meta(
-					   const struct se_ol_meta *meta,
-				   __u32 slot, __u64 locator)
+static __attribute__((always_inline)) inline int
+se_oc_free_meta(const struct se_ol_meta *meta, __u32 slot, __u64 locator)
 {
 	__u32 decoded = 0;
-	return se_ol_decode(locator, &decoded) == SE_OL_OK &&
-		decoded == slot && meta->phase == SE_OL_FREE &&
-		meta->locator == locator && !meta->cookie &&
-		!meta->reader_holds && !meta->active_leases &&
-		!meta->exclusive && !meta->exclusive_owner &&
-		!meta->reserved && !meta->archive_ready &&
-		meta->directory_state == SE_OL_DELETED &&
-		!meta->account_scope && !meta->account_slot &&
-		!meta->account_incarnation && !meta->work_refs &&
-		!meta->native_refs && !meta->cleanup_done &&
-		!meta->cleanup_error && !meta->current_work_slot &&
-		!meta->current_work_owned && !meta->current_work_cookie &&
-		!meta->next_work_sequence && !meta->last_reap_sequence &&
-		!meta->reserved2;
+	return se_ol_decode(locator, &decoded) == SE_OL_OK && decoded == slot &&
+	       meta->phase == SE_OL_FREE && meta->locator == locator &&
+	       !meta->cookie && !meta->reader_holds && !meta->active_leases &&
+	       !meta->exclusive && !meta->exclusive_owner && !meta->reserved &&
+	       !meta->archive_ready && meta->directory_state == SE_OL_DELETED &&
+	       !meta->account_scope && !meta->account_slot &&
+	       !meta->account_incarnation && !meta->work_refs &&
+	       !meta->native_refs && !meta->cleanup_done &&
+	       !meta->cleanup_error && !meta->current_work_slot &&
+	       !meta->current_work_owned && !meta->current_work_cookie &&
+	       !meta->next_work_sequence && !meta->last_reap_sequence &&
+	       !meta->reserved2;
 }
 
 static inline int se_oc_fault_exact(struct se_oc_account *account,
-				     struct se_oc_charge *charge,
-				     __u32 local, __u64 cookie)
+				    struct se_oc_charge *charge, __u32 local,
+				    __u64 cookie)
 {
 	__u64 bit = 1ULL << (local % 64U);
 	bpf_spin_lock(&account->lock);
-	int exact = charge->cookie == cookie &&
-		charge->state != SE_OC_FREE &&
-		(account->bits[SE_OC_WORD(local)] & bit);
+	int exact = charge->cookie == cookie && charge->state != SE_OC_FREE &&
+		    (account->bits[SE_OC_WORD(local)] & bit);
 	if (exact) {
 		account->fault = 1;
 		charge->state = SE_OC_FAULT_HELD;
@@ -86,7 +78,7 @@ static inline int se_oc_fault_exact(struct se_oc_account *account,
  * No helper is called while either spinlock is held, and locks are not nested.
  * This is not a source-cleanup producer or a selected product reaper. */
 static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
-						__u64 expected_cookie)
+						       __u64 expected_cookie)
 {
 	if (slot >= SE_OL_TASKS || !expected_cookie)
 		return SE_OC_CORRUPT;
@@ -109,12 +101,12 @@ static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
 	state = charge->state;
 	int occupied = !!(account->bits[SE_OC_WORD(local)] & bit);
 	int account_exact = !account->reserved && !account->fault &&
-		account->used <= SE_OC_QUOTA &&
-		se_oc_bitmap_count(account) == account->used;
+			    account->used <= SE_OC_QUOTA &&
+			    se_oc_bitmap_count(account) == account->used;
 	if (state == SE_OC_FREE) {
 		int replay = !cookie && !scope && !incarnation && !locator &&
-			!occupied && account_exact &&
-			last == expected_cookie;
+			     !occupied && account_exact &&
+			     last == expected_cookie;
 		bpf_spin_unlock(&account->lock);
 		if (!replay)
 			return SE_OC_STALE;
@@ -128,12 +120,12 @@ static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
 		return SE_OC_STALE;
 	}
 	int exact = account_exact && occupied && account->used &&
-		account->scope == scope &&
-		account->incarnation == incarnation &&
-		scope && incarnation && last < cookie &&
-		(state == SE_OC_BUILDING || state == SE_OC_OWNED ||
-		 state == SE_OC_RETURN_READY) &&
-		(state == SE_OC_BUILDING ? !locator : !!locator);
+		    account->scope == scope &&
+		    account->incarnation == incarnation && scope &&
+		    incarnation && last < cookie &&
+		    (state == SE_OC_BUILDING || state == SE_OC_OWNED ||
+		     state == SE_OC_RETURN_READY) &&
+		    (state == SE_OC_BUILDING ? !locator : !!locator);
 	bpf_spin_unlock(&account->lock);
 	if (!exact)
 		return se_oc_fault_exact(account, charge, local, cookie);
@@ -145,16 +137,16 @@ static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
 	bpf_spin_lock(&meta->lock);
 	__u32 phase = meta->phase;
 	int meta_identity = meta->cookie == cookie &&
-		meta->locator == locator &&
-		meta->account_scope == scope &&
-		meta->account_slot == account_slot &&
-		meta->account_incarnation == incarnation;
-	int ready = se_oc_ready_meta(meta, account_slot, incarnation,
-				     scope, cookie, locator);
+			    meta->locator == locator &&
+			    meta->account_scope == scope &&
+			    meta->account_slot == account_slot &&
+			    meta->account_incarnation == incarnation;
+	int ready = se_oc_ready_meta(meta, account_slot, incarnation, scope,
+				     cookie, locator);
 	int free_shape = se_oc_free_meta(meta, slot, locator);
 	__u32 done = meta->cleanup_done;
-	if (phase == SE_OL_ARCHIVE_ZEROED && state == SE_OC_OWNED &&
-	    ready && done == SE_OL_ALL_DONE) {
+	if (phase == SE_OL_ARCHIVE_ZEROED && state == SE_OC_OWNED && ready &&
+	    done == SE_OL_ALL_DONE) {
 		meta->phase = SE_OL_REFUND_PENDING;
 		bpf_spin_unlock(&meta->lock);
 		return SE_OC_PROGRESS;
@@ -165,11 +157,10 @@ static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
 	     phase == SE_OL_LIVE || phase == SE_OL_DEAD ||
 	     phase == SE_OL_ABORTED || phase == SE_OL_CLEANING))
 		return SE_OC_PENDING;
-	if (phase == SE_OL_ARCHIVE_ZEROED && state == SE_OC_OWNED &&
-	    ready && done != SE_OL_ALL_DONE)
+	if (phase == SE_OL_ARCHIVE_ZEROED && state == SE_OC_OWNED && ready &&
+	    done != SE_OL_ALL_DONE)
 		return SE_OC_PENDING;
-	if (phase == SE_OL_REFUND_PENDING && ready &&
-	    done == SE_OL_ALL_DONE) {
+	if (phase == SE_OL_REFUND_PENDING && ready && done == SE_OL_ALL_DONE) {
 		if (state == SE_OC_OWNED) {
 			bpf_spin_lock(&account->lock);
 			exact = !account->fault && !account->reserved &&
@@ -190,8 +181,8 @@ static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
 		}
 		bpf_spin_lock(&meta->lock);
 		exact = meta->phase == SE_OL_REFUND_PENDING &&
-			se_oc_ready_meta(meta, account_slot, incarnation,
-					 scope, cookie, locator) &&
+			se_oc_ready_meta(meta, account_slot, incarnation, scope,
+					 cookie, locator) &&
 			meta->cleanup_done == SE_OL_ALL_DONE;
 		if (exact) {
 			meta->phase = SE_OL_FREE;
@@ -206,17 +197,14 @@ static __attribute__((noinline)) int se_oc_refund_step(__u32 slot,
 		bpf_spin_unlock(&meta->lock);
 		return exact ? SE_OC_PROGRESS : SE_OC_PENDING;
 	}
-	if (phase == SE_OL_FREE && state == SE_OC_RETURN_READY &&
-	    free_shape) {
+	if (phase == SE_OL_FREE && state == SE_OC_RETURN_READY && free_shape) {
 		bpf_spin_lock(&account->lock);
 		exact = !account->fault && !account->reserved &&
 			account->scope == scope &&
-			account->incarnation == incarnation &&
-			account->used &&
+			account->incarnation == incarnation && account->used &&
 			se_oc_bitmap_count(account) == account->used &&
 			(account->bits[SE_OC_WORD(local)] & bit) &&
-			charge->cookie == cookie &&
-			charge->scope == scope &&
+			charge->cookie == cookie && charge->scope == scope &&
 			charge->incarnation == incarnation &&
 			charge->locator == locator &&
 			charge->state == SE_OC_RETURN_READY;

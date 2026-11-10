@@ -91,19 +91,22 @@ static __always_inline struct se_invocation *se_current_invocation(void)
  * through nested evaluator lookups, but the backing WORK is still found by
  * current-task address. This does NOT authenticate an opaque WORK ticket or
  * permit selection of an opaque image. The callback keeps its WORK alive. */
-static inline struct se_policy_view *se_shared_view_from_token(
-	const struct fm_global_token *token)
+static inline struct se_policy_view *
+se_shared_view_from_token(const struct fm_global_token *token)
 {
 	if (!token || token->reserved || !token->cookie ||
 	    token->slot >= SE_PROFILE_BINDINGS)
 		return 0;
 	struct se_invocation *w = se_current_invocation();
 	return w && w->slot == token->slot && w->cookie == token->cookie &&
-		w->scope && w->view.ready &&
-		w->view.scope_cookie == w->scope ? &w->view : 0;
+			       w->scope && w->view.ready &&
+			       w->view.scope_cookie == w->scope ?
+		       &w->view :
+		       0;
 }
-static inline const struct fm_blob *se_shared_blob_from_token(
-	unsigned int slot, unsigned long long cookie, unsigned int key)
+static inline const struct fm_blob *
+se_shared_blob_from_token(unsigned int slot, unsigned long long cookie,
+			  unsigned int key)
 {
 	struct fm_global_token token = { .slot = slot, .cookie = cookie };
 	return se_policy_data(se_shared_view_from_token(&token), key);
@@ -273,8 +276,9 @@ static __always_inline void se_owned_fault(struct se_task_state *task,
 }
 /* The caller holds the exact TASK owner lock; a route observation alone never
  * grants authority to fault another physical generation. */
-static __always_inline void se_task_movement_fault_locked(
-	struct se_task_state *task, __u64 cookie, __u64 scope, __u32 slot)
+static __always_inline void
+se_task_movement_fault_locked(struct se_task_state *task, __u64 cookie,
+			      __u64 scope, __u32 slot)
 {
 	if (task->physical_cookie == cookie && task->scope_cookie == scope &&
 	    task->scope_slot == slot) {
@@ -292,8 +296,8 @@ static __always_inline void se_task_movement_fault_locked(
  * required to invalidate eligibility, and no current-route claim is borrowed. */
 /* The route/identity check has its own frame so it cannot inflate the
  * already bounded bprm ingress frame. */
-static __attribute__((noinline)) void se_observe_task_movement(
-	struct se_task_state *task, __u64 cgroup)
+static __attribute__((noinline)) void
+se_observe_task_movement(struct se_task_state *task, __u64 cgroup)
 {
 	if (!task)
 		return;
@@ -343,8 +347,8 @@ struct se_shared_eval_args {
 };
 /* The caller retains TASK/WORK and the snapshot through this return; none of
  * these pointers escape. BPF subprograms accept at most five arguments. */
-static __attribute__((noinline)) long se_shared_evaluate_owned_work(
-	const struct se_shared_eval_args *args)
+static __attribute__((noinline)) long
+se_shared_evaluate_owned_work(const struct se_shared_eval_args *args)
 {
 	struct linux_binprm *bprm = args->bprm;
 	struct se_task_state *task = args->task;
@@ -369,7 +373,8 @@ static __attribute__((noinline)) long se_shared_evaluate_owned_work(
 	if (!error) {
 #ifdef ENFORCE_EXEC_SHARED_SCALAR_EVAL_CANDIDATE
 		struct fm_global_token token = {
-			.slot = w->slot, .cookie = w->cookie,
+			.slot = w->slot,
+			.cookie = w->cookie,
 		};
 		error = fe_evaluate(&token, &o->facts, &o->evaluator);
 #else
@@ -458,8 +463,8 @@ static __always_inline long se_shared_check(struct linux_binprm *bprm,
 		}
 		bpf_spin_lock(&route->lock);
 		int moved = route->cgroup_identity != cgroup;
-		int owned = se_exec_reader_authority_locked(route,
-			&reader_binding->state, task, slot, scope,
+		int owned = se_exec_reader_authority_locked(
+			route, &reader_binding->state, task, slot, scope,
 			original_generation, cookie, sequence, original_class);
 		if (owned) {
 			mode = route->execution_class;
@@ -548,9 +553,15 @@ static __always_inline long se_shared_check(struct linux_binprm *bprm,
 		return se_shared_fault(ingress_strict ? 2 : mode, 0);
 	}
 	struct se_shared_eval_args args = {
-		.bprm = bprm, .task = task, .work = w, .snapshot = snapshot,
-		.generation = generation, .cookie = cookie, .sequence = sequence,
-		.mode = mode, .prior = prior,
+		.bprm = bprm,
+		.task = task,
+		.work = w,
+		.snapshot = snapshot,
+		.generation = generation,
+		.cookie = cookie,
+		.sequence = sequence,
+		.mode = mode,
+		.prior = prior,
 		.ingress_strict = ingress_strict,
 	};
 	long result = se_shared_evaluate_owned_work(&args);
@@ -658,14 +669,13 @@ static __always_inline int se_inherit_child(__u64 parent_address,
 		      er_canonical_classify(&w->history.view) ||
 		      er_canonical_project(&w->history.view, &w->inherited);
 	const struct se_snapshot *snapshot = &binding->state.records[record];
-	if (!invalid && !se_inherit_snapshot_matches(claim, snapshot,
-						&w->inherited))
+	if (!invalid &&
+	    !se_inherit_snapshot_matches(claim, snapshot, &w->inherited))
 		invalid = 1;
 	if (!invalid) {
 		bpf_spin_lock(&parent->lock);
-		invalid = se_inherit_child_commit_locked(parent, child, claim,
-						    &w->history,
-						    &w->inherited);
+		invalid = se_inherit_child_commit_locked(
+			parent, child, claim, &w->history, &w->inherited);
 		bpf_spin_unlock(&parent->lock);
 	}
 	se_work_release(parent_address, route);

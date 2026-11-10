@@ -3,8 +3,8 @@
 #ifndef IG_OPAQUE_REAL_OWNER_RECOVERED_INITIAL_TASK_DIAGNOSTIC_H
 #define IG_OPAQUE_REAL_OWNER_RECOVERED_INITIAL_TASK_DIAGNOSTIC_H
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_RECOVERED_INITIAL_TASK_DIAGNOSTIC) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) ||       \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
 #error "recovered initial TASK diagnostic requires recovered admin and disposable bootstrap"
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE
@@ -55,19 +55,20 @@ struct {
 	__type(value, __u64);
 } opaque_recovered_initial_physical SEC(".maps");
 
-static __always_inline void opaque_recovered_initial_retire_physical(
-	struct task_struct *physical)
+static __always_inline void
+opaque_recovered_initial_retire_physical(struct task_struct *physical)
 {
 	__u32 zero = 0;
-	__u64 *witness = bpf_map_lookup_elem(
-		&opaque_recovered_initial_physical, &zero);
+	__u64 *witness =
+		bpf_map_lookup_elem(&opaque_recovered_initial_physical, &zero);
 	if (witness)
 		(void)__sync_val_compare_and_swap(witness, (__u64)physical, 1);
 }
 
 /* The constructor and semantic handle need disjoint BPF call frames. */
-static __attribute__((noinline)) int opaque_recovered_initial_charge(
-	struct task_struct *target, __u64 cgroup, __u64 scope)
+static __attribute__((noinline)) int
+opaque_recovered_initial_charge(struct task_struct *target, __u64 cgroup,
+				__u64 scope)
 {
 	struct se_route_claim claim = {};
 	if (se_route_admit(cgroup, &claim) != SE_ROUTE_OWNED)
@@ -80,16 +81,16 @@ static __attribute__((noinline)) int opaque_recovered_initial_charge(
 	int status = se_op_prepare_charged_child(&claim, &initial);
 	if (status == SE_OL_OK) {
 		struct task_struct *key = target;
-		status = se_op_publish_charged_child(&claim,
-			&opaque_real_live_seed_snapshot,
+		status = se_op_publish_charged_child(
+			&claim, &opaque_real_live_seed_snapshot,
 			&opaque_real_live_parent_roles, &key, &initial);
 	}
 	int released = real_owner_child_release_claim(&claim);
 	return status == SE_OL_OK && !released ? 0 : -1;
 }
 
-static __attribute__((noinline)) int opaque_recovered_initial_qualify(
-	struct task_struct *target, __u64 scope)
+static __attribute__((noinline)) int
+opaque_recovered_initial_qualify(struct task_struct *target, __u64 scope)
 {
 	__u64 key = (__u64)target;
 	struct se_ol_payload_handle owner = {};
@@ -113,8 +114,8 @@ static __attribute__((noinline)) int opaque_recovered_initial_qualify(
 
 SEC("lsm/task_kill")
 int BPF_PROG(opaque_real_owner_recovered_initial_task_diagnostic,
-	     struct task_struct *target, struct kernel_siginfo *info, int signal,
-	     const struct cred *cred, int prior)
+	     struct task_struct *target, struct kernel_siginfo *info,
+	     int signal, const struct cred *cred, int prior)
 {
 	(void)info;
 	(void)cred;
@@ -123,11 +124,12 @@ int BPF_PROG(opaque_real_owner_recovered_initial_task_diagnostic,
 	__u32 zero = 0;
 	const struct opaque_recovered_initial_request *request =
 		bpf_map_lookup_elem(&opaque_recovered_initial_request, &zero);
-	__u32 *consumed = bpf_map_lookup_elem(&opaque_recovered_initial_consumed,
-		&zero);
-	__u32 *stage = bpf_map_lookup_elem(&opaque_recovered_initial_stage, &zero);
-	__u64 *witness = bpf_map_lookup_elem(
-		&opaque_recovered_initial_physical, &zero);
+	__u32 *consumed =
+		bpf_map_lookup_elem(&opaque_recovered_initial_consumed, &zero);
+	__u32 *stage =
+		bpf_map_lookup_elem(&opaque_recovered_initial_stage, &zero);
+	__u64 *witness =
+		bpf_map_lookup_elem(&opaque_recovered_initial_physical, &zero);
 	const struct opaque_real_live_bootstrap_gate *gate =
 		opaque_real_live_gate();
 	if (!request || !consumed || !stage || !witness || !gate ||
@@ -136,7 +138,7 @@ int BPF_PROG(opaque_real_owner_recovered_initial_task_diagnostic,
 	    !request->target_tgid || !request->cgroup ||
 	    request->cgroup != gate->cgroup || request->scope != gate->scope ||
 	    !se_rm_reap_authorized(request->node_cookie,
-		request->admin_generation))
+				   request->admin_generation))
 		return 0;
 	__u32 tid = 0, tgid = 0;
 	__u64 cgroup = 0;
@@ -158,7 +160,7 @@ int BPF_PROG(opaque_real_owner_recovered_initial_task_diagnostic,
 		return 0;
 	*stage = 2;
 	if (opaque_recovered_initial_charge(target, request->cgroup,
-		request->scope))
+					    request->scope))
 		return -1;
 	*stage = 3;
 	if (opaque_recovered_initial_qualify(target, request->scope))

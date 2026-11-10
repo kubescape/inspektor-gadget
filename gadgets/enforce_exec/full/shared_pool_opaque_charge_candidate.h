@@ -52,7 +52,7 @@ static __attribute__((always_inline)) inline __u32 se_oc_word(__u32 local)
 #endif
 #define SE_OC_COOKIE_LIMIT (~(__u64)0 - 1ULL)
 _Static_assert(SE_OC_ACCOUNTS > 0 && SE_OC_QUOTA > 0 &&
-	       (__u64)SE_OC_ACCOUNTS * SE_OC_QUOTA == SE_OL_TASKS,
+		       (__u64)SE_OC_ACCOUNTS * SE_OC_QUOTA == SE_OL_TASKS,
 	       "test-only charged task partition");
 
 enum se_oc_charge_state {
@@ -91,23 +91,23 @@ struct se_oc_reservation {
 	 * avoids a second 32-byte BPF stack quantum in held birth callbacks. */
 	__u16 held, terminal;
 };
-_Static_assert(sizeof(struct se_oc_reservation) == 64,
-	       "callback-local charged TASK reservation must fit one stack quantum");
+_Static_assert(
+	sizeof(struct se_oc_reservation) == 64,
+	"callback-local charged TASK reservation must fit one stack quantum");
 
-static __attribute__((always_inline)) inline __u32 se_oc_bitmap_count(
-	const struct se_oc_account *account)
+static __attribute__((always_inline)) inline __u32
+se_oc_bitmap_count(const struct se_oc_account *account)
 {
 	__u32 count = 0;
 	for (__u32 i = 0; i < SE_OC_WORDS; i++) {
 		__u64 bits = account->bits[i];
 #if SE_OC_QUOTA % 64U
-		if (i == SE_OC_WORDS - 1 &&
-		    (bits >> (SE_OC_QUOTA % 64U)))
+		if (i == SE_OC_WORDS - 1 && (bits >> (SE_OC_QUOTA % 64U)))
 			return SE_OC_QUOTA + 1;
 #endif
 		bits -= (bits >> 1) & 0x5555555555555555ULL;
 		bits = (bits & 0x3333333333333333ULL) +
-			((bits >> 2) & 0x3333333333333333ULL);
+		       ((bits >> 2) & 0x3333333333333333ULL);
 		bits = (bits + (bits >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
 		count += (__u32)((bits * 0x0101010101010101ULL) >> 56);
 	}
@@ -117,12 +117,28 @@ static __attribute__((always_inline)) inline __u32 se_oc_bitmap_count(
 static __attribute__((always_inline)) inline __u32 se_oc_first_bit(__u64 bits)
 {
 	__u32 bit = 0;
-	if (!(bits & 0xffffffffULL)) { bit += 32; bits >>= 32; }
-	if (!(bits & 0xffffULL)) { bit += 16; bits >>= 16; }
-	if (!(bits & 0xffULL)) { bit += 8; bits >>= 8; }
-	if (!(bits & 0xfULL)) { bit += 4; bits >>= 4; }
-	if (!(bits & 3ULL)) { bit += 2; bits >>= 2; }
-	if (!(bits & 1ULL)) bit++;
+	if (!(bits & 0xffffffffULL)) {
+		bit += 32;
+		bits >>= 32;
+	}
+	if (!(bits & 0xffffULL)) {
+		bit += 16;
+		bits >>= 16;
+	}
+	if (!(bits & 0xffULL)) {
+		bit += 8;
+		bits >>= 8;
+	}
+	if (!(bits & 0xfULL)) {
+		bit += 4;
+		bits >>= 4;
+	}
+	if (!(bits & 3ULL)) {
+		bit += 2;
+		bits >>= 2;
+	}
+	if (!(bits & 1ULL))
+		bit++;
 	return bit;
 }
 
@@ -131,8 +147,8 @@ static __attribute__((always_inline)) inline __u32 se_oc_first_bit(__u64 bits)
  * not admission authority. An empty, healthy account may follow a recycled
  * route incarnation; a charged or faulted old account cannot be relabelled.
  * No map helper or route lock is taken while the account lock is held. */
-static __attribute__((noinline)) int se_oc_bind_account(
-	__u32 account_slot, __u64 scope, __u32 incarnation)
+static __attribute__((noinline)) int
+se_oc_bind_account(__u32 account_slot, __u64 scope, __u32 incarnation)
 {
 	if (account_slot >= SE_OC_ACCOUNTS || !scope || !incarnation)
 		return SE_OL_CORRUPT;
@@ -168,8 +184,9 @@ static __attribute__((noinline)) int se_oc_bind_account(
 #else
 #define SE_OC_CHOOSE_ATTR __attribute__((noinline))
 #endif
-static SE_OC_CHOOSE_ATTR int se_oc_choose_task(
-	__u32 account_slot, __u64 scope, __u32 incarnation, __u32 *task_slot)
+static SE_OC_CHOOSE_ATTR int se_oc_choose_task(__u32 account_slot, __u64 scope,
+					       __u32 incarnation,
+					       __u32 *task_slot)
 {
 	if (!task_slot || *task_slot || !scope || !incarnation ||
 	    account_slot >= SE_OC_ACCOUNTS)
@@ -217,15 +234,13 @@ static SE_OC_CHOOSE_ATTR int se_oc_choose_task(
 #undef SE_OC_CHOOSE_ATTR
 
 static inline int se_oc_reserve(__u32 account_slot, __u64 scope,
-				 __u32 incarnation, __u32 task_slot,
-				 struct se_oc_reservation *reservation)
+				__u32 incarnation, __u32 task_slot,
+				struct se_oc_reservation *reservation)
 {
 	if (!reservation || reservation->held || reservation->terminal ||
-	    reservation->account ||
-	    reservation->charge || reservation->meta || !scope ||
-	    !incarnation || account_slot >= SE_OC_ACCOUNTS ||
-	    task_slot >= SE_OL_TASKS ||
-	    task_slot / SE_OC_QUOTA != account_slot)
+	    reservation->account || reservation->charge || reservation->meta ||
+	    !scope || !incarnation || account_slot >= SE_OC_ACCOUNTS ||
+	    task_slot >= SE_OL_TASKS || task_slot / SE_OC_QUOTA != account_slot)
 		return SE_OL_CORRUPT;
 	__u32 local = task_slot - account_slot * SE_OC_QUOTA;
 	if (local >= SE_OC_QUOTA)
@@ -255,9 +270,8 @@ static inline int se_oc_reserve(__u32 account_slot, __u64 scope,
 	    se_oc_bitmap_count(account) != account->used) {
 		account->fault = 1;
 		result = SE_OL_CORRUPT;
-	}
-	else if (account->scope != scope ||
-		 account->incarnation != incarnation)
+	} else if (account->scope != scope ||
+		   account->incarnation != incarnation)
 		result = SE_OL_STALE;
 	else if (account->bits[SE_OC_WORD(local)] & bit)
 		result = SE_OL_CONTENDED;
@@ -278,8 +292,8 @@ static inline int se_oc_reserve(__u32 account_slot, __u64 scope,
 		charge->incarnation = incarnation;
 		charge->state = SE_OC_BUILDING;
 		*reservation = (struct se_oc_reservation){
-			account, charge, meta, scope, cookie, 0,
-			account_slot, incarnation, task_slot, 1, 0,
+			account,      charge,	   meta,      scope, cookie, 0,
+			account_slot, incarnation, task_slot, 1,     0,
 		};
 	}
 	bpf_spin_unlock(&account->lock);
@@ -296,33 +310,32 @@ static inline int se_oc_begin_charged(struct se_oc_reservation *reservation)
 	    !reservation->meta || !reservation->cookie ||
 	    reservation->account_slot >= SE_OC_ACCOUNTS ||
 	    reservation->task_slot >= SE_OL_TASKS ||
-	    reservation->task_slot / SE_OC_QUOTA !=
-		reservation->account_slot ||
+	    reservation->task_slot / SE_OC_QUOTA != reservation->account_slot ||
 	    SE_OC_ACCOUNT_LOOKUP(reservation->account_slot) !=
-		reservation->account ||
+		    reservation->account ||
 	    SE_OC_CHARGE_LOOKUP(reservation->task_slot) !=
-		reservation->charge ||
+		    reservation->charge ||
 	    SE_OL_META_LOOKUP(reservation->task_slot) != reservation->meta)
 		return SE_OL_CORRUPT;
 	struct se_oc_account *account = reservation->account;
 	struct se_oc_charge *charge = reservation->charge;
 	__u32 local = reservation->task_slot -
-		reservation->account_slot * SE_OC_QUOTA;
+		      reservation->account_slot * SE_OC_QUOTA;
 	if (local >= SE_OC_QUOTA)
 		return SE_OL_CORRUPT;
 	__u64 bit = 1ULL << (local % 64U);
 	bpf_spin_lock(&account->lock);
 	int exact = !account->reserved && !account->fault &&
-		account->scope == reservation->scope &&
-		account->incarnation == reservation->incarnation &&
-		account->used && account->used <= SE_OC_QUOTA &&
-		se_oc_bitmap_count(account) == account->used &&
-		(account->bits[SE_OC_WORD(local)] & bit) &&
-		charge->state == SE_OC_BUILDING &&
-		charge->cookie == reservation->cookie &&
-		charge->scope == reservation->scope &&
-		charge->incarnation == reservation->incarnation &&
-		!charge->locator;
+		    account->scope == reservation->scope &&
+		    account->incarnation == reservation->incarnation &&
+		    account->used && account->used <= SE_OC_QUOTA &&
+		    se_oc_bitmap_count(account) == account->used &&
+		    (account->bits[SE_OC_WORD(local)] & bit) &&
+		    charge->state == SE_OC_BUILDING &&
+		    charge->cookie == reservation->cookie &&
+		    charge->scope == reservation->scope &&
+		    charge->incarnation == reservation->incarnation &&
+		    !charge->locator;
 	if (!exact) {
 		account->fault = 1;
 		if (charge->state == SE_OC_BUILDING &&
@@ -375,8 +388,7 @@ static inline int se_oc_begin_charged(struct se_oc_reservation *reservation)
 			charge->state = SE_OC_FAULT_HELD;
 	}
 	bpf_spin_unlock(&account->lock);
-	return exact && begun == SE_OL_OK && bound ? SE_OL_OK :
-		SE_OL_CORRUPT;
+	return exact && begun == SE_OL_OK && bound ? SE_OL_OK : SE_OL_CORRUPT;
 }
 
 /* A selector observation can lose its slot before the charge lock. Retry
@@ -384,9 +396,9 @@ static inline int se_oc_begin_charged(struct se_oc_reservation *reservation)
  * Exhausted attempts remain recoverable contention, distinct from a full
  * account and from a structural fault. Each failed reserve burns only a
  * nonwrapping sequence number; no account bit or charge is refunded here. */
-static __attribute__((noinline)) int se_oc_reserve_any(
-	__u32 account_slot, __u64 scope, __u32 incarnation,
-	struct se_oc_reservation *reservation)
+static __attribute__((noinline)) int
+se_oc_reserve_any(__u32 account_slot, __u64 scope, __u32 incarnation,
+		  struct se_oc_reservation *reservation)
 {
 	if (!reservation || reservation->held || reservation->terminal ||
 	    reservation->account || reservation->charge || reservation->meta)
@@ -396,8 +408,8 @@ static __attribute__((noinline)) int se_oc_reserve_any(
 #endif
 	for (int attempt = 0; attempt < 8; attempt++) {
 		__u32 task_slot = 0;
-		int result = se_oc_choose_task(account_slot, scope,
-					       incarnation, &task_slot);
+		int result = se_oc_choose_task(account_slot, scope, incarnation,
+					       &task_slot);
 		if (result != SE_OL_OK)
 			return result;
 		/* Host-only interleaving seam; production default is a no-op. */

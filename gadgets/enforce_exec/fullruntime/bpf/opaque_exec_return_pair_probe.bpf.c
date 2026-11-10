@@ -105,8 +105,8 @@ SEC("kprobe/do_execveat_common.isra.38")
 int BPF_KPROBE(opaque_return_pair_common_enter)
 {
 	__u32 zero = 0;
-	const struct pair_gate *gate = bpf_map_lookup_elem(
-		&opaque_return_pair_gate, &zero);
+	const struct pair_gate *gate =
+		bpf_map_lookup_elem(&opaque_return_pair_gate, &zero);
 	if (!gate || gate->armed != 1 || !gate->cgroup ||
 	    gate->cgroup != bpf_get_current_cgroup_id())
 		return 0;
@@ -115,8 +115,8 @@ int BPF_KPROBE(opaque_return_pair_common_enter)
 	if (obs)
 		__sync_fetch_and_add(&obs->outer_entries, 1);
 	__u64 key = bpf_get_current_pid_tgid();
-	struct pair_outer_entry *existing = bpf_map_lookup_elem(
-		&opaque_return_pair_outer_entries, &key);
+	struct pair_outer_entry *existing =
+		bpf_map_lookup_elem(&opaque_return_pair_outer_entries, &key);
 	if (existing) {
 		existing->uncertain = 1;
 		if (existing->depth < 255)
@@ -127,9 +127,9 @@ int BPF_KPROBE(opaque_return_pair_common_enter)
 		.physical = (__u64)bpf_get_current_task_btf(),
 		.depth = 1,
 	};
-	if (!frame.physical || bpf_map_update_elem(
-		&opaque_return_pair_outer_entries, &key, &frame,
-		BPF_NOEXIST)) {
+	if (!frame.physical ||
+	    bpf_map_update_elem(&opaque_return_pair_outer_entries, &key, &frame,
+				BPF_NOEXIST)) {
 		if (obs)
 			__sync_fetch_and_add(&obs->outer_missing, 1);
 	}
@@ -142,8 +142,8 @@ SEC("kretprobe/do_execve")
 int BPF_KRETPROBE(opaque_return_pair_execve_final, int ret)
 {
 	__u32 zero = 0;
-	const struct pair_gate *gate = bpf_map_lookup_elem(
-		&opaque_return_pair_gate, &zero);
+	const struct pair_gate *gate =
+		bpf_map_lookup_elem(&opaque_return_pair_gate, &zero);
 	if (!gate || gate->armed != 1 || !gate->cgroup ||
 	    gate->cgroup != bpf_get_current_cgroup_id())
 		return 0;
@@ -159,8 +159,8 @@ SEC("kretprobe/do_execveat")
 int BPF_KRETPROBE(opaque_return_pair_execveat_final, int ret)
 {
 	__u32 zero = 0;
-	const struct pair_gate *gate = bpf_map_lookup_elem(
-		&opaque_return_pair_gate, &zero);
+	const struct pair_gate *gate =
+		bpf_map_lookup_elem(&opaque_return_pair_gate, &zero);
 	if (!gate || gate->armed != 1 || !gate->cgroup ||
 	    gate->cgroup != bpf_get_current_cgroup_id())
 		return 0;
@@ -178,8 +178,8 @@ SEC("kretprobe/do_execveat_common.isra.38")
 int BPF_KRETPROBE(opaque_return_pair_common_final, int ret)
 {
 	__u32 zero = 0;
-	const struct pair_gate *gate = bpf_map_lookup_elem(
-		&opaque_return_pair_gate, &zero);
+	const struct pair_gate *gate =
+		bpf_map_lookup_elem(&opaque_return_pair_gate, &zero);
 	if (!gate || gate->armed != 1 || !gate->cgroup ||
 	    gate->cgroup != bpf_get_current_cgroup_id())
 		return 0;
@@ -190,8 +190,8 @@ int BPF_KRETPROBE(opaque_return_pair_common_final, int ret)
 		obs->common_return = ret;
 	}
 	__u64 key = bpf_get_current_pid_tgid();
-	struct pair_outer_entry *frame = bpf_map_lookup_elem(
-		&opaque_return_pair_outer_entries, &key);
+	struct pair_outer_entry *frame =
+		bpf_map_lookup_elem(&opaque_return_pair_outer_entries, &key);
 	if (!frame)
 		return 0;
 	if (frame->depth > 1) {
@@ -205,12 +205,14 @@ int BPF_KRETPROBE(opaque_return_pair_common_final, int ret)
 			&opaque_return_pair_receipts, &frame->physical);
 		if (receipt && receipt->physical == frame->physical &&
 		    receipt->bprm == frame->bprm && !receipt->reserved &&
-		    __sync_val_compare_and_swap(&receipt->phase,
-			PAIR_REGISTERED,
-			ret == 0 ? PAIR_SUCCESS : PAIR_FAILED) ==
-			PAIR_REGISTERED) {
-			struct pair_observation *paired_obs = bpf_map_lookup_elem(
-				&opaque_return_pair_observations, &zero);
+		    __sync_val_compare_and_swap(
+			    &receipt->phase, PAIR_REGISTERED,
+			    ret == 0 ? PAIR_SUCCESS : PAIR_FAILED) ==
+			    PAIR_REGISTERED) {
+			struct pair_observation *paired_obs =
+				bpf_map_lookup_elem(
+					&opaque_return_pair_observations,
+					&zero);
 			if (paired_obs)
 				__sync_fetch_and_add(&paired_obs->finalized, 1);
 		}
@@ -223,18 +225,18 @@ SEC("kprobe/search_binary_handler")
 int BPF_KPROBE(opaque_return_pair_enter, struct linux_binprm *bprm)
 {
 	__u32 zero = 0;
-	const struct pair_gate *gate = bpf_map_lookup_elem(
-		&opaque_return_pair_gate, &zero);
+	const struct pair_gate *gate =
+		bpf_map_lookup_elem(&opaque_return_pair_gate, &zero);
 	if (!gate || gate->armed != 1 || !gate->cgroup ||
 	    gate->cgroup != bpf_get_current_cgroup_id())
 		return 0;
-	struct pair_observation *obs = bpf_map_lookup_elem(
-		&opaque_return_pair_observations, &zero);
+	struct pair_observation *obs =
+		bpf_map_lookup_elem(&opaque_return_pair_observations, &zero);
 	if (obs)
 		__sync_fetch_and_add(&obs->entries, 1);
 	__u64 key = bpf_get_current_pid_tgid();
-	struct pair_entry *existing = bpf_map_lookup_elem(
-		&opaque_return_pair_entries, &key);
+	struct pair_entry *existing =
+		bpf_map_lookup_elem(&opaque_return_pair_entries, &key);
 	if (existing) {
 		/* A nested or stale entry cannot authenticate an outer return.
 		 * Keep the first pointer for diagnostic comparison only. */
@@ -252,7 +254,7 @@ int BPF_KPROBE(opaque_return_pair_enter, struct linux_binprm *bprm)
 	};
 	if (!entry.bprm || !entry.physical ||
 	    bpf_map_update_elem(&opaque_return_pair_entries, &key, &entry,
-		BPF_NOEXIST)) {
+				BPF_NOEXIST)) {
 		if (obs)
 			__sync_fetch_and_add(&obs->missing, 1);
 	}
@@ -260,22 +262,21 @@ int BPF_KPROBE(opaque_return_pair_enter, struct linux_binprm *bprm)
 }
 
 SEC("lsm/bprm_check_security")
-int BPF_PROG(opaque_return_pair_register, struct linux_binprm *bprm,
-	     int prior)
+int BPF_PROG(opaque_return_pair_register, struct linux_binprm *bprm, int prior)
 {
 	if (prior)
 		return prior;
 	__u32 zero = 0;
-	const struct pair_gate *gate = bpf_map_lookup_elem(
-		&opaque_return_pair_gate, &zero);
+	const struct pair_gate *gate =
+		bpf_map_lookup_elem(&opaque_return_pair_gate, &zero);
 	if (!gate || gate->armed != 1 || !gate->cgroup ||
 	    gate->cgroup != bpf_get_current_cgroup_id())
 		return 0;
 	__u64 key = bpf_get_current_pid_tgid();
-	struct pair_entry *entry = bpf_map_lookup_elem(
-		&opaque_return_pair_entries, &key);
-	struct pair_outer_entry *outer = bpf_map_lookup_elem(
-		&opaque_return_pair_outer_entries, &key);
+	struct pair_entry *entry =
+		bpf_map_lookup_elem(&opaque_return_pair_entries, &key);
+	struct pair_outer_entry *outer =
+		bpf_map_lookup_elem(&opaque_return_pair_outer_entries, &key);
 	__u64 physical = (__u64)bpf_get_current_task_btf();
 	if (!entry || entry->uncertain || entry->depth != 1 ||
 	    entry->physical != physical || entry->bprm != (__u64)bprm ||
@@ -283,11 +284,12 @@ int BPF_PROG(opaque_return_pair_register, struct linux_binprm *bprm,
 	    outer->physical != physical || outer->bprm)
 		return 0;
 	struct pair_receipt receipt = {
-		.physical = physical, .bprm = (__u64)bprm,
+		.physical = physical,
+		.bprm = (__u64)bprm,
 		.phase = PAIR_REGISTERED,
 	};
 	if (!bpf_map_update_elem(&opaque_return_pair_receipts, &physical,
-		&receipt, BPF_NOEXIST)) {
+				 &receipt, BPF_NOEXIST)) {
 		outer->bprm = (__u64)bprm;
 		struct pair_observation *obs = bpf_map_lookup_elem(
 			&opaque_return_pair_observations, &zero);
@@ -301,13 +303,13 @@ SEC("kretprobe/search_binary_handler")
 int BPF_KRETPROBE(opaque_return_pair_exit, int ret)
 {
 	__u64 key = bpf_get_current_pid_tgid();
-	struct pair_entry *entry = bpf_map_lookup_elem(
-		&opaque_return_pair_entries, &key);
+	struct pair_entry *entry =
+		bpf_map_lookup_elem(&opaque_return_pair_entries, &key);
 	if (!entry)
 		return 0;
 	__u32 zero = 0;
-	struct pair_observation *obs = bpf_map_lookup_elem(
-		&opaque_return_pair_observations, &zero);
+	struct pair_observation *obs =
+		bpf_map_lookup_elem(&opaque_return_pair_observations, &zero);
 	if (obs) {
 		__sync_fetch_and_add(&obs->returns, 1);
 		if (ret < 0)

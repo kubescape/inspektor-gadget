@@ -34,8 +34,10 @@ static __u64 current_scope;
 static __u64 forced_accepted_epoch;
 static __u64 accepted(__u64 uid)
 {
-	return uid == 1 ? (forced_accepted_epoch ? forced_accepted_epoch :
-		(current_scope == 11 ? 13 : 4)) : 0;
+	return uid == 1 ? (forced_accepted_epoch ?
+				   forced_accepted_epoch :
+				   (current_scope == 11 ? 13 : 4)) :
+			  0;
 }
 #define ER_ACCEPTED_EPOCH(uid) accepted(uid)
 #include "epoch_roles.h"
@@ -55,7 +57,9 @@ static void typed_task_wire_overlay(void)
 	       payload.identity.flags == SE_TASK_LIVE);
 	assert(payload.bytes[0] == 7);
 	payload.semantic.exec = (struct se_exec_transaction){
-		.bprm = 71, .sequence = 73, .owned = 1,
+		.bprm = 71,
+		.sequence = 73,
+		.owned = 1,
 	};
 	assert(!se_exec_abort_locked(&payload.semantic, 41, 71, 73));
 	assert(!payload.semantic.exec.owned &&
@@ -104,26 +108,31 @@ static void typed_work_catalogue_parity(void)
 		cache->generation = 1;
 		for (unsigned i = 0; i < ER_SLOTS; i++) {
 			cache->rows[i].uid = typed.work.rows[i].uid;
-			cache->rows[i].accepted_epoch = cache->rows[i].uid ?
-				accepted(cache->rows[i].uid) : 0;
+			cache->rows[i].accepted_epoch =
+				cache->rows[i].uid ?
+					accepted(cache->rows[i].uid) :
+					0;
 		}
 		struct se_route_claim claim = {
-			.scope = 11, .generation = 1, .owned = 1,
+			.scope = 11,
+			.generation = 1,
+			.owned = 1,
 		};
 		int old = er_canonical_classify(&legacy);
 		int now = se_pool_catalogue_classify(&typed, cache, &claim);
 		int via_reader = se_pool_catalogue_classify_after_authority(
 			&scoped, cache, 11, 1);
-		assert(old == now &&
-		       now == via_reader &&
+		assert(old == now && now == via_reader &&
 		       legacy.work.error == typed.work.error &&
 		       legacy.accepted_mask == typed.accepted_mask &&
 		       legacy.work.prepared == typed.work.prepared &&
 		       !memcmp(&typed, &scoped, sizeof(typed)));
 		if (!old) {
-			struct er_work old_projection = {}, typed_projection = {};
+			struct er_work old_projection = {},
+				       typed_projection = {};
 			assert(!er_canonical_project(&legacy, &old_projection));
-			assert(!er_canonical_project(&typed, &typed_projection));
+			assert(!er_canonical_project(&typed,
+						     &typed_projection));
 			assert(!memcmp(&old_projection, &typed_projection,
 				       sizeof(old_projection)));
 			assert(se_pool_catalogue_projection_matches(
@@ -151,20 +160,24 @@ static void typed_work_catalogue_parity(void)
 		er_snapshot(&legacy.work, &state, 1);
 		typed = legacy;
 		struct se_pool_epoch_cache cache = {
-			.scope = 11, .generation = 1,
+			.scope = 11,
+			.generation = 1,
 		};
 		for (unsigned i = 0; i < ER_SLOTS; i++) {
 			cache.rows[i].uid = state.rows[i].uid;
-			cache.rows[i].accepted_epoch = state.rows[i].uid ?
-				accepted(state.rows[i].uid) : 0;
+			cache.rows[i].accepted_epoch =
+				state.rows[i].uid ?
+					accepted(state.rows[i].uid) :
+					0;
 		}
 		struct se_route_claim claim = {
-			.scope = 11, .generation = 1, .owned = 1,
+			.scope = 11,
+			.generation = 1,
+			.owned = 1,
 		};
 		int old = er_canonical_classify(&legacy);
 		int now = se_pool_catalogue_classify(&typed, &cache, &claim);
-		assert(old == now &&
-		       legacy.work.error == typed.work.error &&
+		assert(old == now && legacy.work.error == typed.work.error &&
 		       legacy.accepted_mask == typed.accepted_mask &&
 		       legacy.work.prepared == typed.work.prepared);
 	}
@@ -188,7 +201,8 @@ static void typed_work_wire_overlay(void)
 	       payload.sequence == 59 && payload.slot == 7);
 	assert(payload.bytes[8] == 11);
 	assert(payload.bytes[3176 - 32 +
-		__builtin_offsetof(struct observation, argument)] == 'x');
+			     __builtin_offsetof(struct observation, argument)] ==
+	       'x');
 	assert(payload.catalogue.scope == 11 &&
 	       payload.catalogue.rows[0].accepted_epoch == 13);
 }
@@ -242,11 +256,12 @@ static void preclassified_exec_equivalence(void)
 				      .eligibility_version = 1 };
 	task.committed.version = 7;
 	task.committed.rows[0] = er_known_row(1, 13, 3);
-	task.exec = (struct se_exec_transaction){
-		.owned = 1, .eligibility_version = 1, .policy_count = 1,
-		.grants = 1, .witnesses = { 9 },
-		.policies = { { 1, 13 } }
-	};
+	task.exec = (struct se_exec_transaction){ .owned = 1,
+						  .eligibility_version = 1,
+						  .policy_count = 1,
+						  .grants = 1,
+						  .witnesses = { 9 },
+						  .policies = { { 1, 13 } } };
 	struct se_exec_work legacy = {}, classified = {};
 	struct fe_facts old_facts = {}, new_facts = {};
 	se_exec_snapshot_locked(&task, 20, &legacy);
@@ -270,8 +285,7 @@ static void preclassified_exec_equivalence(void)
 	assert(!er_canonical_classify(&classified.view));
 	assert(!se_exec_completion_prepare_preclassified(&classified, 1));
 	assert(legacy.patch.prepared && legacy.patch.count == 1 &&
-	       !memcmp(&legacy.patch, &classified.patch,
-		       sizeof(legacy.patch)));
+	       !memcmp(&legacy.patch, &classified.patch, sizeof(legacy.patch)));
 	assert(legacy.patch.changes[0].after.role == 9);
 
 	legacy = (struct se_exec_work){};
@@ -418,13 +432,16 @@ static void bounded_completion_unknown_controls(void)
 static void common_exec_mutations(void)
 {
 	struct se_task_state task = {
-		.flags = SE_TASK_LIVE, .eligibility_version = 7,
+		.flags = SE_TASK_LIVE,
+		.eligibility_version = 7,
 	};
 	se_exec_owned_fault_locked(&task, 0x10);
 	assert(task.flags == (SE_TASK_LIVE | SE_TASK_QUARANTINED) &&
 	       task.eligibility_version == 8);
 	task.exec = (struct se_exec_transaction){
-		.owned = 1, .bprm = 0x20, .grants = 3,
+		.owned = 1,
+		.bprm = 0x20,
+		.grants = 3,
 	};
 	se_exec_owned_fault_locked(&task, 0x10);
 	assert(!task.exec.hard_fault && task.exec.grants == 3 &&
@@ -440,12 +457,13 @@ static void common_exec_mutations(void)
 }
 /* Differential check of the flattened role-fill step against the original
  * nested 8x16 loop (reference copied verbatim from before G005-B). */
-static int reference_fill_roles(struct se_exec_work *work, struct fe_facts *facts)
+static int reference_fill_roles(struct se_exec_work *work,
+				struct fe_facts *facts)
 {
 	facts->role_count = 0;
 	if (work->transaction.eligibility_version !=
-		    work->eligibility_version || work->view.work.error ||
-	    !work->view.work.prepared)
+		    work->eligibility_version ||
+	    work->view.work.error || !work->view.work.prepared)
 		return -1;
 	if (work->flags != SE_TASK_QUALIFIED)
 		return 0;
@@ -478,18 +496,21 @@ static int reference_fill_roles(struct se_exec_work *work, struct fe_facts *fact
 static void flattened_role_fill_differential(void)
 {
 	unsigned seed = 12345;
-	unsigned cases[4] = {0};
+	unsigned cases[4] = { 0 };
 	for (int round = 0; round < 200000; round++) {
 		struct se_exec_work work = {};
 		seed = seed * 1103515245u + 12345u;
-		work.eligibility_version = work.transaction.eligibility_version = 1;
+		work.eligibility_version =
+			work.transaction.eligibility_version = 1;
 		work.view.work.prepared = 1;
 		work.flags = (seed >> 7) % 17 ? SE_TASK_QUALIFIED : 0;
-		work.transaction.policy_count = (seed >> 11) % 10; /* includes >8 */
+		work.transaction.policy_count =
+			(seed >> 11) % 10; /* includes >8 */
 		for (int i = 0; i < 8; i++) {
 			seed = seed * 1103515245u + 12345u;
 			work.transaction.policies[i].uid = 1 + (seed >> 9) % 4;
-			work.transaction.policies[i].epoch = 1 + (seed >> 13) % 2;
+			work.transaction.policies[i].epoch =
+				1 + (seed >> 13) % 2;
 		}
 		for (int j = 0; j < 16; j++) {
 			seed = seed * 1103515245u + 12345u;
@@ -500,7 +521,8 @@ static void flattened_role_fill_differential(void)
 			if ((seed >> 24) % 3)
 				work.view.accepted_mask |= 1U << j;
 		}
-		struct fe_facts a = { .role_count = 77 }, b = { .role_count = 77 };
+		struct fe_facts a = { .role_count = 77 },
+				b = { .role_count = 77 };
 		struct se_exec_work wa = work, wb = work;
 		int ra = reference_fill_roles(&wa, &a);
 		int rb = se_exec_fill_roles_preclassified(&wb, &b);
@@ -513,8 +535,8 @@ static void flattened_role_fill_differential(void)
 	/* Both error kinds (cleared and overflow-with-roles) and both success
 	 * kinds were exercised. */
 	assert(cases[0] && cases[1] && cases[3]);
-	printf("flattened role fill differential: ok %u/%u/%u/%u\n",
-	       cases[0], cases[1], cases[2], cases[3]);
+	printf("flattened role fill differential: ok %u/%u/%u/%u\n", cases[0],
+	       cases[1], cases[2], cases[3]);
 }
 
 int main(void)
@@ -564,20 +586,20 @@ int main(void)
 	assert(!se_exec_reader_attach_locked(&anchor, &binding, &task, &early,
 					     99, invocation));
 	assert(!anchor.early_claims && binding.records[0].claims == 1);
-	assert(se_exec_reader_authority_locked(&anchor, &binding, &task,
-		0, 11, 20, 99, invocation, 1));
-	assert(!se_exec_reader_authority_locked(&anchor, &binding, &task,
-		0, 11, 20, 99, invocation + 1, 1));
-	assert(!se_exec_reader_authority_locked(&anchor, &binding, &task,
-		0, 11, 20, 98, invocation, 1));
+	assert(se_exec_reader_authority_locked(&anchor, &binding, &task, 0, 11,
+					       20, 99, invocation, 1));
+	assert(!se_exec_reader_authority_locked(&anchor, &binding, &task, 0, 11,
+						20, 99, invocation + 1, 1));
+	assert(!se_exec_reader_authority_locked(&anchor, &binding, &task, 0, 11,
+						20, 98, invocation, 1));
 	struct se_binding_snapshots unpinned = binding;
 	unpinned.records[0].claims = 0;
-	assert(!se_exec_reader_authority_locked(&anchor, &unpinned, &task,
-		0, 11, 20, 99, invocation, 1));
+	assert(!se_exec_reader_authority_locked(&anchor, &unpinned, &task, 0,
+						11, 20, 99, invocation, 1));
 	struct se_route_anchor replaced = anchor;
 	replaced.incarnation = 0;
-	assert(!se_exec_reader_authority_locked(&replaced, &binding, &task,
-		0, 11, 20, 99, invocation, 1));
+	assert(!se_exec_reader_authority_locked(&replaced, &binding, &task, 0,
+						11, 20, 99, invocation, 1));
 	propose(&task);
 	/* Interpreter re-entry retains the complete original transaction and claim,
 	 * including nonzero proposals; a distinct bprm cannot replace either. */
@@ -598,8 +620,8 @@ int main(void)
 	task.committed.rows[1] = er_known_row(2, 21, 9);
 	assert(!se_exec_complete_locked(&task, &work, 1));
 	assert(!se_exec_reader_release_locked(&binding, &task, 99, invocation));
-	assert(!se_exec_reader_authority_locked(&anchor, &binding, &task,
-		0, 11, 20, 99, invocation, 1));
+	assert(!se_exec_reader_authority_locked(&anchor, &binding, &task, 0, 11,
+						20, 99, invocation, 1));
 	assert(se_exec_reader_release_locked(&binding, &task, 99, invocation));
 	assert(!binding.records[0].claims);
 	assert(task.committed.rows[0].role == 7 &&

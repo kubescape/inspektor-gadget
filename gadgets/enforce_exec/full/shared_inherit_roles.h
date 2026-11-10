@@ -8,8 +8,8 @@
  * physical-key exclusion or pool constructor lease). Preflight every fixed
  * row before the first write and publish version last. HASH and pool
  * adapters share role-copy semantics; this helper grants no ownership. */
-static inline __attribute__((always_inline)) int se_child_roles_publish(
-	struct er_state *child, const struct er_work *projected)
+static inline __attribute__((always_inline)) int
+se_child_roles_publish(struct er_state *child, const struct er_work *projected)
 {
 	if (!child || !projected || child->version)
 		return -1;
@@ -22,7 +22,7 @@ static inline __attribute__((always_inline)) int se_child_roles_publish(
 #ifdef ENFORCE_EXEC_ABI3_DEVELOPMENT
 		    || child->rows[j].knowledge || child->rows[j].reserved
 #endif
-		    )
+		)
 			return -1;
 	for (__u32 j = 0; j < 16; j++)
 		child->rows[j] = projected->rows[j];

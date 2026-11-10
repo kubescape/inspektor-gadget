@@ -16,8 +16,7 @@
 static __attribute__((always_inline)) inline struct se_policy_view *
 se_owk_view_from_identity(__u32 slot, __u64 cookie)
 {
-	if (slot >= SE_OWK_WORKS || !cookie ||
-	    cookie > SE_OWK_COOKIE_LIMIT)
+	if (slot >= SE_OWK_WORKS || !cookie || cookie > SE_OWK_COOKIE_LIMIT)
 		return 0;
 	struct se_owk_meta *meta = SE_OWK_META_LOOKUP(slot);
 	struct se_owk_charge *charge = SE_OWK_CHARGE_LOOKUP(slot);
@@ -25,28 +24,27 @@ se_owk_view_from_identity(__u32 slot, __u64 cookie)
 	if (!meta || !charge || !payload)
 		return 0;
 	bpf_spin_lock(&meta->lock);
-	int active = meta->phase == SE_OWK_ACTIVE &&
-		meta->active_leases == 1 && meta->owner_ref_held == 1 &&
-		!meta->cleanup_done && meta->cookie == cookie &&
-		meta->scope && meta->invocation_sequence &&
-		meta->owner_locator && meta->owner_cookie &&
-		meta->owner_slot < SE_OL_TASKS &&
-		meta->account_slot < SE_OWK_ACCOUNTS &&
-		meta->owner_slot / SE_OC_QUOTA == meta->account_slot &&
-		slot / SE_OWK_QUOTA == meta->account_slot &&
-		charge->state == SE_OWK_OWNED &&
-		charge->cookie == cookie &&
-		charge->scope == meta->scope &&
-		charge->incarnation == meta->incarnation &&
-		charge->owner_locator == meta->owner_locator &&
-		charge->owner_cookie == meta->owner_cookie &&
-		charge->owner_slot == meta->owner_slot &&
-		payload->semantic.scope == meta->scope &&
-		payload->semantic.cookie == cookie &&
-		payload->semantic.sequence == meta->invocation_sequence &&
-		payload->semantic.slot == slot && !payload->semantic.reserved &&
-		payload->semantic.view.scope_cookie == meta->scope &&
-		payload->semantic.view.ready == 1;
+	int active = meta->phase == SE_OWK_ACTIVE && meta->active_leases == 1 &&
+		     meta->owner_ref_held == 1 && !meta->cleanup_done &&
+		     meta->cookie == cookie && meta->scope &&
+		     meta->invocation_sequence && meta->owner_locator &&
+		     meta->owner_cookie && meta->owner_slot < SE_OL_TASKS &&
+		     meta->account_slot < SE_OWK_ACCOUNTS &&
+		     meta->owner_slot / SE_OC_QUOTA == meta->account_slot &&
+		     slot / SE_OWK_QUOTA == meta->account_slot &&
+		     charge->state == SE_OWK_OWNED &&
+		     charge->cookie == cookie && charge->scope == meta->scope &&
+		     charge->incarnation == meta->incarnation &&
+		     charge->owner_locator == meta->owner_locator &&
+		     charge->owner_cookie == meta->owner_cookie &&
+		     charge->owner_slot == meta->owner_slot &&
+		     payload->semantic.scope == meta->scope &&
+		     payload->semantic.cookie == cookie &&
+		     payload->semantic.sequence == meta->invocation_sequence &&
+		     payload->semantic.slot == slot &&
+		     !payload->semantic.reserved &&
+		     payload->semantic.view.scope_cookie == meta->scope &&
+		     payload->semantic.view.ready == 1;
 	bpf_spin_unlock(&meta->lock);
 	return active ? &payload->semantic.view : 0;
 }
@@ -67,16 +65,17 @@ se_owk_view_from_lexical_token(__u32 slot, __u64 cookie)
 	if (!meta || !payload)
 		return 0;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->phase == SE_OWK_ACTIVE &&
-		meta->active_leases == 1 && meta->owner_ref_held == 1 &&
-		!meta->cleanup_done && meta->cookie == cookie &&
-		meta->scope && meta->invocation_sequence &&
-		payload->semantic.scope == meta->scope &&
-		payload->semantic.cookie == cookie &&
-		payload->semantic.sequence == meta->invocation_sequence &&
-		payload->semantic.slot == slot && !payload->semantic.reserved &&
-		payload->semantic.view.scope_cookie == meta->scope &&
-		payload->semantic.view.ready == 1;
+	int exact = meta->phase == SE_OWK_ACTIVE && meta->active_leases == 1 &&
+		    meta->owner_ref_held == 1 && !meta->cleanup_done &&
+		    meta->cookie == cookie && meta->scope &&
+		    meta->invocation_sequence &&
+		    payload->semantic.scope == meta->scope &&
+		    payload->semantic.cookie == cookie &&
+		    payload->semantic.sequence == meta->invocation_sequence &&
+		    payload->semantic.slot == slot &&
+		    !payload->semantic.reserved &&
+		    payload->semantic.view.scope_cookie == meta->scope &&
+		    payload->semantic.view.ready == 1;
 	bpf_spin_unlock(&meta->lock);
 	return exact ? &payload->semantic.view : 0;
 }
@@ -86,17 +85,17 @@ se_owk_view_from_lexical_token(__u32 slot, __u64 cookie)
  * copied from a map or reconstructed from the current task is not enough.
  * The caller must keep this same handle, TASK lease and policy pins through
  * the last nested evaluator lookup; the token grants no additional lease. */
-static __attribute__((always_inline)) inline int se_owk_evaluator_token(
-	const struct se_owk_semantic_handle *handle,
-	struct fm_global_token *token)
+static __attribute__((always_inline)) inline int
+se_owk_evaluator_token(const struct se_owk_semantic_handle *handle,
+		       struct fm_global_token *token)
 {
 	if (!token)
 		return SE_OL_CORRUPT;
 	*token = (struct fm_global_token){};
-	if (!handle || handle->held != 1 || !handle->owner ||
-	    !handle->ticket || !handle->payload ||
-	    handle->owner->locked || handle->owner->lease.held != 1 ||
-	    handle->ticket->held != 1 || handle->ticket->stage != 3 ||
+	if (!handle || handle->held != 1 || !handle->owner || !handle->ticket ||
+	    !handle->payload || handle->owner->locked ||
+	    handle->owner->lease.held != 1 || handle->ticket->held != 1 ||
+	    handle->ticket->stage != 3 ||
 	    handle->owner->lease.locator != handle->ticket->owner_locator ||
 	    handle->owner->lease.cookie != handle->ticket->owner_cookie ||
 	    handle->owner->lease.slot != handle->ticket->owner_slot ||
@@ -105,14 +104,14 @@ static __attribute__((always_inline)) inline int se_owk_evaluator_token(
 	    handle->payload->semantic.scope != handle->ticket->scope ||
 	    handle->payload->semantic.cookie != handle->ticket->cookie ||
 	    handle->payload->semantic.sequence !=
-		handle->ticket->invocation_sequence ||
+		    handle->ticket->invocation_sequence ||
 	    handle->payload->semantic.slot != handle->ticket->work_slot ||
 	    !handle->payload->semantic.view.ready ||
 	    handle->payload->semantic.view.scope_cookie !=
-		handle->ticket->scope ||
+		    handle->ticket->scope ||
 	    se_owk_view_from_identity(handle->ticket->work_slot,
 				      handle->ticket->cookie) !=
-		&handle->payload->semantic.view)
+		    &handle->payload->semantic.view)
 		return SE_OL_CORRUPT;
 	*token = (struct fm_global_token){
 		.slot = handle->ticket->work_slot,

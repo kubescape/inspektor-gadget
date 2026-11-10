@@ -27,8 +27,8 @@ SEC("tc") int opaque_real_route_admission_probe(struct __sk_buff *skb)
 {
 	(void)skb;
 	__u32 zero = 0;
-	const __u32 *armed = bpf_map_lookup_elem(&opaque_real_route_probe_gate,
-					      &zero);
+	const __u32 *armed =
+		bpf_map_lookup_elem(&opaque_real_route_probe_gate, &zero);
 	if (!armed || *armed != 1)
 		return 0;
 	struct se_route_claim claim = {};
@@ -54,8 +54,8 @@ SEC("lsm/task_free")
 int BPF_PROG(opaque_real_route_final_free_probe, struct task_struct *physical)
 {
 	__u32 zero = 0;
-	const __u32 *armed = bpf_map_lookup_elem(&opaque_real_route_probe_gate,
-						      &zero);
+	const __u32 *armed =
+		bpf_map_lookup_elem(&opaque_real_route_probe_gate, &zero);
 	if (!armed || *armed != 1)
 		return 0;
 	struct se_of_lease lease = {};

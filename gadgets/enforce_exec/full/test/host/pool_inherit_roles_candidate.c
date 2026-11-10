@@ -6,7 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 #define ENFORCE_EXEC_ABI3_DEVELOPMENT 1
-static __u64 test_epoch(__u64 uid) { return uid ? 1 : 0; }
+static __u64 test_epoch(__u64 uid)
+{
+	return uid ? 1 : 0;
+}
 #define ER_ACCEPTED_EPOCH(uid) test_epoch(uid)
 #include "epoch_roles.h"
 #include "shared_inherit_roles.h"
@@ -32,16 +35,27 @@ int main(void)
 	assert(!memcmp(&child, &before, sizeof(child)));
 
 	const unsigned positions[] = { 0, 7, 15 };
-	for (unsigned i = 0; i < sizeof(positions) / sizeof(positions[0]); i++) {
+	for (unsigned i = 0; i < sizeof(positions) / sizeof(positions[0]);
+	     i++) {
 		for (unsigned field = 1; field <= 5; field++) {
 			child = (struct er_state){};
 			struct er_row *row = &child.rows[positions[i]];
 			switch (field) {
-			case 1: row->uid = 1; break;
-			case 2: row->epoch = 1; break;
-			case 3: row->role = 1; break;
-			case 4: row->knowledge = 1; break;
-			case 5: row->reserved = 1; break;
+			case 1:
+				row->uid = 1;
+				break;
+			case 2:
+				row->epoch = 1;
+				break;
+			case 3:
+				row->role = 1;
+				break;
+			case 4:
+				row->knowledge = 1;
+				break;
+			case 5:
+				row->reserved = 1;
+				break;
 			}
 			before = child;
 			assert(se_child_roles_publish(&child, &work) == -1);

@@ -5,7 +5,9 @@
 #include <string.h>
 typedef uint32_t __u32;
 typedef uint64_t __u64;
-struct bpf_spin_lock { int held; };
+struct bpf_spin_lock {
+	int held;
+};
 static void bpf_spin_lock(struct bpf_spin_lock *lock)
 {
 	assert(!lock->held);
@@ -20,11 +22,11 @@ static void bpf_spin_unlock(struct bpf_spin_lock *lock)
 #include "shared_policy_lookup.h"
 static struct se_shared_object object;
 static struct fm_blob cells[10];
-static inline const struct fm_blob *se_policy_physical(
-	void *context, fm_u32 slot, fm_u64 generation, fm_u32 key)
+static inline const struct fm_blob *
+se_policy_physical(void *context, fm_u32 slot, fm_u64 generation, fm_u32 key)
 {
-	return !context && !slot && generation == 1 && key < 10 ?
-		&cells[key] : 0;
+	return !context && !slot && generation == 1 && key < 10 ? &cells[key] :
+								  0;
 }
 static struct se_shared_object *object_lookup(const __u32 *slot)
 {
@@ -37,12 +39,16 @@ int main(void)
 {
 	const struct fe_header header = { .policies = 1, .rule_base = 9 };
 	const struct fe_policy policy = {
-		.uid = 1, .root_role = 1, .mode = 2,
+		.uid = 1,
+		.root_role = 1,
+		.mode = 2,
 	};
 	memcpy(&cells[0], &header, sizeof(header));
 	memcpy(&cells[1], &policy, sizeof(policy));
 	object.state = (struct se_object){
-		.generation = 1, .pins = 1, .length = 10,
+		.generation = 1,
+		.pins = 1,
+		.length = 10,
 	};
 	struct se_snapshot snapshot = {
 		.scope = 11, .serial = 5, .generation = 20,

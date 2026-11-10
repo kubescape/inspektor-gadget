@@ -24,8 +24,7 @@ int BPF_PROG(opaque_task_key_alloc_probe, struct task_struct *child,
 		return prior;
 	__u64 zero = 0;
 	/* &child is eight opaque bytes. Do not dereference or cast to an integer. */
-	if (bpf_map_update_elem(&opaque_task_keys, &child, &zero,
-				BPF_NOEXIST))
+	if (bpf_map_update_elem(&opaque_task_keys, &child, &zero, BPF_NOEXIST))
 		return prior;
 	__u64 *value = bpf_map_lookup_elem(&opaque_task_keys, &child);
 	if (value)

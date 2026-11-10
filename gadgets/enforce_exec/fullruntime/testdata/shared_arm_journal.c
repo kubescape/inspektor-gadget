@@ -66,8 +66,11 @@ static struct se_arm_request request(void)
 
 static struct se_arm_receipt receipt(void)
 {
-	return (struct se_arm_receipt){ .node_cookie = 4, .sequence = 8,
-		.generation = 3, .serial = 3, .operation = SE_ARM_COMMIT };
+	return (struct se_arm_receipt){ .node_cookie = 4,
+					.sequence = 8,
+					.generation = 3,
+					.serial = 3,
+					.operation = SE_ARM_COMMIT };
 }
 
 static void external_mutation_holds(int replace)
@@ -83,7 +86,8 @@ static void external_mutation_holds(int replace)
 	if (replace) {
 		assert(!unlinkat(dir_fd, "arm.journal", 0));
 		int other = openat(dir_fd, "arm.journal",
-				   O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+				   O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC,
+				   0600);
 		assert(other >= 0 && !close(other));
 	} else {
 		assert(!ftruncate(journal.fd, 0));
@@ -114,14 +118,17 @@ int main(void)
 	struct se_arm_journal second = {};
 	errno = 0;
 	assert(se_arm_journal_create_at(dir_fd, 4, &second) && errno == EEXIST);
-	assert(se_arm_journal_open_at(dir_fd, 4, &second)); /* exclusive writer */
+	assert(se_arm_journal_open_at(dir_fd, 4,
+				      &second)); /* exclusive writer */
 	assert(!second.initialized);
 	struct se_arm_transaction tx = {};
 	assert(!se_arm_tx_init(&tx, 4));
 	struct fixture_ctx fixture = { .journal = &journal };
 	struct se_arm_tx_ops ops = { .ctx = &fixture,
-		.journal = journal_append, .write_request = write_request,
-		.trigger_a = trigger_a, .state_proof = state_proof };
+				     .journal = journal_append,
+				     .write_request = write_request,
+				     .trigger_a = trigger_a,
+				     .state_proof = state_proof };
 	struct se_arm_request req = request();
 	assert(!se_arm_tx_stage(&tx, &req, &ops));
 	assert(fixture.writes == 1 && tx.phase == SE_ARM_TX_WRITTEN);
@@ -146,7 +153,8 @@ int main(void)
 	assert(journal.phase == SE_ARM_TX_EMPTY && journal.last_sequence == 8);
 	struct se_arm_transaction restored = {};
 	assert(!se_arm_journal_restore_hold(&journal, &restored));
-	assert(restored.phase == SE_ARM_TX_EMPTY && restored.last_sequence == 8);
+	assert(restored.phase == SE_ARM_TX_EMPTY &&
+	       restored.last_sequence == 8);
 	assert(se_arm_tx_stage(&restored, &req, &ops)); /* replay denied */
 	/* An unresolved WRITTEN record is recovered as a hold, not skipped. */
 	req.sequence = 9;

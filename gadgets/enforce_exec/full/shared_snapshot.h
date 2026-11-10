@@ -96,7 +96,7 @@ se_snapshot_prepare_locked(struct se_binding_snapshots *b, __u32 record,
 		return -1;
 	if (s->phase != SE_SNAPSHOT_FREE || s->commands || s->claims)
 		return -1;
-	/* Literal ticket offsets keep older verifiers inside the two-record map. */
+		/* Literal ticket offsets keep older verifiers inside the two-record map. */
 #ifdef __clang__
 #pragma unroll
 #endif
@@ -161,7 +161,7 @@ se_snapshot_command_begin_locked(struct se_binding_snapshots *b, __u32 record,
  * BEFORE this call; after it, only the local receipt/token may be touched. */
 static __attribute__((always_inline)) inline int
 se_snapshot_command_end_locked(struct se_binding_snapshots *b,
-						 struct se_snapshot_command *c)
+			       struct se_snapshot_command *c)
 {
 	if (!c->owned || c->reserved || c->record >= 2 || c->scope != b->scope)
 		return -1;
@@ -178,10 +178,8 @@ se_snapshot_command_end_locked(struct se_binding_snapshots *b,
 /* Object lock ONLY, with an already-owned snapshot command spanning this call.
  * The caller supplies the selected ticket pointer from that stable record. */
 static __attribute__((always_inline)) inline int
-se_ticket_pin_locked(struct se_object *o,
-				       struct se_pin_ticket *t,
-				       const struct se_snapshot_command *c,
-				       __u32 position)
+se_ticket_pin_locked(struct se_object *o, struct se_pin_ticket *t,
+		     const struct se_snapshot_command *c, __u32 position)
 {
 	if (!c->owned || c->kind != SE_COMMAND_PIN || c->reserved ||
 	    position >= 8 || t->scope != c->scope ||
@@ -199,10 +197,8 @@ se_ticket_pin_locked(struct se_object *o,
 	return 0;
 }
 static __attribute__((always_inline)) inline int
-se_ticket_release_locked(struct se_object *o,
-					   struct se_pin_ticket *t,
-					   const struct se_snapshot_command *c,
-					   __u32 position)
+se_ticket_release_locked(struct se_object *o, struct se_pin_ticket *t,
+			 const struct se_snapshot_command *c, __u32 position)
 {
 	if (!c->owned || c->kind != SE_COMMAND_RELEASE || c->reserved ||
 	    position >= 8 || t->scope != c->scope ||
@@ -295,8 +291,8 @@ se_binding_commit_preflight_locked(struct se_binding_snapshots *b, __u32 record,
 	__u32 n = s->count;
 	if (s->scope != b->scope || s->serial != serial ||
 	    s->phase != SE_SNAPSHOT_PREPARED || s->commands || s->claims ||
-	    !n || n > 8 || s->reserved ||
-	    s->execution_class < 1 || s->execution_class > 2)
+	    !n || n > 8 || s->reserved || s->execution_class < 1 ||
+	    s->execution_class > 2)
 		return -1;
 	for (__u32 i = 0; i < 8; i++) {
 		if (i >= n)
@@ -433,9 +429,10 @@ static inline int se_reader_acquire_locked(struct se_binding_snapshots *b,
 					       b->active_serial, scope,
 					       task_cookie, owner, token);
 }
-static __attribute__((always_inline)) inline int se_reader_release_locked(struct se_binding_snapshots *b,
-					   struct se_reader_owner *owner,
-					   const struct se_reader_token *token)
+static __attribute__((always_inline)) inline int
+se_reader_release_locked(struct se_binding_snapshots *b,
+			 struct se_reader_owner *owner,
+			 const struct se_reader_token *token)
 {
 	if (!owner->owned || owner->reserved || token->record >= 2 ||
 	    token->scope != b->scope || !token->sequence ||

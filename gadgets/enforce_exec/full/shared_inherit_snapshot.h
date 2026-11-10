@@ -22,9 +22,10 @@ static __always_inline __u32 se_inherit_ne64(__u64 a, __u64 b)
 #else
 #define SE_INHERIT_MATCH_ATTR __always_inline
 #endif
-static SE_INHERIT_MATCH_ATTR int se_inherit_snapshot_matches(
-	const struct se_route_claim *claim, const struct se_snapshot *snapshot,
-	const struct er_work *projected)
+static SE_INHERIT_MATCH_ATTR int
+se_inherit_snapshot_matches(const struct se_route_claim *claim,
+			    const struct se_snapshot *snapshot,
+			    const struct er_work *projected)
 {
 	if (!claim || !snapshot || !projected ||
 	    snapshot->scope != claim->scope ||
@@ -45,10 +46,14 @@ static SE_INHERIT_MATCH_ATTR int se_inherit_snapshot_matches(
 		for (__u32 j = 0; j < 16; j++) {
 			const struct er_row *row = &projected->rows[j];
 			int match =
-				(1U ^ se_inherit_ne64(row->uid,
-					snapshot->metadata.policy_uids[i])) &
-				(1U ^ se_inherit_ne64(row->epoch,
-					snapshot->metadata.root_epochs[i]));
+				(1U ^
+				 se_inherit_ne64(
+					 row->uid,
+					 snapshot->metadata.policy_uids[i])) &
+				(1U ^
+				 se_inherit_ne64(
+					 row->epoch,
+					 snapshot->metadata.root_epochs[i]));
 			found += match;
 			unknown |= match & !er_role_known(row);
 		}
@@ -96,10 +101,9 @@ static __always_inline int se_inherit_child_commit_locked(
 	    parent->eligibility_version != history->eligibility_version ||
 	    parent->committed.version != history->view.work.base_version ||
 	    child->scope_cookie != claim->scope ||
-	    child->scope_slot != claim->slot ||
-	    child->flags != SE_TASK_LIVE || child->committed.version ||
-	    child->exec.owned || child->reader.owned ||
-	    child->next_invocation)
+	    child->scope_slot != claim->slot || child->flags != SE_TASK_LIVE ||
+	    child->committed.version || child->exec.owned ||
+	    child->reader.owned || child->next_invocation)
 		return SE_INHERIT_COMMIT_STALE;
 	if (se_child_roles_publish(&child->committed, inherited))
 		return SE_INHERIT_COMMIT_PUBLISH_FAULT;

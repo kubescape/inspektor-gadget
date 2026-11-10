@@ -51,8 +51,9 @@ static int work_payload_zero(__u32 slot)
 	__u32 zero = 0;
 	const struct se_owk_payload *empty =
 		bpf_map_lookup_elem(&se_opaque_work_zero, &zero);
-	return empty ? bpf_map_update_elem(&se_opaque_work_payload,
-					&slot, empty, BPF_ANY) : -1;
+	return empty ? bpf_map_update_elem(&se_opaque_work_payload, &slot,
+					   empty, BPF_ANY) :
+		       -1;
 }
 static void *payload_lookup(__u32 slot)
 {
@@ -63,8 +64,9 @@ static int payload_zero(__u32 slot)
 	__u32 zero = 0;
 	const struct se_pool_task_wire *empty =
 		bpf_map_lookup_elem(&se_opaque_payload_zero, &zero);
-	return empty ? bpf_map_update_elem(&se_opaque_payload,
-					&slot, empty, BPF_ANY) : -1;
+	return empty ? bpf_map_update_elem(&se_opaque_payload, &slot, empty,
+					   BPF_ANY) :
+		       -1;
 }
 static const __u64 *opaque_lookup(const void *key)
 {
@@ -86,8 +88,10 @@ static const __u64 *archive_lookup(__u32 slot)
 static int insert_zero(const void *key)
 {
 	__u64 zero = 0;
-	return bpf_map_update_elem(&se_opaque_keys, key, &zero,
-				   BPF_NOEXIST) == 0 ? SE_OL_OK : SE_OL_CONTENDED;
+	return bpf_map_update_elem(&se_opaque_keys, key, &zero, BPF_NOEXIST) ==
+			       0 ?
+		       SE_OL_OK :
+		       SE_OL_CONTENDED;
 }
 static __u64 *writer_lookup(const void *key)
 {
@@ -95,8 +99,8 @@ static __u64 *writer_lookup(const void *key)
 }
 static int delete_key(const void *key)
 {
-	return bpf_map_delete_elem(&se_opaque_keys, key) == 0 ?
-		SE_OL_OK : SE_OL_CONTENDED;
+	return bpf_map_delete_elem(&se_opaque_keys, key) == 0 ? SE_OL_OK :
+								SE_OL_CONTENDED;
 }
 
 #endif

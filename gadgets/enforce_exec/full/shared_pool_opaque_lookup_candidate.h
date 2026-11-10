@@ -35,9 +35,13 @@ enum se_ol_result {
 	SE_OL_CORRUPT,
 };
 enum se_ol_phase {
-	SE_OL_FREE = 0, SE_OL_LIVE = 1, SE_OL_DEAD = 2,
-	SE_OL_INITIALIZING = 3, SE_OL_PENDING_BIRTH = 4,
-	SE_OL_CLEANING = 5, SE_OL_ABORTED = 6,
+	SE_OL_FREE = 0,
+	SE_OL_LIVE = 1,
+	SE_OL_DEAD = 2,
+	SE_OL_INITIALIZING = 3,
+	SE_OL_PENDING_BIRTH = 4,
+	SE_OL_CLEANING = 5,
+	SE_OL_ABORTED = 6,
 	SE_OL_ARCHIVE_ZEROED = 7,
 	SE_OL_REFUND_PENDING = 8,
 };
@@ -87,8 +91,8 @@ struct se_ol_meta {
 	__u32 account_slot, account_incarnation, work_refs, native_refs;
 	__u32 cleanup_done, cleanup_error, current_work_slot,
 		current_work_owned;
-	__u64 current_work_cookie, next_work_sequence,
-		last_reap_sequence, reserved2;
+	__u64 current_work_cookie, next_work_sequence, last_reap_sequence,
+		reserved2;
 };
 _Static_assert(sizeof(struct se_ol_meta) == 128,
 	       "test-only opaque metadata geometry");
@@ -106,7 +110,7 @@ struct se_ol_lease {
 };
 
 static __attribute__((always_inline)) inline int se_ol_decode(__u64 locator,
-						       __u32 *slot)
+							      __u32 *slot)
 {
 	__u32 candidate = (__u32)(locator & SE_OL_SLOT_MASK);
 	if (!slot || !locator || !(locator >> SE_OL_SLOT_BITS) ||
@@ -207,8 +211,8 @@ static inline int se_ol_hold_observation(struct se_ol_observation *observation)
 #else
 #define SE_OL_CANCEL_OBSERVATION_INLINE inline
 #endif
-static SE_OL_CANCEL_OBSERVATION_INLINE int se_ol_cancel_observation(
-	struct se_ol_observation *observation)
+static SE_OL_CANCEL_OBSERVATION_INLINE int
+se_ol_cancel_observation(struct se_ol_observation *observation)
 {
 	if (!observation || observation->stage != SE_OL_HELD ||
 	    !observation->meta)
@@ -233,7 +237,7 @@ static SE_OL_CANCEL_OBSERVATION_INLINE int se_ol_cancel_observation(
  * contradiction leaves it pinned for fault diagnosis instead of authorizing
  * the wrong task. */
 static inline int se_ol_relookup_convert(struct se_ol_observation *observation,
-					struct se_ol_lease *lease)
+					 struct se_ol_lease *lease)
 {
 	if (!observation || observation->stage != SE_OL_HELD ||
 	    !observation->meta || !observation->original_key || !lease ||
@@ -245,8 +249,8 @@ static inline int se_ol_relookup_convert(struct se_ol_observation *observation,
 	bpf_spin_lock(&meta->lock);
 	int result = SE_OL_OK;
 	if (meta->locator != observation->observed_locator ||
-	    meta->cookie != observation->held_cookie ||
-	    !meta->reader_holds || meta->reserved || meta->exclusive_owner) {
+	    meta->cookie != observation->held_cookie || !meta->reader_holds ||
+	    meta->reserved || meta->exclusive_owner) {
 		result = SE_OL_CORRUPT; /* retain hold; do not fake a release */
 	} else if (value != observation->observed_locator ||
 		   meta->phase != SE_OL_LIVE || meta->exclusive ||
@@ -262,8 +266,9 @@ static inline int se_ol_relookup_convert(struct se_ol_observation *observation,
 		meta->reader_holds--;
 		meta->active_leases++;
 		*lease = (struct se_ol_lease){ meta,
-			observation->observed_locator,
-			observation->held_cookie, observation->slot, 1 };
+					       observation->observed_locator,
+					       observation->held_cookie,
+					       observation->slot, 1 };
 		observation->stage = SE_OL_CONVERTED;
 	}
 	bpf_spin_unlock(&meta->lock);

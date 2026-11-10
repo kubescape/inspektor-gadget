@@ -6,10 +6,10 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#if defined(ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE) && \
-    (!defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_SEMANTIC_CANDIDATE) || \
-     !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_CANDIDATE))
+#if defined(ENFORCE_EXEC_STAGED_EVALUATOR_CANDIDATE) &&                \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_SEMANTIC_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_CONTINUATION_CANDIDATE))
 #error "staged observation overlay requires typed TASK/WORK continuation"
 #endif
 
@@ -187,10 +187,11 @@ int BPF_PROG(opaque_locator_charge_alloc_probe, struct task_struct *child,
 			  reservation.cookie, &opaque_key) != SE_OL_OK)
 		goto abort;
 	const __u64 *archive = archive_lookup(reservation.task_slot);
-	if (!archive || se_ow_insert_zero(reservation.meta,
-					reservation.cookie, archive) != SE_OL_OK ||
-	    se_ow_publish_zero(reservation.meta, reservation.cookie,
-				archive) != SE_OL_OK)
+	if (!archive ||
+	    se_ow_insert_zero(reservation.meta, reservation.cookie, archive) !=
+		    SE_OL_OK ||
+	    se_ow_publish_zero(reservation.meta, reservation.cookie, archive) !=
+		    SE_OL_OK)
 		goto abort;
 	if (se_op_finish_semantic_birth(&reservation) != SE_OL_OK)
 		goto abort;
@@ -228,8 +229,8 @@ int BPF_PROG(opaque_locator_route_claim_probe, struct task_struct *child,
 		route->execution_class = 2;
 		route->phase = SE_ROUTE_ACTIVE;
 	}
-	int admitted = se_route_claim_locked(route, se_route_locator(0, 1),
-					  1, &claim);
+	int admitted =
+		se_route_claim_locked(route, se_route_locator(0, 1), 1, &claim);
 	bpf_spin_unlock(&route->lock);
 	if (admitted != SE_ROUTE_OWNED)
 		return -1;
@@ -311,7 +312,8 @@ int BPF_PROG(opaque_locator_work_credit_probe, struct task_struct *child,
 		int begun = se_owk_begin(&owner, work_slot, &ticket);
 		if (begun == SE_OL_OK) {
 			if (se_owk_attach_owner(&owner, &ticket) == SE_OL_OK) {
-				if (se_owk_initialize_payload(&owner, &ticket) == SE_OL_OK &&
+				if (se_owk_initialize_payload(
+					    &owner, &ticket) == SE_OL_OK &&
 				    se_owk_commit(&owner, &ticket) == SE_OL_OK)
 					(void)se_owk_done(&owner, &ticket);
 				else

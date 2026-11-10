@@ -10,7 +10,8 @@ struct offset_gate {
 	__u32 profile, reserved;
 };
 struct offset_stats {
-	__u64 seen, full_copies, failed_copies, read_errors, incomplete, overflow;
+	__u64 seen, full_copies, failed_copies, read_errors, incomplete,
+		overflow;
 };
 struct offset_sample {
 	__u64 task, pid_tgid, bprm, pending, destination, requested;
@@ -47,11 +48,13 @@ SEC("kprobe/copy_strings.isra.0")
 int opaque_argv_copy_strings_postcopy(struct pt_regs *ctx)
 {
 	__u32 zero = 0;
-	const struct offset_gate *gate = bpf_map_lookup_elem(&argv_offset_gate, &zero);
+	const struct offset_gate *gate =
+		bpf_map_lookup_elem(&argv_offset_gate, &zero);
 	if (!gate || !gate->cgroup || gate->reserved ||
 	    bpf_get_current_cgroup_id() != gate->cgroup)
 		return 0;
-	struct offset_stats *stats = bpf_map_lookup_elem(&argv_offset_stats, &zero);
+	struct offset_stats *stats =
+		bpf_map_lookup_elem(&argv_offset_stats, &zero);
 	if (!stats)
 		return 0;
 	__sync_fetch_and_add(&stats->seen, 1);
@@ -64,14 +67,18 @@ int opaque_argv_copy_strings_postcopy(struct pt_regs *ctx)
 	if (gate->profile == 1) {
 		/* AL2023 6.12.113-138.209, copy_strings.isra.0+0x180. */
 		length = ctx->r15;
-		if (bpf_probe_read_kernel(&destination, sizeof(destination), (void *)stack) ||
-		    bpf_probe_read_kernel(&bprm, sizeof(bprm), (void *)(stack + 0x10)))
+		if (bpf_probe_read_kernel(&destination, sizeof(destination),
+					  (void *)stack) ||
+		    bpf_probe_read_kernel(&bprm, sizeof(bprm),
+					  (void *)(stack + 0x10)))
 			goto read_error;
 	} else if (gate->profile == 2) {
 		/* AL2023 6.18.56-125.164, copy_strings.isra.0+0x1ad. */
 		destination = ctx->r15;
-		if (bpf_probe_read_kernel(&length, sizeof(length), (void *)(stack + 0x10)) ||
-		    bpf_probe_read_kernel(&bprm, sizeof(bprm), (void *)(stack + 8)))
+		if (bpf_probe_read_kernel(&length, sizeof(length),
+					  (void *)(stack + 0x10)) ||
+		    bpf_probe_read_kernel(&bprm, sizeof(bprm),
+					  (void *)(stack + 8)))
 			goto read_error;
 	} else {
 		goto incomplete;
@@ -93,7 +100,8 @@ int opaque_argv_copy_strings_postcopy(struct pt_regs *ctx)
 		return 0;
 	}
 	__u32 slot = index;
-	struct offset_sample *sample = bpf_map_lookup_elem(&argv_offset_samples, &slot);
+	struct offset_sample *sample =
+		bpf_map_lookup_elem(&argv_offset_samples, &slot);
 	if (!sample)
 		goto incomplete;
 	sample->task = (__u64)bpf_get_current_task_btf();
@@ -103,7 +111,8 @@ int opaque_argv_copy_strings_postcopy(struct pt_regs *ctx)
 	sample->destination = destination;
 	sample->requested = length;
 	sample->captured = captured;
-	sample->error = bpf_probe_read_kernel(sample->bytes, captured, (void *)destination);
+	sample->error = bpf_probe_read_kernel(sample->bytes, captured,
+					      (void *)destination);
 	if (sample->error)
 		goto read_error;
 	return 0;

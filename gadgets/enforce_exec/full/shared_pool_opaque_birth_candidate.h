@@ -3,7 +3,7 @@
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_BIRTH_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_BIRTH_CANDIDATE_H
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE)
 #error "opaque birth requires exact route and semantic TASK candidates"
 #endif
 #include "shared_inherit_snapshot.h"
@@ -21,9 +21,9 @@
 #define SE_OP_PREPARE_CHILD_ATTR __attribute__((noinline))
 #define SE_OP_PUBLISH_SNAPSHOT_ATTR __attribute__((noinline))
 #endif
-static SE_OP_PREPARE_CHILD_ATTR int se_op_prepare_charged_child(
-	const struct se_route_claim *claim,
-	struct se_oc_reservation *reservation)
+static SE_OP_PREPARE_CHILD_ATTR int
+se_op_prepare_charged_child(const struct se_route_claim *claim,
+			    struct se_oc_reservation *reservation)
 {
 	if (!claim || !reservation)
 		return SE_OL_CORRUPT;
@@ -37,14 +37,16 @@ static SE_OP_PREPARE_CHILD_ATTR int se_op_prepare_charged_child(
 	if (status == SE_OL_OK)
 		return SE_OL_OK;
 	return se_op_abort_semantic_birth(reservation) == SE_OL_OK ?
-		status : SE_OL_CORRUPT;
+		       status :
+		       SE_OL_CORRUPT;
 }
 
 /* The child-role lexical lock has no lifetime across archive or directory
  * publication. Isolate its handle frame so the full callback does not keep
  * that stack quantum while finishing the charged TASK transaction. */
-static __attribute__((noinline)) int se_op_store_charged_child_roles(
-	struct se_oc_reservation *reservation, const struct er_work *projected)
+static __attribute__((noinline)) int
+se_op_store_charged_child_roles(struct se_oc_reservation *reservation,
+				const struct er_work *projected)
 {
 	struct se_op_child_roles_handle child_roles = {};
 	struct er_state *roles = 0;
@@ -70,9 +72,9 @@ static __attribute__((noinline)) int se_op_store_charged_child_roles(
  * transfer exclusive ownership by scalar CAS, and give the old charge its
  * DIR_DONE receipt before the new child becomes LIVE. */
 #define SE_OP_INSERT_RETRY 1
-static __attribute__((noinline)) int se_op_replace_charged_child(
-	struct se_oc_reservation *reservation, const void *opaque_key,
-	const void *archive)
+static __attribute__((noinline)) int
+se_op_replace_charged_child(struct se_oc_reservation *reservation,
+			    const void *opaque_key, const void *archive)
 {
 	struct se_ol_observation predecessor = {};
 	int status = se_ol_observe(opaque_key, &predecessor);
@@ -102,8 +104,8 @@ static __attribute__((noinline)) int se_op_replace_charged_child(
 #endif
 		goto abort;
 	}
-	status = se_ow_claim_replacement(reservation->meta,
-		reservation->cookie, &predecessor, archive);
+	status = se_ow_claim_replacement(reservation->meta, reservation->cookie,
+					 &predecessor, archive);
 	if (status != SE_OL_OK) {
 #ifdef SE_OP_REPLACE_FAILURE
 		SE_OP_REPLACE_FAILURE(3); /* test-only: claim lost */
@@ -112,12 +114,12 @@ static __attribute__((noinline)) int se_op_replace_charged_child(
 			goto fault; /* contradictory old hold: never invent release */
 		goto abort;
 	}
-	status = se_ow_publish_replacement(reservation->meta,
-		reservation->cookie, &predecessor, archive);
+	status = se_ow_publish_replacement(
+		reservation->meta, reservation->cookie, &predecessor, archive);
 	if (status != SE_OL_OK) {
 		if (predecessor.stage == SE_OL_EXCLUSIVE &&
-		    se_ow_cancel_replacement_claim(&predecessor,
-			reservation->locator) == SE_OL_OK)
+		    se_ow_cancel_replacement_claim(
+			    &predecessor, reservation->locator) == SE_OL_OK)
 			goto abort;
 		/* CAS_ATTEMPTED may have changed the directory. Keep both
 		 * charges pinned instead of aborting a possibly published child. */
@@ -128,26 +130,28 @@ static __attribute__((noinline)) int se_op_replace_charged_child(
 		return SE_OL_OK;
 abort:
 	return se_op_abort_semantic_birth(reservation) == SE_OL_OK ?
-		status : SE_OL_CORRUPT;
+		       status :
+		       SE_OL_CORRUPT;
 fault:
 	if (reservation->account_slot >= SE_OC_ACCOUNTS ||
 	    reservation->task_slot >= SE_OL_TASKS ||
 	    reservation->task_slot / SE_OC_QUOTA != reservation->account_slot)
 		return SE_OL_CORRUPT;
 	__u32 local = reservation->task_slot -
-		reservation->account_slot * SE_OC_QUOTA;
+		      reservation->account_slot * SE_OC_QUOTA;
 	if (local >= SE_OC_QUOTA)
 		return SE_OL_CORRUPT;
 	(void)se_oc_fault_exact(reservation->account, reservation->charge,
-		local, reservation->cookie);
+				local, reservation->cookie);
 	return SE_OL_CORRUPT;
 }
 
 /* The child-role lock is closed before archive/directory publication. Keep
  * these later fallible transitions in their own frame; every failure still
  * aborts the exact charged, unpublished constructor. */
-static __attribute__((noinline)) int se_op_finish_charged_child_publication(
-	struct se_oc_reservation *reservation, const void *opaque_key)
+static __attribute__((noinline)) int
+se_op_finish_charged_child_publication(struct se_oc_reservation *reservation,
+				       const void *opaque_key)
 {
 	int status = se_ow_archive(reservation->meta, reservation->task_slot,
 				   reservation->cookie, opaque_key);
@@ -165,8 +169,8 @@ static __attribute__((noinline)) int se_op_finish_charged_child_publication(
 	status = SE_OL_CORRUPT;
 	goto abort;
 #endif
-	status = se_ow_insert_zero(reservation->meta,
-				   reservation->cookie, archive);
+	status = se_ow_insert_zero(reservation->meta, reservation->cookie,
+				   archive);
 	/* Verifier-cost isolation only. This deliberately denies a contended
 	 * constructor after exact abort; it must never be used for policy. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_HANDOFF_STOP_BEFORE_REPLACEMENT
@@ -180,7 +184,7 @@ static __attribute__((noinline)) int se_op_finish_charged_child_publication(
 	 * the insertion once; a second collision or failure aborts exactly. */
 	if (status == SE_OL_CONTENDED) {
 		status = se_op_replace_charged_child(reservation, opaque_key,
-			archive);
+						     archive);
 		if (status != -1)
 			return status;
 		status = se_ow_insert_zero(reservation->meta,
@@ -195,8 +199,8 @@ static __attribute__((noinline)) int se_op_finish_charged_child_publication(
 	status = SE_OL_CORRUPT;
 	goto abort;
 #endif
-	status = se_ow_publish_zero(reservation->meta,
-				    reservation->cookie, archive);
+	status = se_ow_publish_zero(reservation->meta, reservation->cookie,
+				    archive);
 	if (status != SE_OL_OK)
 		goto abort;
 #ifdef SE_OP_ABORT_AFTER_PUBLISH_ZERO
@@ -211,7 +215,8 @@ static __attribute__((noinline)) int se_op_finish_charged_child_publication(
 		return SE_OL_OK;
 abort:
 	return se_op_abort_semantic_birth(reservation) == SE_OL_OK ?
-		status : SE_OL_CORRUPT;
+		       status :
+		       SE_OL_CORRUPT;
 }
 
 /* Caller must still own the same claim and charged constructor. The caller
@@ -221,17 +226,17 @@ abort:
  * projection; the parent-WORK path checks those before charge. It writes
  * roles before opaque-key directory publication. Any failure after
  * charge attempts exact abort, never a synthetic refund. */
-static SE_OP_PUBLISH_SNAPSHOT_ATTR int se_op_publish_charged_child_after_snapshot(
+static SE_OP_PUBLISH_SNAPSHOT_ATTR int
+se_op_publish_charged_child_after_snapshot(
 	const struct se_route_claim *claim, const struct se_snapshot *snapshot,
-	const struct er_work *projected,
-	const void *opaque_key, struct se_oc_reservation *reservation)
+	const struct er_work *projected, const void *opaque_key,
+	struct se_oc_reservation *reservation)
 {
 	if (!reservation)
 		return SE_OL_CORRUPT;
 	int status = SE_OL_CORRUPT;
 	if (!claim || !claim->owned || claim->reserved || !snapshot ||
-	    !projected ||
-	    projected->error || !projected->prepared ||
+	    !projected || projected->error || !projected->prepared ||
 	    !projected->authority_version || !opaque_key ||
 	    claim->scope != reservation->scope ||
 	    claim->incarnation != reservation->incarnation ||
@@ -257,7 +262,8 @@ static SE_OP_PUBLISH_SNAPSHOT_ATTR int se_op_publish_charged_child_after_snapsho
 	return se_op_finish_charged_child_publication(reservation, opaque_key);
 abort:
 	return se_op_abort_semantic_birth(reservation) == SE_OL_OK ?
-		status : SE_OL_CORRUPT;
+		       status :
+		       SE_OL_CORRUPT;
 }
 
 /* Standalone charged births keep the full snapshot check at final use.
@@ -275,7 +281,7 @@ static __attribute__((noinline)) int se_op_publish_charged_child(
 		(void)se_op_abort_semantic_birth(reservation);
 		return SE_OL_CORRUPT;
 	}
-	return se_op_publish_charged_child_after_snapshot(claim, snapshot,
-		projected, opaque_key, reservation);
+	return se_op_publish_charged_child_after_snapshot(
+		claim, snapshot, projected, opaque_key, reservation);
 }
 #endif

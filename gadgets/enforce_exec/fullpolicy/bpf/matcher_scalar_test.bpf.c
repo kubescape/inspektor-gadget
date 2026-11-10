@@ -2,13 +2,14 @@
 /* Copyright 2026 The Inspektor Gadget authors */
 /* TEST_RUN-only scalar-context verifier fixture; never attached. */
 struct fm_blob;
-static inline const struct fm_blob *lookup_scalar(unsigned int,
-					 unsigned long long, unsigned int);
+static inline const struct fm_blob *
+lookup_scalar(unsigned int, unsigned long long, unsigned int);
 #define FM_GLOBAL_SCALAR_BLOB_LOOKUP(slot, cookie, key) \
 	lookup_scalar((slot), (cookie), (key))
-#define FM_BLOB_LOOKUP(context, key) \
-	lookup_scalar(((const struct fm_global_token *)(context))->slot, \
-		      ((const struct fm_global_token *)(context))->cookie, (key))
+#define FM_BLOB_LOOKUP(context, key)                                       \
+	lookup_scalar(((const struct fm_global_token *)(context))->slot,   \
+		      ((const struct fm_global_token *)(context))->cookie, \
+		      (key))
 #include "matcher.h"
 
 #define SEC(name) __attribute__((section(name), used))
@@ -39,8 +40,8 @@ struct {
 	MAP_TYPE(value, struct matcher_scalar_input);
 } input_map SEC(".maps");
 static void *(*map_lookup)(void *, const void *) = (void *)1;
-static inline const struct fm_blob *lookup_scalar(
-	fm_u32 slot, fm_u64 cookie, fm_u32 key)
+static inline const struct fm_blob *lookup_scalar(fm_u32 slot, fm_u64 cookie,
+						  fm_u32 key)
 {
 	if (slot >= 2 || cookie != 101 + slot || key >= FM_MAX_ENTRIES)
 		return 0;
@@ -61,6 +62,7 @@ SEC("socket") int matcher_scalar(void *unused)
 		.cookie = input->cookie,
 	};
 	return fm_match_key(&token, input->pattern_key, input->bytes,
-			    input->length, scratch) + 1;
+			    input->length, scratch) +
+	       1;
 }
 char LICENSE[] SEC("license") = "GPL";

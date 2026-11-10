@@ -59,7 +59,7 @@ struct {
 
 SEC("lsm/task_alloc")
 long BPF_PROG(recovery_pidfd_task_alloc, struct task_struct *child,
-	     unsigned long clone_flags, int prior)
+	      unsigned long clone_flags, int prior)
 {
 	__s64 previous = (__s64)ctx[2];
 	if (previous < 0)
@@ -73,7 +73,8 @@ long BPF_PROG(recovery_pidfd_task_alloc, struct task_struct *child,
 	__u32 *count = bpf_map_lookup_elem(&recovery_alloc_count, &zero);
 	if (count) {
 		__u32 index = __sync_fetch_and_add(count, 1) & 31;
-		observation = bpf_map_lookup_elem(&recovery_alloc_observation, &index);
+		observation = bpf_map_lookup_elem(&recovery_alloc_observation,
+						  &index);
 	}
 	if (observation) {
 		observation->current = current;
@@ -81,7 +82,8 @@ long BPF_PROG(recovery_pidfd_task_alloc, struct task_struct *child,
 		observation->flags = clone_flags;
 		observation->guardian = control ? control->guardian_task : 0;
 		observation->prior = prior;
-		observation->recovery_phase = control ? control->recovery_phase : 0;
+		observation->recovery_phase =
+			control ? control->recovery_phase : 0;
 	}
 	volatile int result = se_rm_capture(child, clone_flags, 0);
 	/* The only nonzero transition result is intentional -EPERM; keep the

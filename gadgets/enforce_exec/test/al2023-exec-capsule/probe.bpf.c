@@ -16,7 +16,8 @@ struct se_route_anchor;
 struct se_exec_capsule;
 struct se_exec_marker;
 static __always_inline __u64 *fixture_locator(const __u64 *cgroup);
-static __always_inline struct se_route_anchor *fixture_anchor(const __u32 *slot);
+static __always_inline struct se_route_anchor *
+fixture_anchor(const __u32 *slot);
 static __always_inline struct se_exec_capsule *fixture_capsule(__u32 tgid);
 static __always_inline struct se_exec_marker *fixture_marker(__u32 pid);
 static __always_inline __u64 fixture_sequence(void);
@@ -33,14 +34,25 @@ _Static_assert(sizeof(struct se_route_anchor) == 104, "route layout");
 _Static_assert(sizeof(struct se_exec_capsule) == 104, "capsule layout");
 _Static_assert(sizeof(struct se_exec_marker) == 16, "marker layout");
 /* Offsets hard-coded by runner/main.go. */
-_Static_assert(__builtin_offsetof(struct se_route_anchor, execution_class) == 56, "class");
-_Static_assert(__builtin_offsetof(struct se_route_anchor, phase) == 60, "phase");
-_Static_assert(__builtin_offsetof(struct se_route_anchor, early_claims) == 64, "early");
-_Static_assert(__builtin_offsetof(struct se_route_anchor, source_pins) == 96, "pins");
-_Static_assert(__builtin_offsetof(struct se_route_anchor, unresolved_sources) == 100, "latch");
-_Static_assert(__builtin_offsetof(struct se_exec_capsule, phase) == 4, "capsule phase");
+_Static_assert(__builtin_offsetof(struct se_route_anchor, execution_class) ==
+		       56,
+	       "class");
+_Static_assert(__builtin_offsetof(struct se_route_anchor, phase) == 60,
+	       "phase");
+_Static_assert(__builtin_offsetof(struct se_route_anchor, early_claims) == 64,
+	       "early");
+_Static_assert(__builtin_offsetof(struct se_route_anchor, source_pins) == 96,
+	       "pins");
+_Static_assert(__builtin_offsetof(struct se_route_anchor, unresolved_sources) ==
+		       100,
+	       "latch");
+_Static_assert(__builtin_offsetof(struct se_exec_capsule, phase) == 4,
+	       "capsule phase");
 _Static_assert(__builtin_offsetof(struct se_exec_capsule, owner) +
-	__builtin_offsetof(struct se_source_mode_owner, owned) == 96, "owned");
+			       __builtin_offsetof(struct se_source_mode_owner,
+						  owned) ==
+		       96,
+	       "owned");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -194,12 +206,13 @@ int BPF_PROG(capsule_admit, struct linux_binprm *bprm, int prior)
 	__u64 cgroup = bpf_get_current_cgroup_id();
 	struct se_route_claim claim = {};
 	__u32 frozen = 0;
-	int result = se_cap_admit(tgid, task, (__u64)bprm, cgroup, &claim,
-				  &frozen);
+	int result =
+		se_cap_admit(tgid, task, (__u64)bprm, cgroup, &claim, &frozen);
 	if (claim.owned)
 		se_cap_drop_claim(&claim);
 	if (result != SE_ROUTE_UNSELECTED || frozen) {
-		struct observation *o = bpf_map_lookup_elem(&observations, &tgid);
+		struct observation *o =
+			bpf_map_lookup_elem(&observations, &tgid);
 		if (!o) {
 			struct observation empty = {};
 			(void)bpf_map_update_elem(&observations, &tgid, &empty,
@@ -209,7 +222,8 @@ int BPF_PROG(capsule_admit, struct linux_binprm *bprm, int prior)
 		if (o) {
 			__u32 n = o->count;
 			if (n < OBSERVATIONS) {
-				struct se_exec_capsule *c = fixture_capsule(tgid);
+				struct se_exec_capsule *c =
+					fixture_capsule(tgid);
 				o->admissions[n].cgroup = cgroup;
 				o->admissions[n].sequence = c ? c->sequence : 0;
 				o->admissions[n].result = result;

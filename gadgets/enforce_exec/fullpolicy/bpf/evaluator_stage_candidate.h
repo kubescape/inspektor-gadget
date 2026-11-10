@@ -23,7 +23,8 @@ struct fe_stage_cursor {
 };
 
 FE_INLINE int fe_stage_begin(void *blob_context, const struct fe_facts *f,
-			     struct fe_scratch *s, struct fe_stage_cursor *cursor)
+			     struct fe_scratch *s,
+			     struct fe_stage_cursor *cursor)
 {
 	if (!s || !cursor || cursor->state != FE_STAGE_EMPTY || !f)
 		return -1;
@@ -55,9 +56,12 @@ FE_INLINE int fe_stage_begin(void *blob_context, const struct fe_facts *f,
 		return -1;
 	}
 	*cursor = (struct fe_stage_cursor){
-		.generation = h->generation, .policies = h->policies,
-		.rules = h->rules, .state = h->rules ? FE_STAGE_ACTIVE :
-			FE_STAGE_READY, .allow_mode = 1, .deny_mode = 1,
+		.generation = h->generation,
+		.policies = h->policies,
+		.rules = h->rules,
+		.state = h->rules ? FE_STAGE_ACTIVE : FE_STAGE_READY,
+		.allow_mode = 1,
+		.deny_mode = 1,
 	};
 	return 0;
 }
@@ -68,9 +72,10 @@ FE_INLINE int fe_stage_advance(void *blob_context, const struct fe_facts *f,
 			       struct fe_scratch *s,
 			       struct fe_stage_cursor *cursor
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
-			       , struct fe_alt_request *alt_request
+			       ,
+			       struct fe_alt_request *alt_request
 #endif
-			       )
+)
 {
 	if (!f || !s || !cursor || cursor->state != FE_STAGE_ACTIVE ||
 	    cursor->next_rule >= cursor->rules || cursor->rules > 256)
@@ -86,7 +91,9 @@ FE_INLINE int fe_stage_advance(void *blob_context, const struct fe_facts *f,
 		return -1;
 	}
 	struct fe_eval_context e = {
-		.blob_context = blob_context, .facts = f, .scratch = s,
+		.blob_context = blob_context,
+		.facts = f,
+		.scratch = s,
 #ifdef FE_STAGED_OLD_KERNEL_RULE_WINDOW_DIAGNOSTIC
 		.alt_request = alt_request,
 #endif
@@ -94,7 +101,8 @@ FE_INLINE int fe_stage_advance(void *blob_context, const struct fe_facts *f,
 		.header = h,
 #endif
 		.matched = cursor->matched,
-		.allow_mode = cursor->allow_mode, .deny_mode = cursor->deny_mode,
+		.allow_mode = cursor->allow_mode,
+		.deny_mode = cursor->deny_mode,
 		.uncertain_deny = cursor->uncertain_deny,
 		.enforced_grants = cursor->enforced_grants,
 		.role_conflicts = cursor->role_conflicts,
@@ -103,7 +111,7 @@ FE_INLINE int fe_stage_advance(void *blob_context, const struct fe_facts *f,
 #endif
 	};
 #if defined(__bpf__) && defined(FE_BOUNDED_LOOP_CANDIDATE)
-	#pragma unroll
+#pragma unroll
 #endif
 	for (fm_u32 i = 0; i < FE_STAGE_RULES; i++) {
 		if (cursor->next_rule >= cursor->rules)
@@ -173,22 +181,22 @@ FE_INLINE int fe_stage_finish(void *blob_context, struct fe_scratch *s,
 		}
 	}
 #ifdef FE_AUDIT_ISOLATION
-	if (!cursor->matched && cursor->uncertain_allow &&
-	    s->decision.deny && cursor->deny_mode == 1) {
+	if (!cursor->matched && cursor->uncertain_allow && s->decision.deny &&
+	    cursor->deny_mode == 1) {
 		cursor->uncertain_deny = 1;
 		s->decision.audit_unknown |= FE_AUDIT_UNCERTAIN_FALLBACK |
-			FE_AUDIT_GLOBAL_SUPPRESS;
+					     FE_AUDIT_GLOBAL_SUPPRESS;
 	}
 #endif
 	s->decision.mode = s->decision.deny ? cursor->deny_mode :
-		cursor->allow_mode;
+					      cursor->allow_mode;
 	for (fm_u32 i = 0; i < 8; i++) {
 		if (s->decision.deny || cursor->uncertain_deny ||
 		    s->decision.error == FE_UNKNOWN ||
 		    (FE_ROLE_UNCERTAIN(s->decision.audit_unknown) & (1U << i)))
 			s->decision.proposed_roles[i] = 0;
 	}
-	return s->decision.error && s->decision.error != FE_AUDIT_UNKNOWN ?
-		-1 : 0;
+	return s->decision.error && s->decision.error != FE_AUDIT_UNKNOWN ? -1 :
+									    0;
 }
 #endif

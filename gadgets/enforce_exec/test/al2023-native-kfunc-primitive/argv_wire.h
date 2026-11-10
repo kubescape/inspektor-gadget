@@ -21,10 +21,12 @@ struct ig_argv_cursor {
 /* Output is write-only: concurrent output changes cannot control addressing or
  * progress. Return 1 on final NUL, 0 for more bytes, -1 on bound exhaustion. */
 static inline int ig_argv_append(struct ig_argv_result *out,
-	struct ig_argv_cursor *cursor, unsigned char byte)
+				 struct ig_argv_cursor *cursor,
+				 unsigned char byte)
 {
 	if (!cursor->argc || cursor->argc > IG_ARGV_MAX_ARGS ||
-	    cursor->strings >= cursor->argc || cursor->bytes >= IG_ARGV_MAX_BYTES)
+	    cursor->strings >= cursor->argc ||
+	    cursor->bytes >= IG_ARGV_MAX_BYTES)
 		return -1;
 	out->data[cursor->bytes++] = byte;
 	if (!byte) {

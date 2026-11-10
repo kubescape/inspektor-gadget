@@ -17,7 +17,8 @@
  * amd64 source, cgroup_id(cgrp) is cgrp->kn->id. Never arm a binding from an
  * A-side lock on another cgroup, even if it uses drain_offline=true. */
 static __always_inline int
-se_arm_target_cgroup_matches(__u64 observed, const struct se_route_anchor *route)
+se_arm_target_cgroup_matches(__u64 observed,
+			     const struct se_route_anchor *route)
 {
 	return observed && route && route->cgroup_identity == observed;
 }
@@ -25,10 +26,11 @@ se_arm_target_cgroup_matches(__u64 observed, const struct se_route_anchor *route
 /* Fallible. i is a constant slot. Empty cells may receive identity; an
  * occupied cell must already be this scope and UID, with epoch zero or the
  * same immutable value. */
-static __always_inline int
-se_arm_cell_ready(const struct se_route_anchor *a, const struct se_snapshot *s,
-		  const struct se_arm_request *req, struct se_epoch_cell *cell,
-		  __u32 i)
+static __always_inline int se_arm_cell_ready(const struct se_route_anchor *a,
+					     const struct se_snapshot *s,
+					     const struct se_arm_request *req,
+					     struct se_epoch_cell *cell,
+					     __u32 i)
 {
 	if (!cell || !a->scope || req->scope != a->scope || !req->epochs[i] ||
 	    req->epochs[i] != s->metadata.root_epochs[i] ||
@@ -44,12 +46,10 @@ se_arm_cell_ready(const struct se_route_anchor *a, const struct se_snapshot *s,
 }
 
 /* Distinct policies must not alias one cell. Slot indexes are constant. */
-static __always_inline int
-se_arm_epochs_ready(const struct se_route_anchor *a,
-		    const struct se_binding_snapshots *b,
-		    const struct se_snapshot *s,
-		    const struct se_arm_request *req,
-		    struct se_epoch_cell *cells[8])
+static __always_inline int se_arm_epochs_ready(
+	const struct se_route_anchor *a, const struct se_binding_snapshots *b,
+	const struct se_snapshot *s, const struct se_arm_request *req,
+	struct se_epoch_cell *cells[8])
 {
 	if (!a->scope || a->scope != b->scope || !cells ||
 	    s->count != req->count)
@@ -59,48 +59,43 @@ se_arm_epochs_ready(const struct se_route_anchor *a,
 	if (req->count > 1 &&
 	    (cells[1] == cells[0] || se_arm_cell_ready(a, s, req, cells[1], 1)))
 		return -1;
-	if (req->count > 2 &&
-	    (cells[2] == cells[0] || cells[2] == cells[1] ||
-	     se_arm_cell_ready(a, s, req, cells[2], 2)))
+	if (req->count > 2 && (cells[2] == cells[0] || cells[2] == cells[1] ||
+			       se_arm_cell_ready(a, s, req, cells[2], 2)))
 		return -1;
 	if (req->count > 3 &&
 	    (cells[3] == cells[0] || cells[3] == cells[1] ||
-	     cells[3] == cells[2] ||
-	     se_arm_cell_ready(a, s, req, cells[3], 3)))
+	     cells[3] == cells[2] || se_arm_cell_ready(a, s, req, cells[3], 3)))
 		return -1;
-	if (req->count > 4 &&
-	    (cells[4] == cells[0] || cells[4] == cells[1] ||
-	     cells[4] == cells[2] || cells[4] == cells[3] ||
-	     se_arm_cell_ready(a, s, req, cells[4], 4)))
+	if (req->count > 4 && (cells[4] == cells[0] || cells[4] == cells[1] ||
+			       cells[4] == cells[2] || cells[4] == cells[3] ||
+			       se_arm_cell_ready(a, s, req, cells[4], 4)))
 		return -1;
 	if (req->count > 5 &&
 	    (cells[5] == cells[0] || cells[5] == cells[1] ||
 	     cells[5] == cells[2] || cells[5] == cells[3] ||
-	     cells[5] == cells[4] ||
-	     se_arm_cell_ready(a, s, req, cells[5], 5)))
+	     cells[5] == cells[4] || se_arm_cell_ready(a, s, req, cells[5], 5)))
 		return -1;
-	if (req->count > 6 &&
-	    (cells[6] == cells[0] || cells[6] == cells[1] ||
-	     cells[6] == cells[2] || cells[6] == cells[3] ||
-	     cells[6] == cells[4] || cells[6] == cells[5] ||
-	     se_arm_cell_ready(a, s, req, cells[6], 6)))
+	if (req->count > 6 && (cells[6] == cells[0] || cells[6] == cells[1] ||
+			       cells[6] == cells[2] || cells[6] == cells[3] ||
+			       cells[6] == cells[4] || cells[6] == cells[5] ||
+			       se_arm_cell_ready(a, s, req, cells[6], 6)))
 		return -1;
 	if (req->count > 7 &&
 	    (cells[7] == cells[0] || cells[7] == cells[1] ||
 	     cells[7] == cells[2] || cells[7] == cells[3] ||
 	     cells[7] == cells[4] || cells[7] == cells[5] ||
-	     cells[7] == cells[6] ||
-	     se_arm_cell_ready(a, s, req, cells[7], 7)))
+	     cells[7] == cells[6] || se_arm_cell_ready(a, s, req, cells[7], 7)))
 		return -1;
 	return 0;
 }
 
 /* Infallible continuation. Only prevalidated slots are written. No lookup,
  * lock, helper or failure path belongs here. */
-static __always_inline void
-se_arm_store_slot(struct se_epoch_cell *cell, const struct se_route_anchor *a,
-		  const struct se_snapshot *s, const struct se_arm_request *req,
-		  __u32 i)
+static __always_inline void se_arm_store_slot(struct se_epoch_cell *cell,
+					      const struct se_route_anchor *a,
+					      const struct se_snapshot *s,
+					      const struct se_arm_request *req,
+					      __u32 i)
 {
 	cell->scope = a->scope;
 	cell->uid = s->metadata.policy_uids[i];
@@ -120,15 +115,15 @@ se_arm_index_decision(const __u32 *have, __u32 bank,
 		return -1;
 	if (have)
 		return *have == bank ? 0 : -1;
-	empty = !cell->scope && !cell->uid && !cell->epoch && !cell->reserved0 &&
-		!cell->reserved1;
+	empty = !cell->scope && !cell->uid && !cell->epoch &&
+		!cell->reserved0 && !cell->reserved1;
 	same = cell->scope == scope && cell->uid == uid && cell->epoch &&
 	       cell->epoch != ~0ULL && !cell->reserved0 && !cell->reserved1;
 	return empty || same ? 1 : -1;
 }
-static __always_inline int
-se_arm_uids_match(const struct se_snapshot *s, const struct se_arm_request *req,
-		  const __u64 uid[8])
+static __always_inline int se_arm_uids_match(const struct se_snapshot *s,
+					     const struct se_arm_request *req,
+					     const __u64 uid[8])
 {
 	if (!s || !req)
 		return -1;
@@ -151,10 +146,9 @@ se_arm_uids_match(const struct se_snapshot *s, const struct se_arm_request *req,
 	return 0;
 }
 
-static __always_inline void
-se_arm_store_epochs(struct se_epoch_cell *cells[8],
-		    const struct se_route_anchor *a,
-		    const struct se_snapshot *s, const struct se_arm_request *req)
+static __always_inline void se_arm_store_epochs(
+	struct se_epoch_cell *cells[8], const struct se_route_anchor *a,
+	const struct se_snapshot *s, const struct se_arm_request *req)
 {
 	if (req->count > 0)
 		se_arm_store_slot(cells[0], a, s, req, 0);
@@ -197,7 +191,7 @@ se_arm_commit_locked(int from_barrier, struct se_route_anchor *a,
 					b->generation + 1) ||
 	    se_arm_epochs_ready(a, b, s, req, cells) ||
 	    se_route_commit_preflight_locked(a, b, record, req->serial,
-					      req->qualification))
+					     req->qualification))
 		return -1;
 	se_arm_store_epochs(cells, a, s, req);
 	se_route_commit_publish_locked(a, b, record);
@@ -211,7 +205,8 @@ se_arm_withdraw_locked(int from_barrier, struct se_route_anchor *a,
 {
 	if (!from_barrier || !a || !b || !req || req->reserved ||
 	    req->operation != SE_ARM_WITHDRAW || !req->scope ||
-	    req->scope != a->scope || req->expected_generation != b->generation ||
+	    req->scope != a->scope ||
+	    req->expected_generation != b->generation ||
 	    req->qualification != a->admission_serial)
 		return -1;
 	__u64 generation = b->generation;
@@ -255,11 +250,9 @@ struct {
  * PREPARING. A reader seeing it early cannot claim the route. Commit must
  * revalidate this exact locator before changing the locked phase to ACTIVE. */
 #define SE_ARM_ROUTE_STAGE_CANDIDATE 4
-static __always_inline int
-se_arm_route_stage_candidate(struct se_route_anchor *route,
-			     struct se_shared_binding *binding,
-			     const struct se_arm_request *req, __u32 slot,
-			     __u64 observed_cgroup)
+static __always_inline int se_arm_route_stage_candidate(
+	struct se_route_anchor *route, struct se_shared_binding *binding,
+	const struct se_arm_request *req, __u32 slot, __u64 observed_cgroup)
 {
 	if (req->record >= 2 || !req->scope || !req->serial)
 		return -1;
@@ -269,14 +262,12 @@ se_arm_route_stage_candidate(struct se_route_anchor *route,
 		&binding->state.records[req->record & 1];
 	if (route->phase == SE_ROUTE_PREPARING && route->incarnation &&
 	    route->cgroup_identity == observed_cgroup &&
-	    route->scope == req->scope &&
-	    route->payload_slot == slot &&
+	    route->scope == req->scope && route->payload_slot == slot &&
 	    route->admission_serial == req->qualification &&
 	    binding->state.scope == req->scope &&
 	    binding->state.generation == req->expected_generation &&
 	    binding->state.admission_serial == req->qualification &&
-	    snapshot->scope == req->scope &&
-	    snapshot->serial == req->serial &&
+	    snapshot->scope == req->scope && snapshot->serial == req->serial &&
 	    snapshot->phase == SE_SNAPSHOT_PREPARED) {
 		cgroup = route->cgroup_identity;
 		locator = se_route_locator(slot, route->incarnation);
@@ -306,9 +297,9 @@ se_arm_route_stage_candidate(struct se_route_anchor *route,
 	return valid ? 0 : -1;
 }
 #endif
-static __always_inline int
-se_arm_bind_one(__u64 scope, __u64 uid, __u32 bank, struct se_epoch_cell *cell,
-		__u32 *created)
+static __always_inline int se_arm_bind_one(__u64 scope, __u64 uid, __u32 bank,
+					   struct se_epoch_cell *cell,
+					   __u32 *created)
 {
 	struct se_epoch_key key = { scope, uid };
 	const __u32 *have;
@@ -368,8 +359,8 @@ se_arm_rollback_bound(__u64 scope, const __u64 uid[8], const __u32 created[8],
 }
 /* Fallible, and only before the route lock. Record is a constant 0 or 1 so
  * the verifier keeps the binding pointer. A spilled snapshot pointer does not. */
-static __always_inline void
-se_arm_take_uids(const struct se_snapshot *s, __u32 count, __u64 uid[8])
+static __always_inline void se_arm_take_uids(const struct se_snapshot *s,
+					     __u32 count, __u64 uid[8])
 {
 	if (count > 0)
 		uid[0] = s->metadata.policy_uids[0];
@@ -388,11 +379,10 @@ se_arm_take_uids(const struct se_snapshot *s, __u32 count, __u64 uid[8])
 	if (count > 7)
 		uid[7] = s->metadata.policy_uids[7];
 }
-static __always_inline int
-se_arm_bind_loaded(struct se_binding_snapshots *b,
-		   const struct se_arm_request *req,
-		   struct se_epoch_cell *cells[8], __u64 uid[8],
-		   __u32 created[8])
+static __always_inline int se_arm_bind_loaded(struct se_binding_snapshots *b,
+					      const struct se_arm_request *req,
+					      struct se_epoch_cell *cells[8],
+					      __u64 uid[8], __u32 created[8])
 {
 	if (!b || !req || req->record >= 2)
 		return -1;
@@ -450,7 +440,8 @@ se_arm_bind_loaded(struct se_binding_snapshots *b,
 }
 /* Commit does not insert. A missing index is a separate bind barrier so the
  * verifier does not explore map updates inside the publication preflight. */
-static __always_inline int se_arm_require_one(__u64 scope, __u64 uid, __u32 bank,
+static __always_inline int se_arm_require_one(__u64 scope, __u64 uid,
+					      __u32 bank,
 					      struct se_epoch_cell *cell)
 {
 	struct se_epoch_key key = { scope, uid };
@@ -469,36 +460,35 @@ se_arm_require_loaded(struct se_binding_snapshots *b,
 		se_arm_take_uids(&b->records[0], req->count, uid);
 	else
 		se_arm_take_uids(&b->records[1], req->count, uid);
-	if (req->count > 0 &&
-	    se_arm_require_one(req->scope, uid[0], req->bank_index[0], cells[0]))
+	if (req->count > 0 && se_arm_require_one(req->scope, uid[0],
+						 req->bank_index[0], cells[0]))
 		return -1;
-	if (req->count > 1 &&
-	    se_arm_require_one(req->scope, uid[1], req->bank_index[1], cells[1]))
+	if (req->count > 1 && se_arm_require_one(req->scope, uid[1],
+						 req->bank_index[1], cells[1]))
 		return -1;
-	if (req->count > 2 &&
-	    se_arm_require_one(req->scope, uid[2], req->bank_index[2], cells[2]))
+	if (req->count > 2 && se_arm_require_one(req->scope, uid[2],
+						 req->bank_index[2], cells[2]))
 		return -1;
-	if (req->count > 3 &&
-	    se_arm_require_one(req->scope, uid[3], req->bank_index[3], cells[3]))
+	if (req->count > 3 && se_arm_require_one(req->scope, uid[3],
+						 req->bank_index[3], cells[3]))
 		return -1;
-	if (req->count > 4 &&
-	    se_arm_require_one(req->scope, uid[4], req->bank_index[4], cells[4]))
+	if (req->count > 4 && se_arm_require_one(req->scope, uid[4],
+						 req->bank_index[4], cells[4]))
 		return -1;
-	if (req->count > 5 &&
-	    se_arm_require_one(req->scope, uid[5], req->bank_index[5], cells[5]))
+	if (req->count > 5 && se_arm_require_one(req->scope, uid[5],
+						 req->bank_index[5], cells[5]))
 		return -1;
-	if (req->count > 6 &&
-	    se_arm_require_one(req->scope, uid[6], req->bank_index[6], cells[6]))
+	if (req->count > 6 && se_arm_require_one(req->scope, uid[6],
+						 req->bank_index[6], cells[6]))
 		return -1;
-	if (req->count > 7 &&
-	    se_arm_require_one(req->scope, uid[7], req->bank_index[7], cells[7]))
+	if (req->count > 7 && se_arm_require_one(req->scope, uid[7],
+						 req->bank_index[7], cells[7]))
 		return -1;
 	return 0;
 }
 
-static __always_inline int
-se_arm_load_cells(const struct se_arm_request *req,
-		  struct se_epoch_cell *cells[8])
+static __always_inline int se_arm_load_cells(const struct se_arm_request *req,
+					     struct se_epoch_cell *cells[8])
 {
 	if (!req->count || req->count > 8)
 		return -1;
@@ -559,12 +549,13 @@ se_arm_load_cells(const struct se_arm_request *req,
  * lifetime, migration, v1 hierarchy and rollback still need qualification. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRCTL_ARM_CANDIDATE
 #if !defined(ENFORCE_EXEC_SHARED_RECOVERY) || \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE)
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE)
 #error "prctl arm candidate requires recovered physical admin"
 #endif
 SEC("lsm/task_prctl")
 int BPF_PROG(se_publication_arm, int option, unsigned long arg2,
-	     unsigned long arg3, unsigned long arg4, unsigned long arg5, int prior)
+	     unsigned long arg3, unsigned long arg4, unsigned long arg5,
+	     int prior)
 {
 	(void)arg2;
 	(void)arg3;
@@ -599,18 +590,20 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 #endif
 	__u32 zero = 0;
 	const struct se_node_config *config = SE_CONFIG_LOOKUP(&zero);
-	const struct se_arm_request *input = bpf_map_lookup_elem(&se_arm_requests, &zero);
+	const struct se_arm_request *input =
+		bpf_map_lookup_elem(&se_arm_requests, &zero);
 #ifdef ENFORCE_EXEC_SHARED_RECOVERY
 	int administrator = input && config &&
-		se_rm_command_authorized(config->node_cookie);
+			    se_rm_command_authorized(config->node_cookie);
 #else
 	const __u64 *admin = SE_ADMIN_LOOKUP();
 #endif
-	struct se_arm_receipt *receipt = bpf_map_lookup_elem(&se_arm_receipts, &zero);
+	struct se_arm_receipt *receipt =
+		bpf_map_lookup_elem(&se_arm_receipts, &zero);
 #ifdef ENFORCE_EXEC_SHARED_RECOVERY
-	if (!se_profile_matches(config) || !input || !administrator || !receipt ||
-	    input->node_cookie != config->node_cookie || input->reserved ||
-	    !input->sequence || input->sequence == ~0ULL ||
+	if (!se_profile_matches(config) || !input || !administrator ||
+	    !receipt || input->node_cookie != config->node_cookie ||
+	    input->reserved || !input->sequence || input->sequence == ~0ULL ||
 	    (receipt->node_cookie &&
 	     receipt->node_cookie != config->node_cookie) ||
 	    input->sequence <= receipt->sequence)
@@ -627,12 +620,12 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 #endif
 	struct se_arm_frame *frame = bpf_map_lookup_elem(&se_arm_frame, &zero);
 	if (!frame) {
-		*receipt = (struct se_arm_receipt){
-			.node_cookie = config->node_cookie,
-			.sequence = input->sequence,
-			.operation = input->operation,
-			.status = 1
-		};
+		*receipt =
+			(struct se_arm_receipt){ .node_cookie =
+							 config->node_cookie,
+						 .sequence = input->sequence,
+						 .operation = input->operation,
+						 .status = 1 };
 		return 0;
 	}
 	__builtin_memcpy(&frame->req, input, sizeof(frame->req));
@@ -641,12 +634,12 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 	struct se_shared_binding *binding = SE_BINDING_LOOKUP(&key);
 	struct se_route_anchor *route = SE_ROUTE_LOOKUP(&key);
 	if (!binding || !route || key >= config->bindings) {
-		*receipt = (struct se_arm_receipt){
-			.node_cookie = config->node_cookie,
-			.sequence = reqp->sequence,
-			.operation = reqp->operation,
-			.status = 1
-		};
+		*receipt =
+			(struct se_arm_receipt){ .node_cookie =
+							 config->node_cookie,
+						 .sequence = reqp->sequence,
+						 .operation = reqp->operation,
+						 .status = 1 };
 		return 0;
 	}
 #ifdef ENFORCE_EXEC_SHARED_RECOVERY
@@ -660,7 +653,7 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRCTL_ARM_CANDIDATE
 	if (reqp->operation == SE_ARM_ROUTE_STAGE_CANDIDATE) {
 		int staged = se_arm_route_stage_candidate(route, binding, reqp,
-						     key, observed_cgroup);
+							  key, observed_cgroup);
 		*receipt = (struct se_arm_receipt){
 			.node_cookie = config->node_cookie,
 			.sequence = reqp->sequence,
@@ -671,10 +664,9 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 		return 0;
 	}
 #endif
-	const struct se_snapshot *snap = reqp->record < 2 ?
-						 &binding->state.records[reqp->record &
-									 1] :
-						 0;
+	const struct se_snapshot *snap =
+		reqp->record < 2 ? &binding->state.records[reqp->record & 1] :
+				   0;
 	struct se_epoch_cell *cells[8] = {};
 	__u64 bound_uid[8] = {};
 	__u32 created[8] = {};
@@ -685,13 +677,12 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 		if (bound)
 			se_arm_rollback_bound(reqp->scope, bound_uid, created,
 					      cells);
-		*receipt = (struct se_arm_receipt){
-			.node_cookie = config->node_cookie,
-			.sequence = reqp->sequence,
-			.operation = SE_ARM_BIND,
-			.status = bound ? 1 : 0,
-			.value = route->phase
-		};
+		*receipt = (struct se_arm_receipt){ .node_cookie =
+							    config->node_cookie,
+						    .sequence = reqp->sequence,
+						    .operation = SE_ARM_BIND,
+						    .status = bound ? 1 : 0,
+						    .value = route->phase };
 		return 0;
 	}
 	int loaded = reqp->operation == SE_ARM_COMMIT && snap &&
@@ -718,7 +709,8 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 				se_arm_uids_match(&binding->state.records[1],
 						  reqp, bound_uid);
 	int result_code = -1;
-	if (reqp->operation == SE_ARM_COMMIT && !loaded && !indexed && !uid_match
+	if (reqp->operation == SE_ARM_COMMIT && !loaded && !indexed &&
+	    !uid_match
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRCTL_ARM_CANDIDATE
 	    && route_indexed && route_cgroup == observed_cgroup &&
 	    route->cgroup_identity == route_cgroup &&
@@ -732,8 +724,8 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 		 && route->cgroup_identity == observed_cgroup
 #endif
 	)
-		result_code = se_arm_withdraw_locked(1, route, &binding->state,
-						     reqp);
+		result_code =
+			se_arm_withdraw_locked(1, route, &binding->state, reqp);
 	__u64 generation = binding->state.generation;
 	__u64 serial = binding->state.active_serial;
 	__u32 phase = route->phase;
@@ -751,8 +743,9 @@ int BPF_PROG(se_publication_arm, struct kernfs_node *kn, bool drain,
 #endif
 	*receipt = (struct se_arm_receipt){ .node_cookie = config->node_cookie,
 					    .sequence = reqp->sequence,
-					    .generation = result_code ? 0 :
-									generation,
+					    .generation = result_code ?
+								  0 :
+								  generation,
 					    .serial = result_code ? 0 : serial,
 					    .operation = reqp->operation,
 					    .status = result_code ? 1 : 0,

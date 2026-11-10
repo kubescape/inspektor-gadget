@@ -2,10 +2,10 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #ifndef ENFORCE_EXEC_SHARED_POOL_REAPER_CONTROL_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_REAPER_CONTROL_CANDIDATE_H
-#if !defined(ENFORCE_EXEC_SHARED_RECOVERY) || \
-    !(defined(ENFORCE_EXEC_POOL_DEVELOPMENT) && \
-      defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY)) && \
-    !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE)
+#if !defined(ENFORCE_EXEC_SHARED_RECOVERY) ||               \
+	!(defined(ENFORCE_EXEC_POOL_DEVELOPMENT) &&         \
+	  defined(ENFORCE_EXEC_POOL_ABI_CANDIDATE_ONLY)) && \
+		!defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE)
 #error "reaper control requires a recovered typed or opaque pool candidate"
 #endif
 #if !defined(SE_POOL_T) || !defined(SE_POOL_W)
@@ -95,30 +95,28 @@ se_pool_reap_begin(const struct se_pool_request *wire,
  * fault receipt, advances only actual visits, consumes the epoch/sequence and
  * releases BUSY. It must never be mistaken for a successful 32/32 scan. A
  * malformed frame or changed control retains BUSY as an invariant fault. */
-static __attribute__((always_inline)) inline int
-se_pool_reap_epilogue(struct se_pool_control *control,
-		      struct se_pool_receipt *receipt,
-		      const struct se_pool_request *accepted,
-		      const struct se_pool_reap_progress *progress,
-		      int incomplete)
+static __attribute__((always_inline)) inline int se_pool_reap_epilogue(
+	struct se_pool_control *control, struct se_pool_receipt *receipt,
+	const struct se_pool_request *accepted,
+	const struct se_pool_reap_progress *progress, int incomplete)
 {
 	if (!control || !receipt || !accepted || !progress)
 		return SE_POOL_REAP_FAULT;
 	int result = SE_POOL_REAP_FAULT;
 	bpf_spin_lock(&control->lock);
 	const __u32 next_task = (__u32)(((__u64)control->task_cursor +
-		progress->task_examined) % SE_POOL_T);
+					 progress->task_examined) %
+					SE_POOL_T);
 	const __u32 next_work = (__u32)(((__u64)control->work_cursor +
-		progress->work_examined) % SE_POOL_W);
+					 progress->work_examined) %
+					SE_POOL_W);
 	const int full = progress->task_examined == accepted->task_budget &&
-		progress->work_examined == accepted->work_budget;
+			 progress->work_examined == accepted->work_budget;
 	if (accepted->abi == SE_POOL_REAP_ABI &&
-	    accepted->operation == SE_POOL_REAP_STEP &&
-	    !accepted->reserved0 && !accepted->reserved1 &&
-	    accepted->task_budget ==
-		(SE_POOL_T < 32u ? SE_POOL_T : 32u) &&
-	    accepted->work_budget ==
-		(SE_POOL_W < 32u ? SE_POOL_W : 32u) &&
+	    accepted->operation == SE_POOL_REAP_STEP && !accepted->reserved0 &&
+	    !accepted->reserved1 &&
+	    accepted->task_budget == (SE_POOL_T < 32u ? SE_POOL_T : 32u) &&
+	    accepted->work_budget == (SE_POOL_W < 32u ? SE_POOL_W : 32u) &&
 	    control->flags == SE_POOL_REAP_BUSY &&
 	    control->node_incarnation == accepted->node_incarnation &&
 	    control->last_admin_generation == accepted->admin_generation &&
@@ -126,17 +124,18 @@ se_pool_reap_epilogue(struct se_pool_control *control,
 	    control->scan_epoch == accepted->expected_epoch &&
 	    progress->task_examined <= accepted->task_budget &&
 	    progress->work_examined <= accepted->work_budget &&
-	    (incomplete ? !full : full) &&
-	    progress->task_cursor == next_task &&
+	    (incomplete ? !full : full) && progress->task_cursor == next_task &&
 	    progress->work_cursor == next_work &&
 	    (__u64)progress->task_reclaimed + progress->task_pending +
-		progress->task_faults <= progress->task_examined &&
+			    progress->task_faults <=
+		    progress->task_examined &&
 	    (__u64)progress->work_reclaimed + progress->work_pending +
-		progress->work_faults <= progress->work_examined) {
+			    progress->work_faults <=
+		    progress->work_examined) {
 		*receipt = (struct se_pool_receipt){
 			.abi = SE_POOL_REAP_ABI,
 			.status = incomplete ? SE_POOL_REAP_FAULT :
-				SE_POOL_REAP_ACCEPT,
+					       SE_POOL_REAP_ACCEPT,
 			.node_incarnation = accepted->node_incarnation,
 			.admin_generation = accepted->admin_generation,
 			.reap_sequence = accepted->reap_sequence,

@@ -50,29 +50,30 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 	if (se_ol_decode(locator, &task_slot) != SE_OL_OK)
 		return 0;
 	struct se_ol_meta *task = SE_OL_META_LOOKUP(task_slot);
-	struct se_pool_task_wire *task_payload = SE_OL_PAYLOAD_LOOKUP(task_slot);
+	struct se_pool_task_wire *task_payload =
+		SE_OL_PAYLOAD_LOOKUP(task_slot);
 	if (!task || !task_payload)
 		return 0;
 	__u64 task_cookie = 0, work_cookie = 0, invocation = 0;
 	__u32 work_slot = 0, account_slot = 0, incarnation = 0;
 	bpf_spin_lock(&task->lock);
 	int live = task->phase == SE_OL_LIVE &&
-		task->directory_state == SE_OL_PUBLISHED &&
-		task->archive_ready == 1 && !task->reserved &&
-		!task->exclusive && !task->exclusive_owner &&
-		task->locator == locator && task->cookie &&
-		task->account_scope == expected_scope &&
-		task->account_slot < SE_OC_ACCOUNTS &&
-		task->account_incarnation && task->work_refs &&
-		task->current_work_owned == 1 &&
-		task->current_work_slot < SE_OWK_WORKS &&
-		task->current_work_cookie && task->next_work_sequence &&
-		!task_payload->identity.reserved_lock &&
-		!task_payload->identity.identity_reserved &&
-		(task_payload->identity.flags & SE_OL_TASK_LIVE) &&
-		task_payload->identity.physical_cookie == task->cookie &&
-		task_payload->identity.scope_cookie == expected_scope &&
-		task_payload->identity.scope_slot == task->account_slot;
+		   task->directory_state == SE_OL_PUBLISHED &&
+		   task->archive_ready == 1 && !task->reserved &&
+		   !task->exclusive && !task->exclusive_owner &&
+		   task->locator == locator && task->cookie &&
+		   task->account_scope == expected_scope &&
+		   task->account_slot < SE_OC_ACCOUNTS &&
+		   task->account_incarnation && task->work_refs &&
+		   task->current_work_owned == 1 &&
+		   task->current_work_slot < SE_OWK_WORKS &&
+		   task->current_work_cookie && task->next_work_sequence &&
+		   !task_payload->identity.reserved_lock &&
+		   !task_payload->identity.identity_reserved &&
+		   (task_payload->identity.flags & SE_OL_TASK_LIVE) &&
+		   task_payload->identity.physical_cookie == task->cookie &&
+		   task_payload->identity.scope_cookie == expected_scope &&
+		   task_payload->identity.scope_slot == task->account_slot;
 	if (live) {
 		task_cookie = task->cookie;
 		work_cookie = task->current_work_cookie;
@@ -96,7 +97,8 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 		return 0;
 	struct se_oc_account *task_account = SE_OC_ACCOUNT_LOOKUP(account_slot);
 	struct se_oc_charge *task_charge = SE_OC_CHARGE_LOOKUP(task_slot);
-	struct se_owk_account *work_account = SE_OWK_ACCOUNT_LOOKUP(account_slot);
+	struct se_owk_account *work_account =
+		SE_OWK_ACCOUNT_LOOKUP(account_slot);
 	struct se_owk_charge *work_charge = SE_OWK_CHARGE_LOOKUP(work_slot);
 	struct se_owk_meta *work = SE_OWK_META_LOOKUP(work_slot);
 	struct se_owk_payload *payload = SE_OWK_PAYLOAD_LOOKUP(work_slot);
@@ -104,7 +106,8 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 	    !work || !payload)
 		return 0;
 	bpf_spin_lock(&task_account->lock);
-	int task_charged = !task_account->fault && !task_account->reserved &&
+	int task_charged =
+		!task_account->fault && !task_account->reserved &&
 		task_account->scope == expected_scope &&
 		task_account->incarnation == incarnation &&
 		task_account->used && task_account->used <= SE_OC_QUOTA &&
@@ -120,7 +123,8 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 	if (!task_charged)
 		return 0;
 	bpf_spin_lock(&work_account->lock);
-	int work_charged = !work_account->fault && !work_account->reserved &&
+	int work_charged =
+		!work_account->fault && !work_account->reserved &&
 		work_account->scope == expected_scope &&
 		work_account->incarnation == incarnation &&
 		work_account->used && work_account->used <= SE_OWK_QUOTA &&
@@ -137,10 +141,11 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 	if (!work_charged)
 		return 0;
 	bpf_spin_lock(&work->lock);
-	int suspended = work->phase == SE_OWK_SUSPENDED &&
-		work->active_leases == 0 && work->owner_ref_held == 1 &&
-		!work->cleanup_done &&
-		work->continuation_reserved == (operation == 2 || operation == 3) &&
+	int suspended =
+		work->phase == SE_OWK_SUSPENDED && work->active_leases == 0 &&
+		work->owner_ref_held == 1 && !work->cleanup_done &&
+		work->continuation_reserved ==
+			(operation == 2 || operation == 3) &&
 		work->continuation_stage == expected_stage &&
 		work->cookie == work_cookie && work->scope == expected_scope &&
 		work->account_slot == account_slot &&
@@ -163,12 +168,12 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 	 * map pointer is carried into the evaluator's nested callbacks. */
 	bpf_spin_lock(&task->lock);
 	live = task->phase == SE_OL_LIVE && task->locator == locator &&
-		task->cookie == task_cookie &&
-		task->account_scope == expected_scope &&
-		task->current_work_owned == 1 &&
-		task->current_work_slot == work_slot &&
-		task->current_work_cookie == work_cookie &&
-		task->next_work_sequence == invocation;
+	       task->cookie == task_cookie &&
+	       task->account_scope == expected_scope &&
+	       task->current_work_owned == 1 &&
+	       task->current_work_slot == work_slot &&
+	       task->current_work_cookie == work_cookie &&
+	       task->next_work_sequence == invocation;
 	bpf_spin_unlock(&task->lock);
 	if (!live || operation == 0 || operation == 3)
 		return live ? payload : 0;
@@ -177,9 +182,9 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 	 * recheck the exact suspended identity under the WORK lock before the
 	 * single transition. This leaves no caller-controlled claim API. */
 	bpf_spin_lock(&work->lock);
-	suspended = work->phase == SE_OWK_SUSPENDED &&
-		work->active_leases == 0 && work->owner_ref_held == 1 &&
-		!work->cleanup_done &&
+	suspended =
+		work->phase == SE_OWK_SUSPENDED && work->active_leases == 0 &&
+		work->owner_ref_held == 1 && !work->cleanup_done &&
 		work->continuation_reserved == (operation == 2) &&
 		work->continuation_stage == expected_stage &&
 		work->cookie == work_cookie && work->scope == expected_scope &&
@@ -203,11 +208,11 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 }
 
 #ifdef ENFORCE_EXEC_SUSPENDED_EVAL_READER_DIAGNOSTIC
-static __attribute__((noinline)) int se_owk_commit_suspended_stage(
-	struct se_owk_payload *payload, __u64 scope, __u32 stage)
+static __attribute__((noinline)) int
+se_owk_commit_suspended_stage(struct se_owk_payload *payload, __u64 scope,
+			      __u32 stage)
 {
-	if (!payload || !scope || !stage ||
-	    stage >= SE_OWK_CONTINUATION_MAX)
+	if (!payload || !scope || !stage || stage >= SE_OWK_CONTINUATION_MAX)
 		return SE_OL_CORRUPT;
 	__u32 slot = payload->semantic.slot;
 	__u64 cookie = payload->semantic.cookie;
@@ -218,9 +223,10 @@ static __attribute__((noinline)) int se_owk_commit_suspended_stage(
 	if (!meta)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	int exact = meta->phase == SE_OWK_SUSPENDED &&
-		meta->active_leases == 0 && meta->owner_ref_held == 1 &&
-		!meta->cleanup_done && meta->continuation_reserved == 1 &&
+	int exact =
+		meta->phase == SE_OWK_SUSPENDED && meta->active_leases == 0 &&
+		meta->owner_ref_held == 1 && !meta->cleanup_done &&
+		meta->continuation_reserved == 1 &&
 		meta->continuation_stage == stage && meta->cookie == cookie &&
 		meta->scope == scope && meta->invocation_sequence &&
 		payload->semantic.scope == scope &&
@@ -254,17 +260,18 @@ se_owk_suspended_view_from_token(__u32 slot, __u64 cookie)
 		return 0;
 	bpf_spin_lock(&meta->lock);
 	int exact = meta->phase == SE_OWK_SUSPENDED &&
-		meta->active_leases == 0 && meta->owner_ref_held == 1 &&
-		!meta->cleanup_done && meta->continuation_reserved == 1 &&
-		meta->continuation_stage == SE_OWK_EVAL_VIEW_STAGE &&
-		meta->cookie == cookie &&
-		meta->scope && meta->invocation_sequence &&
-		payload->semantic.scope == meta->scope &&
-		payload->semantic.cookie == cookie &&
-		payload->semantic.sequence == meta->invocation_sequence &&
-		payload->semantic.slot == slot && !payload->semantic.reserved &&
-		payload->semantic.view.scope_cookie == meta->scope &&
-		payload->semantic.view.ready == 1;
+		    meta->active_leases == 0 && meta->owner_ref_held == 1 &&
+		    !meta->cleanup_done && meta->continuation_reserved == 1 &&
+		    meta->continuation_stage == SE_OWK_EVAL_VIEW_STAGE &&
+		    meta->cookie == cookie && meta->scope &&
+		    meta->invocation_sequence &&
+		    payload->semantic.scope == meta->scope &&
+		    payload->semantic.cookie == cookie &&
+		    payload->semantic.sequence == meta->invocation_sequence &&
+		    payload->semantic.slot == slot &&
+		    !payload->semantic.reserved &&
+		    payload->semantic.view.scope_cookie == meta->scope &&
+		    payload->semantic.view.ready == 1;
 	bpf_spin_unlock(&meta->lock);
 	return exact ? &payload->semantic.view : 0;
 }

@@ -21,8 +21,8 @@ SEC("raw_tp/sched_process_fork")
 int observe_successful_fork(struct bpf_raw_tracepoint_args *ctx)
 {
 	__u32 zero = 0;
-	struct birth_identity_observation *o = bpf_map_lookup_elem(
-		&birth_identity_observation, &zero);
+	struct birth_identity_observation *o =
+		bpf_map_lookup_elem(&birth_identity_observation, &zero);
 	if (!o || o->parent_tgid != bpf_get_current_pid_tgid() >> 32)
 		return 0;
 	struct task_struct *parent = (void *)ctx->args[0];
