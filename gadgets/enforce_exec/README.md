@@ -1,11 +1,18 @@
 # enforce_exec
 
 This page describes the **simple path-only engine**. The separate experimental
-[full engine and persistent owner](fullruntime/README.md) add richer predicates
-and role history, with different admission, reload and failure behavior. The
-simple engine's kernel baseline and `BindRestricted` support do **not** establish
-full-engine support: the persistent owner currently admits only two exact custom
-amd64 kernel artifacts, not stock kernels or arm64.
+[full engine and legacy per-binding `Owner`](fullruntime/README.md) add richer
+predicates and role history, with different admission, reload and failure
+behavior. The simple engine's kernel baseline and `BindRestricted` support do
+**not** establish full-engine support: the legacy owner currently admits only two
+exact custom amd64 kernel artifacts, not stock kernels or arm64. Its isolated
+proofs do not qualify the unfinished [shared-node replacement](fullruntime/README.md#shared-node-implementation-status-and-api-contracts),
+whose `NodeEnforcer.Ready` never reports Ready.
+
+The shared-node Go compiler/worker accounting and source-checking tools are
+implemented only within the [conditional worker qualification scope](fullruntime/README.md#conditional-shared-worker-qualification).
+They do not produce complete worker evidence or qualify native activation; the
+legacy proofs and simple-engine behavior below do not fill those gaps.
 
 Container execution enforcement using BPF LSM. The gadget image contains a fixed
 BPF program; a native Go controller supplies compiled rules and manages container
