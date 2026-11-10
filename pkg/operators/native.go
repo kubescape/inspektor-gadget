@@ -20,6 +20,18 @@ const (
 	// The native resource validator must still admit the exact recovered image.
 	NativeRecoveryTestRunKey = "ebpf/native-recovery-test-run"
 	NativeAttachmentPrefix   = "attachment/"
+	// NativeAttachReserveKey optionally holds an int: the trampoline links per
+	// hook (R) a native family must leave free for third parties. Absent means
+	// nativeattach.DefaultReservePerHook. Ordinary gadgets ignore it.
+	NativeAttachReserveKey = "ebpf/native-attach-reserve"
+	// NativeAttachRetryKey optionally overrides the attach retry of a native
+	// family. Absent means nativeattach.DefaultRetry: a family refused for
+	// attach capacity stays NotReady (logged, naming the target) and retries
+	// the whole transaction with capped exponential backoff until it attaches
+	// or the gadget context is done. A nativeattach.Retry replaces the default
+	// (reporting through Retry.State); false opts out and refuses at once, as
+	// the legacy per-cgroup Owner does. Ordinary gadgets ignore it.
+	NativeAttachRetryKey = "ebpf/native-attach-retry"
 	// NativeLoadedProgramPrefix borrows every program in the exact admitted
 	// recovered collection for H's pin/FD ledger. It is not an invocation
 	// permission and is absent for ordinary or protocol-only images.

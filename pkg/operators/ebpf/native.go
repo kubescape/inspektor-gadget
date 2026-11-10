@@ -4,6 +4,7 @@
 package ebpfoperator
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cilium/ebpf"
@@ -74,6 +75,7 @@ func (i *ebpfInstance) validateNativeResources(gc operators.GadgetContext) error
 		}
 		i.recoveryTestRunAdmitted = true
 	}
+	i.nativeTxn = true
 	return nil
 }
 
@@ -103,12 +105,22 @@ func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name 
 	}
 	info, err := l.Info()
 	if err != nil || info == nil || info.ID == 0 || info.Program == 0 {
+		if i.nativeTxn {
+			// Native consumers require every receipt; never publish a partial set.
+			if err == nil {
+				err = errors.New("incomplete link info")
+			}
+			return fmt.Errorf("native receipt for %s unavailable: %w", name, err)
+		}
 		return nil
 	}
 	receipt := &operators.NativeAttachment{
 		Type: uint32(p.Type), LinkID: uint32(info.ID), ProgramID: uint32(info.Program),
 		Target: i.programAttachTarget(p),
 		Check:  nativeAttachmentCheck(name, info.ID, info.Type, info.Program, l.Info),
+	}
+	if i.nativeTxn {
+		receipt.Check = nativeReadinessCheck(name, receipt.Target, info, receipt.Check, nativeLinkLookup)
 	}
 	if i.recoveryTestRunSelected && i.recoveryTestRunAdmitted &&
 		p.Type == ebpf.LSM && info.Type == link.TracingType &&

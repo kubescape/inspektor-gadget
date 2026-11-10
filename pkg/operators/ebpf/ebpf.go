@@ -227,6 +227,11 @@ type ebpfInstance struct {
 	nativeAttachments map[string]*operators.NativeAttachment
 	perfFds           []int
 
+	// nativeTxn is set once a native resource validator admitted the final
+	// collection. Only then is attach transactional (nativeattach); ordinary
+	// gadgets keep the original attach loop.
+	nativeTxn bool
+
 	// rawDetachers undo BPF_PROG_ATTACH attachments that don't return a Link
 	// (sk_skb stream_parser/verdict). Run on Stop().
 	rawDetachers []func() error
@@ -1107,42 +1112,30 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 		return err
 	}
 
-	// Attach programs
-	for progName, p := range i.collectionSpec.Programs {
-		l, err := i.attachProgram(gadgetCtx, p, i.collection.Programs[progName])
-		if err != nil {
-			return fmt.Errorf("attaching eBPF program %q: %w", progName, err)
-		}
-
-		if l == nil {
-			continue
-		}
-
-		i.links = append(i.links, l)
-		if err = i.publishNativeAttachment(gadgetCtx, progName, p, l); err != nil {
+	// Attach programs. Native (enforcement) collections attach transactionally;
+	// see attachNativeProgramsRetrying. Ordinary gadgets keep this loop unchanged.
+	if i.nativeTxn {
+		if err := i.attachNativeProgramsRetrying(gadgetCtx); err != nil {
 			return err
 		}
-
-		// We need to store iterators' links because we need them to run the programs
-		if p.Type == ebpf.Tracing && strings.HasPrefix(p.SectionName, iterPrefix) {
-			lIter, ok := l.(*link.Iter)
-			if !ok {
-				return fmt.Errorf("link is not an iterator")
+	} else {
+		for progName, p := range i.collectionSpec.Programs {
+			l, err := i.attachProgram(gadgetCtx, p, i.collection.Programs[progName])
+			if err != nil {
+				return fmt.Errorf("attaching eBPF program %q: %w", progName, err)
 			}
 
-			found := false
-			for _, iter := range i.iterators {
-				if _, ok := iter.iterators[progName]; ok {
-					iter.links[progName] = &linkIterator{
-						link: lIter,
-						typ:  p.AttachTo,
-					}
-					found = true
-					break
-				}
+			if l == nil {
+				continue
 			}
-			if !found {
-				i.logger.Warnf("No iterator will run iterator program %q", progName)
+
+			i.links = append(i.links, l)
+			if err = i.publishNativeAttachment(gadgetCtx, progName, p, l); err != nil {
+				return err
+			}
+
+			if err := i.registerIteratorLink(progName, p, l); err != nil {
+				return err
 			}
 		}
 	}
@@ -1162,6 +1155,30 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	// type/line info that the GC cannot otherwise reclaim.
 	i.collectionSpec = nil
 
+	return nil
+}
+
+// registerIteratorLink stores iterators' links because we need them to run
+// the programs.
+func (i *ebpfInstance) registerIteratorLink(progName string, p *ebpf.ProgramSpec, l link.Link) error {
+	if p.Type != ebpf.Tracing || !strings.HasPrefix(p.SectionName, iterPrefix) {
+		return nil
+	}
+	lIter, ok := l.(*link.Iter)
+	if !ok {
+		return fmt.Errorf("link is not an iterator")
+	}
+
+	for _, iter := range i.iterators {
+		if _, ok := iter.iterators[progName]; ok {
+			iter.links[progName] = &linkIterator{
+				link: lIter,
+				typ:  p.AttachTo,
+			}
+			return nil
+		}
+	}
+	i.logger.Warnf("No iterator will run iterator program %q", progName)
 	return nil
 }
 
