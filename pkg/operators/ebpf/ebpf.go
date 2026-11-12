@@ -454,6 +454,11 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 	// Create network tracers, one for each socket filter program
 	// The same applies to uprobe / uretprobe as well.
 	for _, p := range i.collectionSpec.Programs {
+		// A program that is not loaded needs no tracer. An invalid
+		// load value fails later, in dropUnloadedPrograms.
+		if loaded, err := i.programLoaded(p); err == nil && !loaded {
+			continue
+		}
 		switch p.Type {
 		case ebpf.Kprobe:
 			if strings.HasPrefix(p.SectionName, "uprobe/") ||
@@ -923,6 +928,11 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 			continue
 		}
 		m.MaxEntries = maxEntries
+	}
+
+	// The final configuration is known here: drop the programs not to load.
+	if err := i.dropUnloadedPrograms(); err != nil {
+		return err
 	}
 
 	i.logger.Debugf("creating ebpf collection")
