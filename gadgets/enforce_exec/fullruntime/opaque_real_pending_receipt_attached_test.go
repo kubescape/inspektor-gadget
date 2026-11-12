@@ -53,6 +53,16 @@ func runOpaqueRealPendingReceiptAttached(t *testing.T, collection *ebpf.Collecti
 	if err := collection.Maps["se_exec_terminal_receipts"].Lookup(physical, &receipt); !errors.Is(err, ebpf.ErrKeyNotExist) {
 		t.Fatalf("stale test-only receipt remains: raw=%x err=%v", receipt, err)
 	}
+	// G019 gap 4: an injected receipt at a first admission is pending, never
+	// an interpreter continuation (no continued pass, no refusal reason).
+	if stats := collection.Maps[InterpContinuationStatsMap]; stats != nil {
+		for i := uint32(0); i < InterpContinuationStats; i++ {
+			var n uint64
+			if err := stats.Lookup(i, &n); err != nil || n != 0 {
+				t.Fatalf("pending receipt reached the interpreter continuation: cell %d = %d err=%v", i, n, err)
+			}
+		}
+	}
 	t.Logf("mismatched pending terminal refused and TASK quarantined: physical=%#x live_cookie=%d stale_cookie=%d",
 		physical, currentCookie, currentCookie+1)
 	// Existing missing-target helper checks no policy witness/WORK charge and

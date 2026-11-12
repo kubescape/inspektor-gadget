@@ -32,6 +32,8 @@ func (i *ebpfInstance) nativeResources() *operators.NativeResources {
 	for n, p := range i.collectionSpec.Programs {
 		r.Programs[n] = operators.NativeProgramResource{Type: uint32(p.Type), Target: i.programAttachTarget(p), Instructions: uint64(len(p.Instructions)) * 2}
 	}
+	// Invalid declarations are refused by validateNativeResources.
+	r.TailCalls, _ = i.nativeTailCalls()
 	return r
 }
 
@@ -60,6 +62,9 @@ func (i *ebpfInstance) validateNativeResources(gc operators.GadgetContext) error
 	validate, ok := value.(func(*operators.NativeResources) error)
 	if !ok || validate == nil {
 		return fmt.Errorf("invalid native resource validator")
+	}
+	if _, err := i.nativeTailCalls(); err != nil {
+		return err
 	}
 	for name, m := range i.collectionSpec.Maps {
 		if err := validateNativeMapPinning(name, m, 0); err != nil {
@@ -100,7 +105,8 @@ func validateNativeMapPinning(name string, m *ebpf.MapSpec, depth int) error {
 func (i *ebpfInstance) publishNativeAttachment(gc operators.GadgetContext, name string, p *ebpf.ProgramSpec, l link.Link) error {
 	// Optional receipts must not regress ordinary tracers on link types/kernels
 	// without Info support. Native consumers fail closed on the absent receipt.
-	if p.Type != ebpf.LSM && p.Type != ebpf.Tracing {
+	// Native transactions also receipt their kprobe and raw_tp links.
+	if p.Type != ebpf.LSM && p.Type != ebpf.Tracing && (!i.nativeTxn || (p.Type != ebpf.Kprobe && p.Type != ebpf.RawTracepoint)) {
 		return nil
 	}
 	info, err := l.Info()

@@ -24,11 +24,16 @@ import (
 )
 
 // candidateAttachSet is what the qualified exec candidate loader
-// (TestOpaqueRealPolicyVerdictAttached) keeps attached in steady state. The
-// 11 other bprm_check_security programs of g25final128 are tail-call
-// targets, and the two bootstrap programs are closed after bootstrap.
+// (TestOpaqueRealPolicyVerdictAttached) keeps attached in steady state: the
+// 8-link product shape (fullruntime sharedCandidateAttachSet), task_free 2
+// (the product release and the exec capsule's death retire), task_alloc 1,
+// bprm_execve 3, creds_for_exec 1, bprm_check 1. The other
+// bprm_check_security programs are tail-call targets, and the two bootstrap
+// programs are closed after bootstrap. The candidate object must carry
+// real_owner_capsule_free (g19q/g19pkg; the G009 g25final128 objects do not).
 var candidateAttachSet = []string{
 	"opaque_real_owner_child_final_free_candidate", // lsm/task_free
+	"real_owner_capsule_free",                      // lsm/task_free
 	"opaque_real_owner_child_source_candidate",     // lsm/task_alloc
 	"opaque_real_owner_failure_fexit_probe",        // fexit/bprm_execve
 	"real_owner_capsule_terminal",                  // fexit/bprm_execve

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,46 @@ func TestNativeAttachOrderAndLateReceipts(t *testing.T) {
 		if r, _ := v.(*operators.NativeAttachment); r == nil || r.Check == nil {
 			t.Fatalf("receipt %s missing", name)
 		}
+	}
+}
+
+// TestNativeStopDetachesInReverseAttachOrder: Stop closes the links in the
+// exact reverse of the attach order, so every attach-order invariant also
+// holds on teardown. Both task_free programs (the release and a death retire
+// such as the exec capsule's) attach first and detach last; the
+// sched_process_exit tp_btf attaches after task_free and detaches before it,
+// so exit credit never runs without its task_free consumer; task_alloc
+// detaches before both.
+func TestNativeStopDetachesInReverseAttachOrder(t *testing.T) {
+	i, gc, attached, closed, _ := nativeTxnFixture(t, "", nil, 0)
+	i.collectionSpec.Programs["texit"] = &ebpf.ProgramSpec{
+		Name: "texit", Type: ebpf.Tracing, AttachType: ebpf.AttachTraceRawTp,
+		AttachTo: "sched_process_exit", SectionName: "tp_btf/sched_process_exit",
+	}
+	i.collectionSpec.Programs["capfree"] = &ebpf.ProgramSpec{
+		Name: "capfree", Type: ebpf.LSM, AttachType: ebpf.AttachLSMMac,
+		AttachTo: "task_free", SectionName: "lsm/task_free",
+	}
+	i.collection.Programs["texit"] = nil
+	i.collection.Programs["capfree"] = nil
+	if err := i.attachNativePrograms(gc); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"capfree", "free", "texit", "alloc", "migrate", "exit", "check"}
+	if !reflect.DeepEqual(*attached, want) {
+		t.Fatalf("attached %v, want %v", *attached, want)
+	}
+	if err := i.Stop(gc); err != nil {
+		t.Fatal(err)
+	}
+	reverse := slices.Clone(want)
+	slices.Reverse(reverse)
+	if !reflect.DeepEqual(*closed, reverse) || len(i.links) != 0 {
+		t.Fatalf("Stop closed %v, want reverse %v", *closed, reverse)
+	}
+	// A second Stop (Close after Stop) closes nothing again.
+	if err := i.Stop(gc); err != nil || len(*closed) != len(want) {
+		t.Fatalf("second Stop: err=%v closed %v", err, *closed)
 	}
 }
 
@@ -391,7 +432,6 @@ func TestNativeAttachCountFailureRefusesWithoutRetry(t *testing.T) {
 // would attach without a bpf link. Disabled programs are not attached.
 func TestNativeAttachRejectsLinklessPrograms(t *testing.T) {
 	for name, spec := range map[string]*ebpf.ProgramSpec{
-		"kprobe":  {Type: ebpf.Kprobe, SectionName: "kprobe/do_exit", AttachTo: "do_exit"},
 		"uprobe":  {Type: ebpf.Kprobe, SectionName: "uprobe/libc:malloc", AttachTo: "libc:malloc"},
 		"socket":  {Type: ebpf.SocketFilter, SectionName: "socket"},
 		"perf":    {Type: ebpf.PerfEvent, SectionName: "perf_event/x"},
@@ -433,3 +473,65 @@ func TestNativeAttachRejectsLinklessPrograms(t *testing.T) {
 type nativeInfoErrLink struct{ link.Link }
 
 func (nativeInfoErrLink) Info() (*link.Info, error) { return nil, errors.ErrUnsupported }
+
+type nativeIoctlTestLink struct{ *nativeTxnTestLink }
+
+func (nativeIoctlTestLink) Info() (*link.Info, error) {
+	return nil, fmt.Errorf("perf event ioctl info: %w", link.ErrNotSupported)
+}
+
+// TestNativeAttachAdmitsLinkBasedProbes: kprobe/kretprobe and raw_tp attach
+// through bpf links, are receipted, and take no trampoline capacity. A kprobe
+// that falls back to a linkless perf-fd ioctl attach is refused at its step
+// and the whole transaction rolls back.
+func TestNativeAttachAdmitsLinkBasedProbes(t *testing.T) {
+	probes := map[string]*ebpf.ProgramSpec{
+		"kp":  {Name: "kp", Type: ebpf.Kprobe, SectionName: "kprobe/search_binary_handler", AttachTo: "search_binary_handler"},
+		"krp": {Name: "krp", Type: ebpf.Kprobe, SectionName: "kretprobe/search_binary_handler", AttachTo: "search_binary_handler"},
+		"rtp": {Name: "rtp", Type: ebpf.RawTracepoint, SectionName: "raw_tp/sched_process_fork", AttachTo: "sched_process_fork"},
+		"tpb": {Name: "tpb", Type: ebpf.Tracing, AttachType: ebpf.AttachTraceRawTp, SectionName: "tp_btf/sched_process_exec", AttachTo: "sched_process_exec"},
+	}
+	i, gc, attached, _, _ := nativeTxnFixture(t, "", nil, 0)
+	var counted []string
+	nativeCountLinks = func(targets []string) (map[string]int, error) {
+		counted = append(counted, targets...)
+		return map[string]int{}, nil
+	}
+	for name, p := range probes {
+		i.collectionSpec.Programs[name] = p
+		i.collection.Programs[name] = nil
+	}
+	if err := i.attachNativePrograms(gc); err != nil {
+		t.Fatal(err)
+	}
+	if len(*attached) != len(nativeTxnOrder)+len(probes) || len(i.links) != len(*attached) {
+		t.Fatalf("attached %v", *attached)
+	}
+	for name := range probes {
+		if slices.Contains(counted, probes[name].AttachTo) {
+			t.Errorf("%s counted against trampoline capacity: %v", name, counted)
+		}
+		if v, _ := gc.GetVar(operators.NativeAttachmentPrefix + name); v == nil {
+			t.Errorf("no receipt for %s", name)
+		}
+	}
+
+	i, gc, attached, closed, _ := nativeTxnFixture(t, "", nil, 0)
+	i.collectionSpec.Programs["kp"] = probes["kp"]
+	i.collection.Programs["kp"] = nil
+	attach := nativeAttachProgram
+	nativeAttachProgram = func(i *ebpfInstance, gc operators.GadgetContext, p *ebpf.ProgramSpec, prog *ebpf.Program) (link.Link, error) {
+		l, err := attach(i, gc, p, prog)
+		if err == nil && p.Name == "kp" {
+			l = nativeIoctlTestLink{l.(*nativeTxnTestLink)}
+		}
+		return l, err
+	}
+	err := i.attachNativePrograms(gc)
+	if err == nil || !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "without a bpf link") {
+		t.Fatalf("linkless kprobe fallback admitted: %v", err)
+	}
+	if len(*closed) != len(*attached) || len(i.links) != 0 || len(i.nativeAttachments) != 0 {
+		t.Fatalf("fallback left state: attached %v closed %v", *attached, *closed)
+	}
+}

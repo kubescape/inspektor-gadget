@@ -67,6 +67,17 @@ static int exec_true_exit(void)
 	return errno == EPERM ? 77 : errno == EACCES ? 79 : 94;
 }
 
+/* G019 gap 4 burst: with IG_OPAQUE_FORK_SCRIPT every FORKN child execs
+ * that #! script (two passes of one exec), else /bin/true. */
+static int exec_burst_exit(void)
+{
+	const char *script = getenv("IG_OPAQUE_FORK_SCRIPT");
+	if (!script)
+		return exec_true_exit();
+	execl(script, "opaque-burst-script", (char *)0);
+	return errno == EPERM ? 77 : errno == EACCES ? 79 : 94;
+}
+
 static int64_t mono_ns(void)
 {
 	struct timespec ts;
@@ -307,6 +318,239 @@ static int migrate_mid_exec(void)
 	return 0;
 }
 
+/* G019 gap 4 (review H1) interpreter continuation commands. Paths are
+ * IG_OPAQUE_INTERP_DIR/<name> (names stay within the 32-byte command
+ * line). Each child reports its exec errno through a CLOEXEC pipe (0: the
+ * exec image ran, or AT_EXECVE_CHECK returned 0).
+ * XSD:<pid>:<exit>:<errno>. */
+#ifndef AT_EXECVE_CHECK
+#define AT_EXECVE_CHECK 0x10000
+#endif
+static int interp_path(const char *name, char *out, size_t size)
+{
+	const char *dir = getenv("IG_OPAQUE_INTERP_DIR");
+	if (!dir || !*name || strchr(name, '/'))
+		return -1;
+	int n = snprintf(out, size, "%s/%s", dir, name);
+	return n < 0 || (size_t)n >= size ? -1 : 0;
+}
+/* mode: 's' exec, 'c' AT_EXECVE_CHECK, 'e' exec then the libc /bin/sh
+ * fallback on ENOEXEC, 't' exec from a non-leader thread (de_thread). */
+struct interp_thread {
+	const char *path;
+	int report;
+};
+static void interp_exec(const char *path, int flags, int report)
+{
+	char *argv[] = { (char *)path, 0 };
+	extern char **environ;
+	long rc = syscall(SYS_execveat, AT_FDCWD, path, argv, environ, flags);
+	int err = rc ? errno : 0;
+	if (write(report, &err, sizeof(err)) != sizeof(err))
+		_exit(81);
+}
+static void *interp_thread_run(void *opaque)
+{
+	struct interp_thread *t = opaque;
+	interp_exec(t->path, 0, t->report);
+	_exit(76);
+}
+static pid_t interp_spawn(const char *path, char mode, uid_t uid, int report[2])
+{
+	if (pipe2(report, O_CLOEXEC))
+		return -1;
+	pid_t child = fork();
+	if (child != 0) {
+		close(report[1]);
+		return child;
+	}
+	close(report[0]);
+	if (uid && setresuid(uid, uid, uid))
+		_exit(88);
+	if (mode == 't') {
+		static struct interp_thread t;
+		t.path = path;
+		t.report = report[1];
+		pthread_t thread;
+		if (pthread_create(&thread, 0, interp_thread_run, &t))
+			_exit(87);
+		for (;;)
+			pause();
+	}
+	interp_exec(path, mode == 'c' ? AT_EXECVE_CHECK : 0, report[1]);
+	int err = 0;
+	if (mode == 'c') {
+		/* AT_EXECVE_CHECK returned (0 or an error): nothing ran. */
+		_exit(75);
+	}
+	if (mode == 'e' && errno == ENOEXEC) {
+		execl("/bin/sh", "sh", path, (char *)0);
+		err = errno;
+		if (write(report[1], &err, sizeof(err)) != sizeof(err))
+			_exit(81);
+	}
+	_exit(76);
+}
+static int interp_finish(pid_t child, int report[2])
+{
+	int err = 0, code = wait_exit(child);
+	ssize_t n = read(report[0], &err, sizeof(err));
+	close(report[0]);
+	if (n != (ssize_t)sizeof(err))
+		err = 0;
+	printf("XSD:%d:%d:%d\n", child, code, err);
+	fflush(stdout);
+	return 0;
+}
+/* XH:<name>:<k|w>: hold the exec's interpreter open (FAN_OPEN_EXEC_PERM on
+ * IG_OPAQUE_INTERP_HOLD), i.e. between the script's pass and the
+ * interpreter's pass of the SAME exec. k: SIGKILL the child while held. w:
+ * print XHELD:<pid> and wait for GO on stdin (the harness migrates or
+ * republishes meanwhile). Then allow and report as XSD; XHN:<pid> if the
+ * event never arrived. */
+static int interp_hold(const char *path, char action, FILE *in)
+{
+	const char *interp = getenv("IG_OPAQUE_INTERP_HOLD");
+	if (!interp)
+		return 85;
+	int fan = fanotify_init(FAN_CLASS_CONTENT | FAN_CLOEXEC,
+				O_RDONLY | O_LARGEFILE);
+	if (fan < 0 || fanotify_mark(fan, FAN_MARK_ADD, FAN_OPEN_EXEC_PERM,
+				     AT_FDCWD, interp))
+		return 82;
+	int report[2];
+	pid_t child = interp_spawn(path, 's', 0, report);
+	if (child < 0)
+		return 95;
+	int held = 0;
+	for (int round = 0; round < 2000 && !held; round++) {
+		struct pollfd p = { .fd = fan, .events = POLLIN };
+		int ready = poll(&p, 1, 10);
+		if (ready < 0 && errno != EINTR)
+			return 80;
+		if (ready <= 0)
+			continue;
+		struct fanotify_event_metadata m;
+		ssize_t n = read(fan, &m, sizeof(m));
+		if (n < (ssize_t)sizeof(m) || m.vers != FANOTIFY_METADATA_VERSION)
+			return 80;
+		if (m.fd < 0)
+			continue;
+		if ((m.mask & FAN_OPEN_EXEC_PERM) && m.pid == child) {
+			held = 1;
+			if (action == 'k') {
+				/* Kill while the open is still unanswered, and
+				 * never answer it: the killable permission wait
+				 * cancels the event and the interpreter open
+				 * fails, so the second pass never runs. Allowing
+				 * right after the kill raced the wakeup (the
+				 * open succeeded and pass 2 was evaluated).
+				 * XHK:<pid>:<1 died while held, 0 not within 5s>. */
+				int status = 0, dead = 0;
+				kill(child, SIGKILL);
+				for (int w = 0; w < 500 && !dead; w++) {
+					pid_t got = waitpid(child, &status, WNOHANG);
+					if (got == child)
+						dead = 1;
+					else if (got < 0)
+						return 93;
+					else
+						usleep(10000);
+				}
+				printf("XHK:%d:%d\n", child, dead);
+				fflush(stdout);
+				struct fanotify_response deny = {
+					.fd = m.fd, .response = FAN_DENY
+				};
+				if (!dead) {
+					/* Fail closed: deny, then reap. */
+					if (write(fan, &deny, sizeof(deny)) !=
+					    sizeof(deny))
+						return 80;
+					status = 0;
+					if (waitpid(child, &status, 0) != child)
+						return 93;
+				}
+				close(m.fd);
+				close(fan);
+				int err = 0;
+				if (read(report[0], &err, sizeof(err)) !=
+				    (ssize_t)sizeof(err))
+					err = 0;
+				close(report[0]);
+				printf("XSD:%d:%d:%d\n", child,
+				       WIFEXITED(status) ? WEXITSTATUS(status) :
+							   -1,
+				       err);
+				fflush(stdout);
+				return 0;
+			} else {
+				char go[32];
+				printf("XHELD:%d\n", child);
+				fflush(stdout);
+				if (!fgets(go, sizeof(go), in) ||
+				    strcmp(go, "GO\n"))
+					return 84;
+			}
+		}
+		struct fanotify_response r = { .fd = m.fd,
+					       .response = FAN_ALLOW };
+		if (write(fan, &r, sizeof(r)) != sizeof(r))
+			return 80;
+		close(m.fd);
+	}
+	close(fan);
+	if (!held) {
+		printf("XHN:%d\n", child);
+		fflush(stdout);
+	}
+	return interp_finish(child, report);
+}
+/* XB:<name>:<n>:<streams>: n children each exec the script, at most
+ * <streams> alive at once. XBD:<exited 0>:<other exits>:<fork errors>. */
+static int interp_burst(const char *path, int n, int streams)
+{
+	int ok = 0, bad = 0, forkerr = 0, alive = 0;
+	for (int i = 0; i < n || alive; ) {
+		if (i < n && alive < streams) {
+			pid_t child = fork();
+			if (child < 0) {
+				forkerr++;
+				i++;
+				continue;
+			}
+			if (child == 0) {
+				char *argv[] = { (char *)path, 0 };
+				extern char **environ;
+				syscall(SYS_execveat, AT_FDCWD, path, argv,
+					environ, 0);
+				_exit(errno == EPERM ? 77 : 76);
+			}
+			alive++;
+			i++;
+			continue;
+		}
+		int status = 0;
+		if (wait(&status) < 0)
+			return 93;
+		alive--;
+		if (WIFEXITED(status) && !WEXITSTATUS(status))
+			ok++;
+		else
+			bad++;
+	}
+	printf("XBD:%d:%d:%d\n", ok, bad, forkerr);
+	fflush(stdout);
+	return 0;
+}
+
+/* ZOMBIE children: exited (observed with WNOWAIT) but never reaped, so their
+ * task_struct is never released and task_free never runs (G019 credit at
+ * exit free-delay injector). */
+#define ZOMBIES_MAX 4096
+static pid_t zombie_pids[ZOMBIES_MAX];
+static int zombies;
+
 int main(int argc, char **argv)
 {
 	/* The grandparent mode is reached by a real exec, not a fork-only
@@ -325,6 +569,9 @@ int main(int argc, char **argv)
 		return WIFEXITED(status) ? WEXITSTATUS(status) : 92;
 	}
 	const char *script = getenv("IG_OPAQUE_SCRIPT_PATH");
+	/* G019 pending-receipt injection: the second exec of the same task. */
+	if (argc == 2 && !strcmp(argv[1], "reexec"))
+		return exec_true_exit();
 	int interpreted = argc == 2 && script && !strcmp(argv[1], script);
 	if (argc > 2 || (argc == 2 && strcmp(argv[1], "after") && !interpreted))
 		return 99;
@@ -356,9 +603,14 @@ int main(int argc, char **argv)
 			if (!script)
 				return 94;
 			/* Direct exec: the kernel invokes this binary as the shebang
-			 * interpreter within the same exec syscall. */
+			 * interpreter within the same exec syscall. A refused exec
+			 * (the re-check's original-route claim under a pending
+			 * receipt: Strict EPERM) leaves this parent running: it
+			 * reports the errno and keeps serving commands. */
 			execl(script, "opaque-script", (char *)0);
-			return 97;
+			printf("SCRIPTERR:%d\n", errno);
+			fflush(stdout);
+			continue;
 		}
 		if (!strcmp(line, "FAIL\n")) {
 			const char *path = getenv("IG_OPAQUE_FAIL_EXEC_PATH");
@@ -437,7 +689,7 @@ int main(int argc, char **argv)
 			/* waitpid(-1) must only see paced children. */
 			if (count < 1 || count > 65536 || threads < 1 ||
 			    threads > 8 || interval < 1000 ||
-			    interval > 1000000000LL || live)
+			    interval > 1000000000LL || live || zombies)
 				return 86;
 			forkp(count, threads, interval);
 			continue;
@@ -456,16 +708,18 @@ int main(int argc, char **argv)
 		if (fields == 2)
 			failing = 0;
 		if (fields >= 2) {
-			if (count < 1 || count > 8 || threads < 0 ||
+			/* Up to 32 racing children: the G019 over-capacity burst
+			 * (more concurrent births than the WORK quota admits). */
+			if (count < 1 || count > 32 || threads < 0 ||
 			    threads > 8 || failing < 0 || failing > 1)
 				return 86;
-			pid_t kids[8];
-			int fork_errno[8];
+			pid_t kids[32];
+			int fork_errno[32];
 			for (int k = 0; k < count; k++) {
 				kids[k] = fork();
 				fork_errno[k] = kids[k] < 0 ? errno : 0;
 				if (kids[k] == 0)
-					_exit(exec_true_exit());
+					_exit(exec_burst_exit());
 			}
 			pid_t failed = 0;
 			int failed_errno = 0;
@@ -496,6 +750,55 @@ int main(int argc, char **argv)
 							   -1);
 			}
 			printf("THREADED:%d:%d\n", created, err);
+			fflush(stdout);
+			continue;
+		}
+		/* FORKR:<k> (pending-receipt injector): k racing children, each
+		 * execs this helper ("reexec"), which execs /bin/true from the same
+		 * task. FORKG:<k> (open-parent injector): k racing children, each
+		 * forks one grandchild that execs /bin/true and exits with the
+		 * grandchild's exit code. Both report FORKED:<pid>:<exit>. */
+		int reexec = sscanf(line, "FORKR:%d\n", &count) == 1;
+		if (reexec || sscanf(line, "FORKG:%d\n", &count) == 1) {
+			if (count < 1 || count > 8)
+				return 86;
+			pid_t kids[8];
+			int fork_errno[8];
+			for (int k = 0; k < count; k++) {
+				kids[k] = fork();
+				fork_errno[k] = kids[k] < 0 ? errno : 0;
+				if (kids[k] != 0)
+					continue;
+				if (reexec) {
+					execl("/proc/self/exe",
+					      "opaque-real-parent", "reexec",
+					      (char *)0);
+					_exit(errno == EPERM ? 77 : 94);
+				}
+				pid_t grandchild = fork();
+				if (grandchild < 0)
+					_exit(95);
+				if (grandchild == 0)
+					_exit(exec_true_exit());
+				int status = 0;
+				if (waitpid(grandchild, &status, 0) !=
+				    grandchild)
+					_exit(93);
+				_exit(WIFEXITED(status) ? WEXITSTATUS(status) :
+							  92);
+			}
+			for (int k = 0; k < count; k++) {
+				if (kids[k] < 0) {
+					printf("FORKED:-1:%d\n", fork_errno[k]);
+					continue;
+				}
+				int status = 0;
+				if (waitpid(kids[k], &status, 0) != kids[k])
+					return 93;
+				printf("FORKED:%d:%d\n", kids[k],
+				       WIFEXITED(status) ? WEXITSTATUS(status) :
+							   -1);
+			}
 			fflush(stdout);
 			continue;
 		}
@@ -686,10 +989,92 @@ int main(int argc, char **argv)
 			fflush(stdout);
 			continue;
 		}
+		/* G019 gap 4: XS/XC/XE/XT:<name>[:<uid>], XH:<name>:<k|w>,
+		 * XB:<name>:<n>:<streams> (see interp_spawn). */
+		{
+			char name[24] = "", ipath[512];
+			char act = 0, mode = 0;
+			int uid = 0, n = 0, streams = 0;
+			if (sscanf(line, "XB:%23[^:]:%d:%d\n", name, &n,
+				   &streams) == 3) {
+				if (n < 1 || n > 100000 || streams < 1 ||
+				    streams > 64 ||
+				    interp_path(name, ipath, sizeof(ipath)))
+					return 86;
+				if (interp_burst(ipath, n, streams))
+					return 93;
+				continue;
+			}
+			if (sscanf(line, "XH:%23[^:]:%c\n", name, &act) == 2) {
+				if ((act != 'k' && act != 'w') ||
+				    interp_path(name, ipath, sizeof(ipath)))
+					return 86;
+				int failed = interp_hold(ipath, act, stdin);
+				if (failed)
+					return failed;
+				continue;
+			}
+			if (sscanf(line, "X%c:%23[^:\n]:%d\n", &mode, name,
+				   &uid) >= 2 &&
+			    (mode == 'S' || mode == 'C' || mode == 'E' ||
+			     mode == 'T')) {
+				if (uid < 0 ||
+				    interp_path(name, ipath, sizeof(ipath)))
+					return 86;
+				int report[2];
+				pid_t child = interp_spawn(ipath, mode + 32,
+							   (uid_t)uid, report);
+				if (child < 0)
+					return 95;
+				interp_finish(child, report);
+				continue;
+			}
+		}
 		if (!strcmp(line, "MIGRATEX\n")) {
 			int failed = migrate_mid_exec();
 			if (failed)
 				return failed;
+			continue;
+		}
+		/* ZOMBIE:<n>: n sequential child births/execs (as FORK); each exit
+		 * is observed with waitid(WNOWAIT) and the child stays a zombie
+		 * until UNZOMBIE. A refused fork reports pid -1 and its errno. */
+		if (sscanf(line, "ZOMBIE:%d\n", &count) == 1) {
+			if (count < 1 || count > ZOMBIES_MAX - zombies)
+				return 86;
+			for (int i = 0; i < count; i++) {
+				pid_t child = fork();
+				if (child < 0) {
+					printf("FORKED:-1:%d\n", errno);
+					continue;
+				}
+				if (child == 0)
+					_exit(exec_true_exit());
+				siginfo_t info;
+				memset(&info, 0, sizeof(info));
+				if (waitid(P_PID, child, &info,
+					   WEXITED | WNOWAIT) ||
+				    info.si_pid != child)
+					return 93;
+				zombie_pids[zombies++] = child;
+				printf("FORKED:%d:%d\n", child,
+				       info.si_code == CLD_EXITED ?
+					       info.si_status :
+					       -1);
+			}
+			fflush(stdout);
+			continue;
+		}
+		if (!strcmp(line, "UNZOMBIE\n")) {
+			for (int i = 0; i < zombies; i++) {
+				int status = 0;
+				if (waitpid(zombie_pids[i], &status, 0) !=
+				    zombie_pids[i])
+					return 93;
+			}
+			printf("UNZOMBIED:%d\n", zombies);
+			fflush(stdout);
+			zombies = 0;
 			continue;
 		}
 		if (!strcmp(line, "SPAWN\n")) {

@@ -124,9 +124,14 @@ func sharedOpaqueOwnerGeometry(p SharedProfile) (map[string]operators.NativeMapR
 	if err != nil {
 		return nil, sharedOpaqueTaskUsage{}, err
 	}
+	// One 64-bit account bitmap per binding, and a power of two: the
+	// verdict source refuses any other WORK quota at compile time (it grows
+	// the fork source past the 512-byte combined stack) and further bounds
+	// its own quota to 32.
 	if p.PerBinding.Scratch == 0 || p.PerBinding.Scratch > 64 ||
+		p.PerBinding.Scratch&(p.PerBinding.Scratch-1) != 0 ||
 		p.Bindings*p.PerBinding.Scratch != p.Scratch {
-		return nil, sharedOpaqueTaskUsage{}, fmt.Errorf("opaque WORK requires exact per-binding partition of at most 64 credits")
+		return nil, sharedOpaqueTaskUsage{}, fmt.Errorf("opaque WORK requires an exact per-binding partition of a power-of-two quota of at most 64 credits")
 	}
 	array := func(size, count, flags uint32) operators.NativeMapResource {
 		return operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: size, MaxEntries: count, Flags: flags}
@@ -151,6 +156,9 @@ func sharedOpaqueOwnerGeometry(p SharedProfile) (map[string]operators.NativeMapR
 }
 
 func validateSharedOpaqueOwnerResources(p SharedProfile, r *operators.NativeResources) (sharedOpaqueTaskUsage, error) {
+	if err := refuseSharedProductForbiddenMaps(r); err != nil {
+		return sharedOpaqueTaskUsage{}, err
+	}
 	want, usage, err := sharedOpaqueOwnerGeometry(p)
 	if err != nil {
 		return sharedOpaqueTaskUsage{}, err
@@ -519,4 +527,38 @@ func validateSharedImageResources(p SharedProfile, r *operators.NativeResources)
 		return zero, err
 	}
 	return usage, nil
+}
+
+// sharedProductForbiddenMaps are maps that may exist only in a diagnostic
+// twin, never in a product image, refused by name before any allowlist (the
+// opaque_ prefix rule below is the general one, and it will narrow once
+// product admission is enabled). opaque_real_publish_fault is the
+// publication fault injector of the non-recovery publisher twin
+// (SE_PRODUCT_DIAGNOSTIC_TWIN), which only the tagged qualification path
+// admits; the opaque_real_fc_* maps are the twin's test-only fail-closed
+// injectors (ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_DIAGNOSTIC and
+// its _EXT_ extension: selector, counts and pending marker, extended
+// periods and counts); opaque_real_interp_stale_resume is the twin's
+// interpreter-continuation stale-resume injector
+// (ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC).
+var sharedProductForbiddenMaps = []string{
+	"opaque_real_publish_fault",
+	"opaque_real_fc_inject_selector",
+	"opaque_real_fc_inject_counts",
+	"opaque_real_fc_pending_marked",
+	"opaque_real_fc_inject_ext",
+	"opaque_real_fc_inject_ext_counts",
+	"opaque_real_interp_stale_resume",
+}
+
+func refuseSharedProductForbiddenMaps(r *operators.NativeResources) error {
+	if r == nil {
+		return nil
+	}
+	for _, name := range sharedProductForbiddenMaps {
+		if _, present := r.Maps[name]; present {
+			return fmt.Errorf("product image carries the diagnostic-twin map %s", name)
+		}
+	}
+	return nil
 }

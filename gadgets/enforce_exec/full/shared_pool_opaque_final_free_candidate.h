@@ -147,6 +147,22 @@ static inline int se_of_complete_native_unheld(struct se_of_lease *lease,
 	return result;
 }
 
+/* The three stages of se_of_withdraw_directory below, shared verbatim with
+ * the G019 credit-at-exit callers: the free-time resume of a withdrawal the
+ * exit left at WITHDRAW_CLAIM or WITHDRAWN_ZERO
+ * (real_owner_exit_withdraw_resume) and the test-only partial withdrawal of
+ * the exit injector. The caller holds the exact death lease
+ * (active_leases == 1); stages 2 and 3 also hold the claim
+ * (exclusive_owner == locator), and archive is this slot's archive entry
+ * holding the lease's physical key bytes. */
+static __always_inline int se_of_withdraw_claim(struct se_ol_meta *meta,
+						__u64 cookie, __u64 locator);
+static __always_inline int se_of_withdraw_advance(struct se_ol_meta *meta,
+						  const __u64 *archive,
+						  __u64 cookie, __u64 locator);
+static __always_inline int se_of_withdraw_delete(struct se_ol_meta *meta,
+						 const __u64 *archive,
+						 __u64 cookie);
 #include "shared_pool_opaque_writer_candidate.h"
 /* Physical-reuse fix (G025 batch F). A correctness fix of every real-map
  * final-free build under ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE, never a
@@ -205,6 +221,17 @@ static inline int se_of_withdraw_directory(struct se_of_lease *lease,
 		return SE_OL_CONTENDED;
 	struct se_ol_meta *meta = lease->meta;
 	__u64 locator = lease->locator, cookie = lease->cookie;
+	if (se_of_withdraw_claim(meta, cookie, locator) != SE_OL_OK)
+		return SE_OL_CONTENDED;
+	int advanced = se_of_withdraw_advance(meta, archive, cookie, locator);
+	if (advanced != SE_OL_OK)
+		return advanced;
+	return se_of_withdraw_delete(meta, archive, cookie);
+}
+
+static __always_inline int se_of_withdraw_claim(struct se_ol_meta *meta,
+						__u64 cookie, __u64 locator)
+{
 	/* Stage 1: se_ow_claim_withdraw. */
 	bpf_spin_lock(&meta->lock);
 	int exact = meta->phase == SE_OL_DEAD && meta->cookie == cookie &&
@@ -219,8 +246,12 @@ static inline int se_of_withdraw_directory(struct se_of_lease *lease,
 		meta->directory_state = SE_OL_WITHDRAW_CLAIM;
 	}
 	bpf_spin_unlock(&meta->lock);
-	if (!exact)
-		return SE_OL_CONTENDED;
+	return exact ? SE_OL_OK : SE_OL_CONTENDED;
+}
+static __always_inline int se_of_withdraw_advance(struct se_ol_meta *meta,
+						  const __u64 *archive,
+						  __u64 cookie, __u64 locator)
+{
 	/* Stage 2: se_ow_advance_withdraw. */
 	__u64 *value = SE_OW_LOOKUP(archive);
 	if (!value)
@@ -231,27 +262,31 @@ static inline int se_of_withdraw_directory(struct se_of_lease *lease,
 	if (observed != locator && observed != 0)
 		return SE_OL_CORRUPT;
 	bpf_spin_lock(&meta->lock);
-	exact = meta->cookie == cookie && meta->locator == locator &&
-		meta->exclusive == 1 && meta->exclusive_owner == locator &&
-		meta->directory_state == SE_OL_WITHDRAW_CLAIM &&
-		!meta->reader_holds && meta->active_leases == 1 &&
-		!meta->reserved;
+	int exact = meta->cookie == cookie && meta->locator == locator &&
+		    meta->exclusive == 1 && meta->exclusive_owner == locator &&
+		    meta->directory_state == SE_OL_WITHDRAW_CLAIM &&
+		    !meta->reader_holds && meta->active_leases == 1 &&
+		    !meta->reserved;
 	if (exact)
 		meta->directory_state = SE_OL_WITHDRAWN_ZERO;
 	bpf_spin_unlock(&meta->lock);
-	if (!exact)
-		return SE_OL_CORRUPT;
+	return exact ? SE_OL_OK : SE_OL_CORRUPT;
+}
+static __always_inline int se_of_withdraw_delete(struct se_ol_meta *meta,
+						 const __u64 *archive,
+						 __u64 cookie)
+{
 	/* Stage 3: se_ow_delete_withdrawn_zero. */
 	bpf_spin_lock(&meta->lock);
-	exact = meta->cookie == cookie && meta->exclusive == 1 &&
-		meta->exclusive_owner == meta->locator &&
-		meta->directory_state == SE_OL_WITHDRAWN_ZERO &&
-		meta->archive_ready == 1 && !meta->reader_holds &&
-		meta->active_leases == 1 && !meta->reserved;
+	int exact = meta->cookie == cookie && meta->exclusive == 1 &&
+		    meta->exclusive_owner == meta->locator &&
+		    meta->directory_state == SE_OL_WITHDRAWN_ZERO &&
+		    meta->archive_ready == 1 && !meta->reader_holds &&
+		    meta->active_leases == 1 && !meta->reserved;
 	bpf_spin_unlock(&meta->lock);
 	if (!exact)
 		return SE_OL_CORRUPT;
-	value = SE_OW_LOOKUP(archive);
+	__u64 *value = SE_OW_LOOKUP(archive);
 	if (!value || se_ol_load_scalar(value) != 0)
 		return SE_OL_CORRUPT;
 	int deleted = SE_OW_DELETE(archive);

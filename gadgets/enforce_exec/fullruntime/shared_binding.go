@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -23,6 +24,54 @@ type sharedPhysicalScope struct {
 	preparedID, cgroup uint64
 	registration       sharedReceiptWire
 	pins               *sharedPhysicalPins
+	route              sharedLiveRoute
+	// withdrawn is terminal: the account's route was withdrawn, so this
+	// cgroup is never bound or published again on this node (D5).
+	withdrawn bool
+	// retired: withdrawn and its slot recycled; dropped from the node's
+	// scopes, remembered only in NodeEnforcer.withdrawnCgroups.
+	retired bool
+	// released: the poller withdrew and recycled this account's refused
+	// adoption while its session was still bound; Remove then frees the slot
+	// without a withdrawal (releasedAdoptionSlot).
+	released bool
+}
+
+// initIdentity derives SharedInitIdentity from the account's retained pins;
+// a.mu is held. The start time is the pinned /proc stat field 22 in clock
+// ticks, unchanged.
+func (a *sharedPhysicalScope) initIdentity() (SharedInitIdentity, error) {
+	p := a.pins
+	if p != nil && p.identityTest != nil {
+		return *p.identityTest, nil
+	}
+	if p == nil || p.initPID == 0 || p.mount == nil {
+		return SharedInitIdentity{}, fmt.Errorf("no retained init pins")
+	}
+	ticks, err := strconv.ParseUint(p.start, 10, 64)
+	if err != nil || ticks == 0 {
+		return SharedInitIdentity{}, fmt.Errorf("invalid pinned start time %q", p.start)
+	}
+	mount, err := mountNamespaceIdentity(p.mount)
+	if err != nil {
+		return SharedInitIdentity{}, err
+	}
+	return SharedInitIdentity{TGID: p.initPID, StartTicks: ticks, MountNS: mount[1]}, nil
+}
+
+// sharedLiveRoute is the last-good publication of one live route slot.
+type sharedLiveRoute struct {
+	published, withdrawPending bool
+	state                      SharedRouteState
+	policy                     SharedBindingPolicy
+	// fault is a first publication whose outcome Go could not confirm: the
+	// kernel route read back after the failure (state, published when
+	// non-zero), or why it could not be read. Inspect reports it until a
+	// later publication succeeds.
+	fault error
+	// epoch is the compiled policy's root epoch (its UID's first successful
+	// activation), retained across revisions (CompileKernelWithRoleEpochs).
+	epoch uint64
 }
 type sharedPhysicalPins struct {
 	lease                          BindingLease
@@ -32,6 +81,7 @@ type sharedPhysicalPins struct {
 	start                          string
 	identity                       [2]uint64
 	checkTest                      func(context.Context) error // private ownership-test injection only
+	identityTest                   *SharedInitIdentity         // private test injection only
 }
 
 func (p *sharedPhysicalPins) InitProc() *os.File           { return p.proc }
@@ -153,6 +203,30 @@ func prepareSharedPhysicalPins(ctx context.Context, c SharedBindingConfig, lease
 	return p, p.Check(ctx)
 }
 
+// bindRefusalLocked names the first reason a new binding is refused. Every
+// reason is fail-closed; n.mu is held.
+func (n *NodeEnforcer) bindRefusalLocked(cgroup uint64) error {
+	switch {
+	case n.closed:
+		return fmt.Errorf("shared binding unavailable: node closed")
+	case n.host != nil && n.host.released:
+		return fmt.Errorf("shared binding unavailable: node resources released")
+	case n.collectionClosed:
+		return fmt.Errorf("shared binding unavailable: node collection closed")
+	case n.closing:
+		return fmt.Errorf("shared binding unavailable: node stopping")
+	case n.bindings[cgroup] != nil:
+		return fmt.Errorf("shared binding unavailable: cgroup %d already has a binding", cgroup)
+	case n.isWithdrawnLocked(cgroup):
+		// Terminal (D5), refused before any lease is acquired: the answer
+		// does not depend on the cgroup's init being alive.
+		return ErrSharedBindingWithdrawn
+	case uint64(len(n.preparations)) >= n.config.Profile.Bindings:
+		return fmt.Errorf("shared binding unavailable: %d binding preparations in flight (profile allows %d bindings)", len(n.preparations), n.config.Profile.Bindings)
+	}
+	return nil
+}
+
 func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingConfig) (*BindingSession, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -161,9 +235,9 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 		return nil, fmt.Errorf("trusted cgroup and init identity required")
 	}
 	n.mu.Lock()
-	if uint64(len(n.preparations)) >= n.config.Profile.Bindings || n.closing || n.closed || n.collectionClosed || (n.host != nil && n.host.released) || n.bindings[c.CgroupID] != nil {
+	if err := n.bindRefusalLocked(c.CgroupID); err != nil {
 		n.mu.Unlock()
-		return nil, fmt.Errorf("shared binding unavailable")
+		return nil, err
 	}
 	if n.scopes == nil {
 		n.scopes = map[uint64]*sharedPhysicalScope{}
@@ -212,7 +286,9 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 	}
 	if err == nil {
 		account.mu.Lock()
-		if account.pins == nil {
+		if account.withdrawn {
+			err = ErrSharedBindingWithdrawn
+		} else if account.pins == nil {
 			account.pins = s.pending
 			s.pending = nil
 		} else {
@@ -230,6 +306,10 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 			}
 		}
 		account.mu.Unlock()
+	}
+	if err == nil {
+		// A live node maps each binding to a route slot of its one collection.
+		err = n.reserveLiveRoute(account)
 	}
 	if err == nil {
 		err = ctx.Err()
@@ -269,11 +349,24 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 func (s *BindingSession) removePhysicalSession(ctx context.Context, generation uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if generation != 0 {
-		return ErrSharedNativeUnavailable
-	}
 	if s.removed {
 		return nil
+	}
+	s.account.mu.Lock()
+	route, released := s.account.route, s.account.released
+	s.account.mu.Unlock()
+	if released {
+		// The route was already withdrawn and recycled by the refused
+		// adoption's poller: nothing left to withdraw at any generation.
+	} else if route.published {
+		if generation != route.state.Generation {
+			return fmt.Errorf("remove generation %d, route at %d", generation, route.state.Generation)
+		}
+		if err := s.withdrawLiveRoute(ctx); err != nil {
+			return err
+		}
+	} else if generation != 0 {
+		return ErrSharedNativeUnavailable
 	}
 	s.account.mu.Lock()
 	registered := s.account.registration.Sequence != 0 || s.account.native.attempted
@@ -291,12 +384,26 @@ func (s *BindingSession) removePhysicalSession(ctx context.Context, generation u
 		s.pending = nil
 	}
 	s.node.mu.Lock()
-	defer s.node.mu.Unlock()
 	if s.node.bindings[s.cgroup] != s {
+		s.node.mu.Unlock()
 		return fmt.Errorf("binding ownership mismatch")
 	}
 	delete(s.node.bindings, s.cgroup)
 	s.removed = true
+	s.node.mu.Unlock()
+	// Race with the refused adoption's release callback
+	// (releasedAdoptionSlot): it sets released (account lock) and then looks
+	// for the binding (node lock); this deletes the binding (node lock) and
+	// then reads released (account lock). At least one side sees the
+	// other's write, so the slot is always freed (freeRecycledSlot is
+	// idempotent when both do).
+	s.account.mu.Lock()
+	released = s.account.released
+	slot := s.account.native.slot
+	s.account.mu.Unlock()
+	if released {
+		s.node.freeRecycledSlot(s.account, slot)
+	}
 	return nil
 }
 
@@ -310,6 +417,7 @@ func (n *NodeEnforcer) releasePhysicalScopes() error {
 		return fmt.Errorf("physical scope release requires detached collection and retired sessions")
 	}
 	protocolDestroyed := n.host != nil && n.host.protocol != nil && n.host.released && n.host.operatorClosed && n.host.commandsJoined
+	liveDestroyed := n.host != nil && n.host.gadgetStopped && n.host.released
 	accounts := make([]*sharedPhysicalScope, 0, len(n.scopes))
 	for _, a := range n.scopes {
 		accounts = append(accounts, a)
@@ -338,7 +446,7 @@ func (n *NodeEnforcer) releasePhysicalScopes() error {
 			n.mu.Lock()
 			if n.scopes[a.cgroup] == a {
 				delete(n.scopes, a.cgroup)
-				if protocolDestroyed && a.native.reserved {
+				if (protocolDestroyed || liveDestroyed) && a.native.reserved {
 					n.host.scopeSlots[a.native.slot] = nil
 				}
 			}
@@ -346,4 +454,48 @@ func (n *NodeEnforcer) releasePhysicalScopes() error {
 		}
 	}
 	return result
+}
+
+// withdrawLiveRoute withdraws this session's published route slot. Without a
+// kernel withdrawal (ErrSharedNativeUnavailable) the route keeps its
+// last-good policy, so in-flight and later execs in that cgroup stay under it
+// (fail-closed), and the slot stays retained until node teardown.
+func (s *BindingSession) withdrawLiveRoute(ctx context.Context) error {
+	publisher, err := s.node.livePublisher(false)
+	if err != nil {
+		s.node.mu.Lock()
+		teardown := s.node.host != nil && s.node.host.live != nil && s.node.host.live.publisherClosed
+		if teardown {
+			s.node.host.live.teardownPending++
+		}
+		s.node.mu.Unlock()
+		if !teardown {
+			return err
+		}
+		// The live publisher already closed in node teardown: the route
+		// keeps its last-good (or latched) state and dies with the
+		// collection (fail-closed); the removal records it as pending.
+		s.account.mu.Lock()
+		s.account.route.withdrawPending = true
+		s.account.mu.Unlock()
+		return nil
+	}
+	a := s.account
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	err = publisher.Withdraw(ctx, a.native.slot, s.cgroup)
+	switch {
+	case err == nil:
+		a.route = sharedLiveRoute{}
+		a.withdrawn = true
+		s.node.markWithdrawn(a.cgroup)
+		if r, ok := publisher.(sharedRouteRecycler); ok {
+			s.node.startRecycle(a, a.native.slot, r)
+		}
+	case errors.Is(err, ErrSharedNativeUnavailable):
+		a.route.withdrawPending = true
+	default:
+		return fmt.Errorf("withdraw route slot %d: %w", a.native.slot, err)
+	}
+	return nil
 }

@@ -9,6 +9,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
+	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
 var ErrSharedNativeUnavailable = errors.New("shared native collection/publication is not implemented")
@@ -18,11 +23,32 @@ type SharedNodeConfig struct {
 	ABI3Development     bool
 	RecoveryDevelopment bool
 	Image               string
+	// FailClosedPollInterval is how often the live node samples its
+	// fail-closed rate witness (0: SharedFailClosedPollInterval; otherwise
+	// within [SharedFailClosedPollMin, SharedFailClosedPollMax]).
+	FailClosedPollInterval time.Duration
+	// RevisionDrainTimeout bounds how long a product revision waits for the
+	// slot's RETIRING record to lose its holders (G019 gap 3; 0:
+	// DefaultRevisionDrainTimeout; at most MaxRevisionDrainTimeout).
+	RevisionDrainTimeout time.Duration
+}
+
+func (c SharedNodeConfig) failClosedPollInterval() time.Duration {
+	if c.FailClosedPollInterval == 0 {
+		return SharedFailClosedPollInterval
+	}
+	return c.FailClosedPollInterval
 }
 
 func validateSharedNodeSelection(config SharedNodeConfig) error {
 	if !config.ABI3Development || config.Image == "" {
 		return fmt.Errorf("explicit shared development image and trusted opt-in required")
+	}
+	if d := config.failClosedPollInterval(); d < SharedFailClosedPollMin || d > SharedFailClosedPollMax {
+		return fmt.Errorf("fail-closed poll interval %s outside [%s, %s]", d, SharedFailClosedPollMin, SharedFailClosedPollMax)
+	}
+	if d := config.RevisionDrainTimeout; d < 0 || d > MaxRevisionDrainTimeout {
+		return fmt.Errorf("revision drain timeout %s outside [0, %s]", d, MaxRevisionDrainTimeout)
 	}
 	recoveryImage := strings.HasSuffix(config.Image, ":abi3-recovery-development")
 	if recoveryImage != config.RecoveryDevelopment {
@@ -43,7 +69,237 @@ type SharedBindingStatus struct {
 	Ready                             bool
 	RootAuthorized                    bool
 	Removed                           bool
-	Fault                             error
+	// Attached and RouteSlot are reported only by a live qualification node:
+	// every candidate receipt is present and this binding owns that route slot
+	// of the one node collection. Neither implies Ready or a published policy.
+	Attached      bool
+	RouteReserved bool
+	RouteSlot     uint32
+	// RoutePublished: a qualification publisher committed a policy into this
+	// route slot (Generation is that route's generation). Component-level
+	// only; it never implies Ready. WithdrawPending: Remove retired the
+	// session but the kernel route keeps its last-good policy until a real
+	// withdrawal exists, and the slot is never reused before node teardown.
+	RoutePublished  bool
+	WithdrawPending bool
+	// Adoption is the slot's refused root-task adoption (Degraded), reported
+	// until the slot is recycled; nil otherwise.
+	Adoption *SharedAdoptionStatus
+	// Revision is the slot's Degraded revision report (G019 gap 3:
+	// RevisionDrainTimeout or RevisionObjectStarved, with the RETIRING
+	// record's holders); nil otherwise. Never NotReady on its own.
+	Revision *SharedRevisionStatus
+	// MigrationOutUnenforced labels the accepted G019 residual (gap 5, user
+	// decisions D1/U3; design section 10) on every published Strict route:
+	// a TASK-carrying task moved out of this cgroup into an unrouted one is
+	// no longer enforced there (admission follows the current cgroup; the
+	// migration is not relabelled). Admission's refusal of privileged and
+	// cgroup-writable pods narrows who can migrate. It is a status label,
+	// never a Fault, and it stays set until the gap is closed.
+	MigrationOutUnenforced bool
+	Fault                  error
+}
+
+// SharedBindingPolicy is one binding's compiled policy for its route slot.
+// Class is the frozen execution class (1 Audit, 2 Strict); Fallback is the
+// no-match verdict (0 none, 1 allow, 2 deny); Rules is the rule count.
+//
+// Source and Container select the product path (G019 M4 decision A, design
+// 13.11): the binding's one authored policy, compiled by Publish twice by
+// the one compiler: fullpolicy.CompileSharedPolicy gives the staged cells
+// (the scope-neutral shared object: no generation, container or epoch;
+// root_epoch 0, which BPF requires), and fullpolicy.CompileKernelWithRoleEpochs
+// at the route's next generation gives the root epoch (carried in the
+// snapshot metadata). Both must agree on the policy UID and root role.
+// Class, Fallback and Rules are derived from the shared object.
+// Source.RootRole must be authored: the compiler would otherwise default it,
+// and the init's role is never guessed. A revision must keep the policy UID
+// and root role (terminal refusal otherwise).
+type SharedBindingPolicy struct {
+	Class, Fallback, Rules, SetRole uint32
+	Source                          *fullpolicy.Policy
+	Container                       string
+	// program is the compiled Source (set by BindingSession.Publish), the
+	// source of the root epoch; object is its scope-neutral shared object
+	// (fullpolicy.CompileSharedPolicy: no generation, container or epoch),
+	// the cells actually staged. Both come from the one compiler.
+	program *fullpolicy.KernelProgram
+	object  *fullpolicy.SharedPolicy
+}
+
+func (p SharedBindingPolicy) validate() error {
+	if p.Source != nil {
+		if p.Source.RootRole == "" {
+			return fmt.Errorf("shared binding policy %s has no root role", p.Source.ID)
+		}
+		if p.Container == "" {
+			return fmt.Errorf("shared binding policy %s has no container", p.Source.ID)
+		}
+		return nil
+	}
+	if p.Class < 1 || p.Class > 2 || p.Fallback > 2 || p.Rules < 1 || p.Rules > 256 {
+		return fmt.Errorf("invalid shared binding policy %+v", p)
+	}
+	return nil
+}
+
+// sharedCompiledPolicy is what the product publisher stages and publishes
+// from one compiled single-policy program.
+type sharedCompiledPolicy struct {
+	UID, RootRole, RootEpoch uint64
+	Class, Fallback, Rules   uint32
+	Entries                  []fullpolicy.Blob
+}
+
+// sharedCompiledPolicyOf derives the staged cells and the publication
+// facts of one compiled policy. The cells are the shared object's: a shared
+// object carries root_epoch 0 (the epoch is the snapshot metadata's,
+// root_epochs[0]), and BPF refuses any other. The root epoch comes from the
+// role-epoch compilation of the same policy, whose UID and root role must
+// equal the object's.
+func sharedCompiledPolicyOf(program *fullpolicy.KernelProgram, object *fullpolicy.SharedPolicy) (sharedCompiledPolicy, error) {
+	return sharedCompiledPolicyOfCells(program, object.Entries(), object.UID())
+}
+
+// sharedCompiledPolicyOfCells is sharedCompiledPolicyOf over the shared
+// object's cells and UID.
+func sharedCompiledPolicyOfCells(program *fullpolicy.KernelProgram, entries []fullpolicy.Blob, objectUID uint64) (sharedCompiledPolicy, error) {
+	if program == nil || len(program.Entries) <= fullpolicy.KernelPolicyBase || len(entries) <= fullpolicy.KernelPolicyBase {
+		return sharedCompiledPolicy{}, fmt.Errorf("no compiled shared policy")
+	}
+	// At least one rule cell (review L4): a policy without rules is refused
+	// before anything is staged.
+	if len(entries) < fullpolicy.KernelRuleBase+1 {
+		return sharedCompiledPolicy{}, fmt.Errorf("compiled shared policy has no rule (%d cells)", len(entries))
+	}
+	header, err := fullpolicy.Decode[fullpolicy.KernelHeader](entries[0])
+	if err != nil {
+		return sharedCompiledPolicy{}, err
+	}
+	policy, err := fullpolicy.Decode[fullpolicy.KernelPolicy](entries[fullpolicy.KernelPolicyBase])
+	if err != nil {
+		return sharedCompiledPolicy{}, err
+	}
+	epochs, err := fullpolicy.Decode[fullpolicy.KernelPolicy](program.Entries[fullpolicy.KernelPolicyBase])
+	if err != nil {
+		return sharedCompiledPolicy{}, err
+	}
+	if header.PolicyCount != 1 {
+		return sharedCompiledPolicy{}, fmt.Errorf("shared binding takes one policy (M4), compiled %d", header.PolicyCount)
+	}
+	if header.RuleCount == 0 {
+		return sharedCompiledPolicy{}, fmt.Errorf("compiled shared policy has no rule")
+	}
+	if policy.UID == 0 || policy.UID != objectUID || policy.RootRole == 0 || policy.RootEpoch != 0 || policy.Mode < 1 || policy.Mode > 2 {
+		return sharedCompiledPolicy{}, fmt.Errorf("compiled shared object uid %d role %d epoch %d mode %d", policy.UID, policy.RootRole, policy.RootEpoch, policy.Mode)
+	}
+	if epochs.UID != policy.UID || epochs.RootRole != policy.RootRole || epochs.RootEpoch == 0 {
+		return sharedCompiledPolicy{}, fmt.Errorf("role-epoch compilation (uid %d role %d epoch %d) does not match the shared object (uid %d role %d)",
+			epochs.UID, epochs.RootRole, epochs.RootEpoch, policy.UID, policy.RootRole)
+	}
+	return sharedCompiledPolicy{
+		UID: policy.UID, RootRole: policy.RootRole, RootEpoch: epochs.RootEpoch,
+		Class: policy.Mode, Fallback: policy.Default, Rules: header.RuleCount,
+		Entries: entries,
+	}, nil
+}
+
+// compile compiles Source at generation, retaining the binding's activated
+// root epochs, and derives Class, Fallback and Rules from the program.
+func (p SharedBindingPolicy) compile(generation uint64, activated map[string]uint64) (SharedBindingPolicy, error) {
+	program, err := fullpolicy.CompileKernelWithRoleEpochs([]fullpolicy.Policy{*p.Source}, generation, p.Container, activated)
+	if err != nil {
+		return p, fmt.Errorf("compile shared policy %s: %w", p.Source.ID, err)
+	}
+	object, err := fullpolicy.CompileSharedPolicy(*p.Source)
+	if err != nil {
+		return p, fmt.Errorf("compile shared object %s: %w", p.Source.ID, err)
+	}
+	c, err := sharedCompiledPolicyOf(program, object)
+	if err != nil {
+		return p, err
+	}
+	p.program, p.object, p.Class, p.Fallback, p.Rules = program, object, c.Class, c.Fallback, c.Rules
+	return p, nil
+}
+
+// SharedRouteState is the kernel route tuple of one slot (the binding's
+// witness): it changes only through that slot's own publication.
+type SharedRouteState struct {
+	Cgroup, Scope, Generation, Serial uint64
+	Incarnation, Record, Class, Phase uint32
+}
+
+// ErrSharedRouteFree is what SharedRoutePublisher.Route returns (wrapped) for
+// a slot that holds no route.
+var ErrSharedRouteFree = errors.New("shared route slot free")
+
+// ErrSharedBindingWithdrawn reports that the cgroup's route was withdrawn. Withdrawal is
+// terminal for that container for the node's lifetime (G019 M4 D5): neither
+// Bind nor Publish may reuse its retained physical account.
+var ErrSharedBindingWithdrawn = errors.New("shared binding withdrawn")
+
+// ErrSharedRetryableRefusal marks every retryable publisher refusal (a
+// command's RETRY result, a stage with no free policy object until a
+// retired object's pins drain, ErrSharedRevisionDraining): in-flight claims
+// or pins hold what the operation needs; retrying later can succeed.
+var ErrSharedRetryableRefusal = errors.New("retryable refusal (in-flight claims or pins)")
+
+// Execution classes of SharedBindingPolicy.Class and SharedRouteState.Class.
+const (
+	sharedClassAudit  uint32 = 1
+	sharedClassStrict uint32 = 2
+)
+
+// ErrSharedClassChange reports the refusal of a revision that changes the
+// binding's execution class (Audit <-> Strict), terminal for that request
+// (G019 gap 6, accepted): a route's class is frozen at its first publication and
+// in-flight execs carry it (the frozen-class ADMISSION check), so a class
+// change needs a new binding. Withdrawal is terminal for the cgroup (D5),
+// so that means a new container (cgroup) bound with the new class. The
+// binding keeps its last-good route.
+var ErrSharedClassChange = errors.New("execution class change requires a new binding (G019 gap 6)")
+
+// sharedClassName names an execution class for errors.
+func sharedClassName(class uint32) string {
+	switch class {
+	case sharedClassAudit:
+		return "Audit"
+	case sharedClassStrict:
+		return "Strict"
+	}
+	return fmt.Sprintf("class %d", class)
+}
+
+// sharedClassChangeError is the terminal refusal of a class-changing
+// revision of slot.
+func sharedClassChangeError(slot uint32, from, to uint32) error {
+	return fmt.Errorf("revision of route slot %d changes the execution class %s -> %s (terminal; Remove this binding and bind a new container with the new class): %w: %w",
+		slot, sharedClassName(from), sharedClassName(to), ErrSharedClassChange, ErrSharedNativeUnavailable)
+}
+
+// SharedInitIdentity is the bound init's kernel identity, taken from the
+// binding's own pins (never from policy metadata): the init-pid-namespace
+// TGID, its start time in clock ticks (/proc/<pid>/stat field 22, exactly as
+// pinned; never converted) and its mount namespace inode. A first Strict
+// publication adopts exactly this init (G019 M4 design section 4).
+type SharedInitIdentity struct {
+	TGID       uint32
+	StartTicks uint64
+	MountNS    uint64
+}
+
+// SharedRoutePublisher is a TEST/QUALIFICATION-ONLY seam: it commits one
+// binding's policy into its route slot of the one node collection. Publish
+// must be all-or-nothing per slot (a refused or faulted publication keeps
+// that slot's last-good route) and must never touch another slot. Withdraw
+// returns ErrSharedNativeUnavailable when no kernel withdrawal exists. Route
+// returns an error wrapping ErrSharedRouteFree for a slot without a route.
+type SharedRoutePublisher interface {
+	Publish(ctx context.Context, slot uint32, cgroup uint64, policy SharedBindingPolicy, first bool, init SharedInitIdentity) (SharedRouteState, error)
+	Withdraw(ctx context.Context, slot uint32, cgroup uint64) error
+	Route(slot uint32) (SharedRouteState, error)
+	Close() error
 }
 
 // sharedCollection is private: injected ownership tests do not attest hooks,
@@ -63,6 +319,14 @@ type (
 		prepareBinding   func(context.Context, SharedBindingConfig, BindingLease) (*sharedPhysicalPins, error)
 		collectionClosed bool
 		nextPreparedID   uint64
+		// withdrawnCgroups is the compact terminal record (D5): every cgroup
+		// whose route was withdrawn on this node, never bound again. A
+		// withdrawn account whose slot was recycled is dropped from scopes
+		// (freeRecycledSlot) and survives only here: 8 bytes of key per
+		// churned container for the node's lifetime (cgroup IDs are 64-bit
+		// kernfs IDs, never reused), so neither the binding capacity nor the
+		// account memory grows with the churn.
+		withdrawnCgroups map[uint64]struct{}
 		closing, closed  bool
 	}
 )
@@ -78,9 +342,66 @@ type BindingSession struct {
 	prepareDone      chan struct{}
 }
 
+// sharedQualificationBuild is true only in binaries built with the
+// enforce_exec_shared_qualification tag. Product builds never set it, so the
+// candidate StartNode path below is unreachable there.
+var sharedQualificationBuild bool
+
+type sharedQualificationKey struct{}
+
+// SharedNodeQualification is a TEST/QUALIFICATION-ONLY seam. It does nothing
+// unless the binary carries the enforce_exec_shared_qualification build tag.
+// Run must start the shared candidate image once through the host's existing
+// manager with opt applied (its one StartGadget call) and return without
+// waiting for the gadget to finish. stop must tear that gadget down and join
+// the manager's detach; done yields the gadget run's result when it ends. It is
+// never a product admission path.
+type SharedNodeQualification struct {
+	Run func(ctx context.Context, opt gadgetcontext.Option) (stop func(context.Context) error, done <-chan error, err error)
+	// Publisher optionally builds the route publisher over the started host
+	// gadget context. Without it BindingSession.Publish stays unavailable.
+	Publisher func(gc operators.GadgetContext) (SharedRoutePublisher, error)
+	// newReaper replaces the product reaper borrowed from the host gadget
+	// context (borrowSharedCandidateReaper). Package tests only.
+	newReaper func(gc operators.GadgetContext, config ReaperConfig) (*Reaper, error)
+	// exitCredit replaces the credit-at-exit witness borrowed from the host
+	// gadget context (borrowSharedExitCredit). Package tests only.
+	exitCredit func(gc operators.GadgetContext) (sharedExitCreditRead, error)
+	// capsuleStats replaces the exec-capsule witness borrowed from the host
+	// gadget context (borrowSharedCapsuleStats). Package tests only.
+	capsuleStats func(gc operators.GadgetContext) (sharedCapsuleStatsRead, error)
+	// birthParkStats replaces the birth-park witness borrowed from the host
+	// gadget context (borrowSharedBirthParkStats). Package tests only.
+	birthParkStats func(gc operators.GadgetContext) (sharedBirthParkStatsRead, error)
+	// failClosed replaces the fail-closed rate witness borrowed from the
+	// host gadget context (borrowSharedFailClosed), failClosedClock its
+	// clock. Package tests only.
+	failClosed      func(gc operators.GadgetContext, cells int) (sharedFailClosedRead, error)
+	failClosedClock func() time.Time
+	// newProductPublisher replaces the product publisher borrowed from the
+	// host gadget context (borrowSharedProductPublisher). Package tests only.
+	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)
+}
+
+// WithSharedNodeQualification selects the qualification-only candidate
+// StartNode path; product builds ignore it and StartNode stays unavailable.
+func WithSharedNodeQualification(ctx context.Context, q SharedNodeQualification) context.Context {
+	return context.WithValue(ctx, sharedQualificationKey{}, q)
+}
+
+func sharedQualificationFrom(ctx context.Context) (SharedNodeQualification, bool) {
+	q, ok := ctx.Value(sharedQualificationKey{}).(SharedNodeQualification)
+	return q, ok && sharedQualificationBuild && q.Run != nil
+}
+
 // StartNode refuses until the real shared collection adapter validates metadata,
 // referenced maps and commands. A development image name is not capability proof.
+// Only a qualification build with WithSharedNodeQualification loads the shared
+// candidate collection; that node still never reports Ready.
 func StartNode(ctx context.Context, config SharedNodeConfig) (*NodeEnforcer, error) {
+	if q, ok := sharedQualificationFrom(ctx); ok {
+		return startQualifiedSharedNode(ctx, config, q)
+	}
 	return startSharedNode(ctx, config, func(context.Context, SharedNodeConfig, SharedAdmission) (sharedCollection, error) {
 		return nil, ErrSharedNativeUnavailable
 	})
@@ -112,6 +433,10 @@ func startSharedNode(ctx context.Context, config SharedNodeConfig, start func(co
 
 // Bind prepares trusted physical inputs only. Kernel root authorization and
 // publication are separate unavailable operations; this cannot report Ready.
+// A cgroup's physical account (pins, route slot and last route publication)
+// is retained until node destruction: binding the same cgroup again after
+// Remove inherits that account's route slot and route state, including a
+// WithdrawPending last-good route; Inspect reports it as the new session's.
 func (n *NodeEnforcer) Bind(ctx context.Context, c SharedBindingConfig) (*BindingSession, error) {
 	return n.bindPhysicalScope(ctx, c)
 }
@@ -130,10 +455,196 @@ func (s *BindingSession) ScopeCookie() uint64 {
 	return s.account.registration.Sequence
 }
 
+// Inspect reports ErrSharedNativeUnavailable unless the node holds a live
+// qualification candidate collection. Then it reports the binding's route slot
+// and the live receipt state; Ready stays false because no policy is published.
 func (s *BindingSession) Inspect() SharedBindingStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return SharedBindingStatus{PreparedID: s.prepared, ScopeCookie: s.ScopeCookie(), CgroupID: s.cgroup, Removed: s.removed, Fault: ErrSharedNativeUnavailable}
+	status := SharedBindingStatus{PreparedID: s.prepared, ScopeCookie: s.ScopeCookie(), CgroupID: s.cgroup, Removed: s.removed, Fault: ErrSharedNativeUnavailable}
+	n := s.node
+	n.mu.Lock()
+	live := n.host != nil && n.host.live != nil && !n.host.released && !n.closing && !n.closed
+	n.mu.Unlock()
+	if !live {
+		return status
+	}
+	s.account.mu.Lock()
+	status.RouteSlot, status.RouteReserved = s.account.native.slot, s.account.native.reserved
+	route := s.account.route
+	s.account.mu.Unlock()
+	status.RoutePublished, status.WithdrawPending = route.published, route.withdrawPending
+	if route.published {
+		status.Generation = route.state.Generation
+		status.MigrationOutUnenforced = route.state.Class == sharedClassStrict
+	}
+	switch {
+	case s.removed:
+		status.Fault = fmt.Errorf("binding removed")
+	case !status.RouteReserved:
+		status.Fault = fmt.Errorf("binding has no route slot")
+	default:
+		status.Fault = n.checkLiveReceipts()
+	}
+	status.Attached = status.Fault == nil
+	if status.Fault == nil && route.fault != nil {
+		status.Fault = route.fault
+	}
+	if status.Fault == nil && route.published {
+		// The kernel route must still be exactly the last committed tuple.
+		status.Fault = n.checkLiveRoute(status.RouteSlot, route.state)
+	}
+	if publisher, err := n.livePublisher(false); err == nil && status.RouteReserved {
+		if r, ok := publisher.(sharedAdoptionReporter); ok {
+			if st, reported := r.adoptionStatus(status.RouteSlot); reported && st.Cgroup == s.cgroup {
+				status.Adoption = &st
+			}
+		}
+		if r, ok := publisher.(sharedRevisionReporter); ok {
+			if st, reported := r.revisionReport(status.RouteSlot); reported {
+				status.Revision = &st
+			}
+		}
+	}
+	return status
+}
+
+// Publish commits policy into this binding's route slot through the
+// qualification publisher. The first publication opens the route; later ones
+// advance its generation under the same class (a class change needs a new
+// route, G019 gap 6). A refused or faulted publication keeps last-good and
+// changes no other binding. It never reports Ready.
+func (s *BindingSession) Publish(ctx context.Context, policy SharedBindingPolicy) (SharedRouteState, error) {
+	if err := policy.validate(); err != nil {
+		return SharedRouteState{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.removed {
+		return SharedRouteState{}, fmt.Errorf("binding removed")
+	}
+	publisher, err := s.node.livePublisher(true)
+	if err != nil {
+		return SharedRouteState{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return SharedRouteState{}, err
+	}
+	a := s.account
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.native.reserved {
+		return SharedRouteState{}, fmt.Errorf("binding has no route slot")
+	}
+	if a.withdrawn {
+		return SharedRouteState{}, ErrSharedBindingWithdrawn
+	}
+	init, err := a.initIdentity()
+	if err != nil {
+		return SharedRouteState{}, fmt.Errorf("init identity: %w", err)
+	}
+	last := a.route
+	if policy.Source != nil {
+		// Compiled at the generation this publication creates, with the
+		// root epoch of a policy UID this binding already activated.
+		activated := map[string]uint64{}
+		if last.published && last.policy.Source != nil && last.policy.Source.ID == policy.Source.ID && last.epoch != 0 {
+			activated[policy.Source.ID] = last.epoch
+		}
+		if policy, err = policy.compile(last.state.Generation+1, activated); err != nil {
+			return last.state, err
+		}
+	}
+	if last.published && last.policy.Class != policy.Class {
+		// Checked first: the most specific terminal refusal (G019 gap 6).
+		return last.state, sharedClassChangeError(a.native.slot, last.policy.Class, policy.Class)
+	}
+	if policy.Class == sharedClassStrict {
+		s.node.mu.Lock()
+		refused := s.node.host.strictRefused
+		s.node.mu.Unlock()
+		if refused != nil {
+			return last.state, fmt.Errorf("strict publication refused (design 13.8): %w: %w", refused, ErrSharedNativeUnavailable)
+		}
+	}
+	if last.published && last.policy.program != nil && policy.program != nil {
+		// G019 limit (lead decision, fail-closed): a revision keeps the
+		// policy UID and root role; either change is terminal.
+		was, _ := sharedCompiledPolicyOf(last.policy.program, last.policy.object)
+		now, _ := sharedCompiledPolicyOf(policy.program, policy.object)
+		if was.UID != now.UID || was.RootRole != now.RootRole {
+			return last.state, fmt.Errorf("revision changes the policy UID or root role (terminal): %w", ErrSharedNativeUnavailable)
+		}
+	}
+	state, err := publisher.Publish(ctx, a.native.slot, s.cgroup, policy, !last.published, init)
+	if err == nil {
+		err = checkPublishedRoute(last, state, s.cgroup, policy)
+	}
+	if err != nil {
+		err = fmt.Errorf("publish route slot %d: %w", a.native.slot, err)
+		var adoption *ErrSharedAdoptionRefused
+		if errors.As(err, &adoption) || errors.Is(err, errSharedPublishUnknown) {
+			// A refused adoption (its route latched or being released) or an
+			// unconfirmed first publication (latched) makes the cgroup
+			// terminal at once (D5, design 13.15): no Publish of this session
+			// and no rebind of the cgroup, even while the slot is latched.
+			// This includes AdoptionRefusedIdentity refused before anything
+			// was committed (an incomplete init identity): the identity comes
+			// from the binding's immutable pins, so a retry cannot succeed.
+			a.withdrawn = true
+			s.node.markWithdrawn(s.cgroup)
+		}
+		if !last.published {
+			// No last-good exists: the kernel may hold a route Go never
+			// accepted. Read it back and record it as a fault, so Inspect
+			// reports it and Remove withdraws at its generation.
+			a.route = unconfirmedFirstRoute(publisher, a.native.slot, policy, err)
+			return a.route.state, err
+		}
+		// Last-good: the recorded tuple stays authoritative; Inspect
+		// reports any kernel divergence from it as a fault.
+		return last.state, err
+	}
+	a.route = sharedLiveRoute{published: true, state: state, policy: policy}
+	if policy.program != nil {
+		c, _ := sharedCompiledPolicyOf(policy.program, policy.object) // validated by compile
+		a.route.epoch = c.RootEpoch
+	}
+	return state, nil
+}
+
+// unconfirmedFirstRoute records a failed first publication of slot: the
+// kernel route read back (published when non-zero) with a fault, or the read
+// failure as the fault.
+func unconfirmedFirstRoute(publisher SharedRoutePublisher, slot uint32, policy SharedBindingPolicy, cause error) sharedLiveRoute {
+	have, err := publisher.Route(slot)
+	switch {
+	case errors.Is(err, ErrSharedRouteFree):
+		return sharedLiveRoute{} // nothing was committed
+	case err != nil:
+		return sharedLiveRoute{fault: fmt.Errorf("route slot %d unknown after a failed first publication (%w): %w", slot, cause, err)}
+	case have == (SharedRouteState{}):
+		return sharedLiveRoute{fault: fmt.Errorf("route slot %d read back empty without ErrSharedRouteFree after a failed first publication: %w", slot, cause)}
+	}
+	fault := fmt.Errorf("route slot %d holds %+v from a failed first publication: %w", slot, have, cause)
+	route := sharedLiveRoute{published: true, state: have, policy: policy, fault: fault}
+	if policy.program != nil {
+		// The epoch the request carried, so a later revision of the same
+		// policy keeps it.
+		c, _ := sharedCompiledPolicyOf(policy.program, policy.object)
+		route.epoch = c.RootEpoch
+	}
+	return route
+}
+
+func checkPublishedRoute(last sharedLiveRoute, state SharedRouteState, cgroup uint64, policy SharedBindingPolicy) error {
+	switch {
+	case state.Cgroup != cgroup || state.Class != policy.Class || state.Generation == 0:
+		return fmt.Errorf("published route tuple %+v does not match the binding", state)
+	case last.published && (state.Generation <= last.state.Generation || state.Scope != last.state.Scope || state.Incarnation != last.state.Incarnation):
+		return fmt.Errorf("published route tuple %+v does not advance %+v", state, last.state)
+	}
+	return nil
 }
 
 // Remove retires the logical session, not its retained physical history account.
@@ -147,7 +658,20 @@ func (n *NodeEnforcer) StopNode(ctx context.Context) error {
 		if err := n.BeforeStop(ctx); err != nil {
 			return err
 		}
-		return n.ReleaseAfterDetach()
+		if err := n.stopLiveCollection(ctx); err != nil {
+			n.mu.Lock()
+			stopped := n.host.gadgetStopped
+			n.mu.Unlock()
+			if !stopped {
+				return err
+			}
+			// The gadget stopped: a publisher Close fault (a sticky admin
+			// thread) never blocks the release; it is reported with it.
+			return errors.Join(err, n.ReleaseAfterDetach(), n.liveHealthFault())
+		}
+		// A reaper or credit-at-exit fault never blocks teardown; it is
+		// reported after it.
+		return errors.Join(n.ReleaseAfterDetach(), n.liveHealthFault())
 	}
 	n.stopMu.Lock()
 	defer n.stopMu.Unlock()

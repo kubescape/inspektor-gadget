@@ -52,6 +52,16 @@ type NativeProgramResource struct {
 type NativeResources struct {
 	Maps     map[string]NativeMapResource
 	Programs map[string]NativeProgramResource
+	// TailCalls are the PROG_ARRAY slots the eBPF operator installs at load,
+	// before any hook attaches (metadata `tail_calls`), as admitted here.
+	TailCalls []NativeTailCall
+}
+
+// NativeTailCall is one declared PROG_ARRAY slot: Map[Index] = Program.
+type NativeTailCall struct {
+	Map     string `mapstructure:"map"`
+	Index   uint32 `mapstructure:"index"`
+	Program string `mapstructure:"program"`
 }
 
 // NativeAttachment is a borrowed, live receipt, not an owned link. Check fails

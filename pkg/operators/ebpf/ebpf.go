@@ -479,6 +479,43 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 		return fmt.Errorf("evaluating map params: %w", err)
 	}
 
+	if err := i.initProgramTracers(gadgetCtx); err != nil {
+		return err
+	}
+
+	if len(i.tcHandlers) > 0 {
+		// For now, override enrichment
+		gadgetCtx.SetVar("NeedContainerEvents", true)
+		i.params["iface"] = &param{
+			Param: &api.Param{
+				Key:         ParamIface,
+				Description: "Network interface to attach to",
+			},
+		}
+	}
+
+	i.params[ParamTraceKernel] = &param{
+		Param: &api.Param{
+			Key:          ParamTraceKernel,
+			Title:        "Print Kernel Tracing Messages",
+			Description:  "Prints kernel messages from the trace pipe (e.g. coming from bpf_trace_printk)",
+			DefaultValue: "false",
+			TypeHint:     api.TypeBool,
+			Tags:         []string{api.TagAdvanced, "group:eBPF"},
+		},
+	}
+
+	for name, m := range i.collectionSpec.Maps {
+		gadgetCtx.SetVar(operators.MapSpecPrefix+name, m)
+	}
+	i.publishNativeResources(gadgetCtx)
+
+	return nil
+}
+
+// initProgramTracers creates the per-program network tracers, uprobe tracers
+// and TC handlers selected by section name.
+func (i *ebpfInstance) initProgramTracers(gadgetCtx operators.GadgetContext) error {
 	// Create network tracers, one for each socket filter program
 	// The same applies to uprobe / uretprobe as well.
 	for _, p := range i.collectionSpec.Programs {
@@ -487,6 +524,11 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 			return err
 		}
 		if recovery {
+			continue
+		}
+		// A disabled program is never attached (see attachProgram), so its
+		// section name selects no tracer or handler and is not parsed.
+		if i.programAttachTarget(p) == disabledProgram {
 			continue
 		}
 		switch p.Type {
@@ -568,34 +610,6 @@ func (i *ebpfInstance) init(gadgetCtx operators.GadgetContext) error {
 			}
 		}
 	}
-
-	if len(i.tcHandlers) > 0 {
-		// For now, override enrichment
-		gadgetCtx.SetVar("NeedContainerEvents", true)
-		i.params["iface"] = &param{
-			Param: &api.Param{
-				Key:         ParamIface,
-				Description: "Network interface to attach to",
-			},
-		}
-	}
-
-	i.params[ParamTraceKernel] = &param{
-		Param: &api.Param{
-			Key:          ParamTraceKernel,
-			Title:        "Print Kernel Tracing Messages",
-			Description:  "Prints kernel messages from the trace pipe (e.g. coming from bpf_trace_printk)",
-			DefaultValue: "false",
-			TypeHint:     api.TypeBool,
-			Tags:         []string{api.TagAdvanced, "group:eBPF"},
-		},
-	}
-
-	for name, m := range i.collectionSpec.Maps {
-		gadgetCtx.SetVar(operators.MapSpecPrefix+name, m)
-	}
-	i.publishNativeResources(gadgetCtx)
-
 	return nil
 }
 
@@ -998,6 +1012,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	if err := i.installNativePoolReaperChain(gadgetCtx); err != nil {
 		return fmt.Errorf("installing native pool reaper chain: %w", err)
 	}
+	if err := i.installNativeTailCalls(); err != nil {
+		return fmt.Errorf("installing native tail calls: %w", err)
+	}
 
 	// Load the OTel entry programs into their type-matching prog-array maps.
 	// OTel symbolization uses BPF tail calls, which require the tail-called
@@ -1211,8 +1228,10 @@ func (i *ebpfInstance) Stop(gadgetCtx operators.GadgetContext) error {
 
 		i.unpublishNativeAttachments(gadgetCtx)
 		i.detachRawPrograms()
-		for _, l := range i.links {
-			gadgets.CloseLink(l)
+		// Reverse attach order: a native collection's links were appended in
+		// nativeattach.Order, so teardown mirrors attach (nativeattach.Rank).
+		for k := len(i.links) - 1; k >= 0; k-- {
+			gadgets.CloseLink(i.links[k])
 		}
 		i.links = nil
 

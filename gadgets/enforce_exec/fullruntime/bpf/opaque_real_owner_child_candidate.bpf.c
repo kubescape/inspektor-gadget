@@ -16,6 +16,32 @@
  * first include of shared_route.h. */
 #define ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE 1
 #endif
+/* G019 M4 product publisher: authenticated stage/publish/withdraw/recycle
+ * and root-task adoption commands (opaque_real_owner_product_publisher.h).
+ * Only on the product object and its product-source twins: it extends the
+ * route anchor (104 -> 112 B), so every IDENT baseline stays without it. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) &&      \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE) ||   \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE) ||      \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE))
+#error "the product publisher requires the product composition (fail-closed rate, source capsule, reap events, credit at exit)"
+#endif
+/* G019 gap 4 (review H1): every product object carries the same-bprm
+ * script-interpreter continuation; without it a #! exec is refused. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE)
+#error "the product publisher requires the interpreter continuation"
+#endif
+#if defined(SE_PRODUCT_DIAGNOSTIC_TWIN) && SE_PRODUCT_DIAGNOSTIC_TWIN != 1
+#error "SE_PRODUCT_DIAGNOSTIC_TWIN must be exactly 1"
+#endif
+#if defined(SE_PRODUCT_DIAGNOSTIC_TWIN) &&                                 \
+	(!defined(SE_PRODUCT_NO_TEST_RUN) ||                               \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_PUBLISH_FAULT_DIAGNOSTIC))
+#error "the product diagnostic twin is the product publisher object plus the publication fault injector and test-only fault injectors"
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 #define SE_EXEC_ROLE_FILL_BPF_LOOP 1
 #endif
@@ -35,6 +61,90 @@
 /* The constructor's inline boundaries are verifier-budget diagnostics until
  * this complete real-map path has passed admitted-kernel qualification. */
 #define ENFORCE_EXEC_POOL_OPAQUE_CHILD_WORK_TAILCALL_DIAGNOSTIC 1
+/* G019 section 8 product object: no TC (TEST_RUN classifier) program, no
+ * recovery authority, no disposable bootstrap or injector, and the product
+ * reaper's reap command and wakeups. The TEST_RUN-only entrypoints of the
+ * WORK completion probe and the terminal race are compiled out below. The
+ * fail-closed injectors (selector and extended) are admitted only in the
+ * product diagnostic twin (SE_PRODUCT_DIAGNOSTIC_TWIN), never in a product
+ * object. */
+#ifdef SE_PRODUCT_NO_TEST_RUN
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) ||                  \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_PRCTL_ARM_CANDIDATE) ||                  \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC) ||       \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_ABORT_INJECTOR_DIAGNOSTIC) ||            \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_DEFERRED_STORAGE_WITNESS_DIAGNOSTIC) ||  \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_PENDING_RECEIPT_DIAGNOSTIC) ||           \
+	(defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_DIAGNOSTIC) &&     \
+	 !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                                 \
+	(defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_EXT_DIAGNOSTIC) && \
+	 !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                                 \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE)
+#error "product object has no TEST_RUN classifier programs and needs the product reaper"
+#endif
+#endif
+/* G019 M4 revision headroom: the product publisher revises make-before-break
+ * (it stages the new policy into a FREE object before the old one is
+ * released), so with every binding published one policy object must still be
+ * free. The product control refuses the same profile (PolicyObjects <=
+ * Bindings) before any allocation. */
+#if defined(SE_PRODUCT_NO_TEST_RUN)
+_Static_assert(0ULL + SE_PROFILE_SLOTS_256 + SE_PROFILE_SLOTS_1024 +
+			       SE_PROFILE_SLOTS_4096 + SE_PROFILE_SLOTS_16384 >
+		       0ULL + SE_PROFILE_BINDINGS,
+	       "product object needs a spare policy object for revision");
+#endif
+/* G019 option C: synchronous WORK return at settle. The settling program
+ * returns the exact WORK it just moved to DONE at its own top level
+ * (real_owner_work_sync_return), so a WORK credit no longer waits for the
+ * userspace reaper; the reaper stays the fallback for every WORK the
+ * synchronous return did not complete. Settle encoding: a settling call
+ * returns its result in the low 32 bits and the settled WORK slot + 1 in
+ * the high 32 bits of a 64-bit R0 (no stack); without the flag the same
+ * calls return int and the macros are the identity. */
+/* G019 lead decision (b): without the synchronous return a WORK credit waits
+ * for the reaper, so no static capacity holds under reap latency (chain15/
+ * fs6x20: 4 of 160 zero-gate runs refused at (W-3)/2 on both kernels). The
+ * product requires the synchronous return; a non-sync capacity is a
+ * measured, test-only figure. */
+#if defined(SE_PRODUCT_NO_TEST_RUN) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE)
+#error "the product object requires the synchronous WORK return"
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE) || \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE)
+#error "synchronous WORK return requires the reap events and credit at exit"
+#endif
+#define SE_OWK_INIT_PAYLOAD_ZERO(slot) 0
+#define SE_SETTLE_T __s64
+#define SE_SETTLE_PACK(result, slot1) \
+	((__s64)(((__u64)(slot1) << 32) | (__u32)(result)))
+#define SE_SETTLE_RESULT(value) ((int)(value))
+#define SE_SETTLE_SLOT(value) ((__u32)((__u64)(value) >> 32))
+#define SE_DEATH_T __u32
+#else
+#define SE_SETTLE_T int
+#define SE_SETTLE_PACK(result, slot1) (result)
+#define SE_SETTLE_RESULT(value) (value)
+#define SE_SETTLE_SLOT(value) (value)
+#define SE_DEATH_T void
+#define SE_OWK_REAP_CLAIMED(slot, cookie) se_owk_reap_step((slot), (cookie))
+/* Without the flag the settling call still runs; only its slot is unused. */
+#define SE_WORK_SYNC_RETURN(settled, site) ((void)(settled))
+#endif
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_DECISION_WITNESS_DIAGNOSTIC) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE)
+#error "the WORK decision witness requires the synchronous WORK return"
+#endif
+/* The terminal-race rendezvous (its witness map and the bounded bpf_ktime
+ * spin it adds to every WORK completion) is diagnostic only. The product
+ * object keeps only the TERMINAL_RACE tail-call target
+ * opaque_real_owner_terminal_retain_target (never attached, no spin). */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_TERMINAL_RACE_DIAGNOSTIC) && \
+	!defined(SE_PRODUCT_NO_TEST_RUN)
+#define SE_TERMINAL_RACE_RENDEZVOUS 1
+#endif
 #if (defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_CLOSE_FAULT_DIAGNOSTIC) ||       \
      defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_TASK_CLOSE_FAULT_DIAGNOSTIC)) && \
 	!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC)
@@ -44,10 +154,19 @@
 	defined(ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_TASK_CLOSE_FAULT_DIAGNOSTIC)
 #error "inject only one post-publication close fault"
 #endif
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE) &&  \
-	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) || \
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE) &&        \
+	((!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) &&      \
+	  !defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE)) || \
 	 defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
-#error "native-config gate requires recovered control and no synthetic bootstrap"
+#error "native-config gate requires recovered control or the product publisher, and no synthetic bootstrap"
+#endif
+/* G019 M4 arming (fail-open fix): a product object arms its hooks only from
+ * the authenticated node configuration the product control installs and
+ * freezes (se_profile_matches(se_configuration)); the test gate map that
+ * only the bootstrap publisher writes must not exist in it. */
+#if defined(SE_PRODUCT_NO_TEST_RUN) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_NATIVE_CONFIG_GATE_CANDIDATE)
+#error "the product object arms only from the authenticated node configuration (NATIVE_CONFIG_GATE)"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE) && \
 	!defined(ENFORCE_EXEC_POOL_OPAQUE_READER_BEGIN_PROBE)
@@ -70,7 +189,7 @@
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC) || \
 	defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_SOURCE_COMPLETION_DIAGNOSTIC)
-static __attribute__((noinline)) int
+static __attribute__((noinline)) SE_SETTLE_T
 real_owner_work_completion_shape(__u64 key);
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_TERMINAL_DRAIN_DIAGNOSTIC
@@ -96,6 +215,32 @@ real_owner_reader_quarantine_pending(__u64 physical);
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) && \
 	defined(ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC)
 #error "verdict candidate has no proved pre-dispatch interpreter class recovery"
+#endif
+/* G019 gap 4 (review H1): the same-bprm script-interpreter continuation.
+ * Its pre-dispatch class is the exec capsule's frozen ORIGINAL class (the
+ * capsule admission re-claims the original route and reports the later
+ * admission, SE_CAP_LATER), and its receipt authentication needs the final
+ * failed-exec frames. It replaces the disposable same-bprm diagnostic. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE) &&        \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE) ||      \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE) ||    \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_READER_BEGIN_PROBE))
+#error "interpreter continuation requires the real-policy verdict, the source capsule and the final failed-exec frames"
+#endif
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_SAME_BPRM_CONTINUE_DIAGNOSTIC)
+#error "interpreter continuation replaces the same-bprm continuation diagnostic"
+#endif
+/* Test-only (G019 gap 4 attached test): forces the continuation's WORK
+ * resume to a mismatched stage class, i.e. a STALE resume refusal. Never
+ * in a product object; admitted in the product diagnostic twin (the GAP
+ * class of the live-node fail-closed injection test). */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC) && \
+	((defined(SE_PRODUCT_NO_TEST_RUN) &&                             \
+	  !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                       \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE))
+#error "the stale-resume injector is test only and needs the interpreter continuation"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_POLICY_TASK_CLOSE_FAULT_DIAGNOSTIC) &&  \
 	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
@@ -159,7 +304,29 @@ real_owner_stage_blob(unsigned int, unsigned long long, unsigned int);
 #else
 #define REAL_OWNER_EVAL_STAGE 1
 #endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+/* G019 gap 4: pass p (0..SE_OWK_EXEC_PASSES - 1) of one exec runs prepare at
+ * 3p+1, evaluation at 3p+2 and keeps its proposed WORK at the terminal stage
+ * 3p+3 (pass 0: today's 1, 2, 3). Every successor resumes the stage CLASS
+ * (residue, pass bound) and suspends to exactly the resumed stage + 1, so
+ * the WORK is still single-owner and monotone; the highest stage is 18 of
+ * SE_OWK_CONTINUATION_MAX 32. No pass charges a new WORK credit. */
+#define SE_OWK_STAGE_CLASSES 1
+#define REAL_OWNER_PREPARE_RESUME SE_OWK_STAGE_CLASS(1, SE_OWK_EXEC_PASSES - 1)
+#define REAL_OWNER_EVAL_RESUME SE_OWK_STAGE_CLASS(2, SE_OWK_EXEC_PASSES - 1)
+#define REAL_OWNER_TERMINAL_RESUME \
+	SE_OWK_STAGE_CLASS(0, SE_OWK_EXEC_PASSES - 1)
+#define REAL_OWNER_NEXT_STAGE(ticket, fixed) ((ticket).continuation_stage + 1U)
+#define SE_OWK_EVAL_VIEW_STAGE REAL_OWNER_EVAL_RESUME
+#else
+#define REAL_OWNER_PREPARE_RESUME 1
+#define REAL_OWNER_EVAL_RESUME REAL_OWNER_EVAL_STAGE
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
+#define REAL_OWNER_TERMINAL_RESUME REAL_OWNER_TERMINAL_STAGE
+#endif
+#define REAL_OWNER_NEXT_STAGE(ticket, fixed) (fixed)
 #define SE_OWK_EVAL_VIEW_STAGE REAL_OWNER_EVAL_STAGE
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_ADVANCE_DIAGNOSTIC
 /* Disposable observation of the exact post-death locator CAS. */
 struct se_ow_advance_observation {
@@ -368,12 +535,51 @@ static __always_inline void real_owner_storage_refused(__u32 index)
  * [0] constructor TASK quota LIMIT; [1] source refused the birth before the
  * target (start_work refusal, parent/terminal fault); [2] birth WORK
  * finished without a constructor (missing target, target resume/open
- * failure); [3] evaluation WORK refused (reader quarantined); [4] deferred
+ * failure; with the product publisher also an exec verdict-graph tail call
+ * that returned: SE_GRAPH_MISS); [3] evaluation WORK refused (reader quarantined); [4] deferred
  * storage quarantine (terminal receipt refused, failure frames not ready);
  * [5] other constructor failure (STALE, CONTENDED, CORRUPT, not attempted).
- * [6] is a subset, not a class: start_work exhausted SE_PROFILE_WORK_RETRIES
+ * G019 M0 exec-path classes, disjoint from [0..5] (a refused exec never
+ * opens a reader, so it reaches no evaluation or storage class):
+ * [6] first-exec qualification fault (real_owner_birth_qualify < 0 at
+ * bprm_check on an owned route; at task_alloc it is already [1]); [7]
+ * pending-receipt quarantine (owned exec refused while a prior terminal
+ * receipt is pending or its drain faulted); [8] birth target could not open
+ * the parent TASK (real_owner_child_open_parent in real_owner_child_finish);
+ * [9] GAP: only the interpreter continuation (G019 gap 4, review H1;
+ * ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE) refusing a later
+ * pass of one exec (its receipt or failure frames, reader classification or
+ * recovery, the exact suspended terminal WORK, the depth bound, the WORK
+ * rebind, or a missing continue/prepare graph entry; reason in
+ * opaque_real_interp_stats). A later pass with a terminal fault is refused
+ * before any continuation as QUALIFY [6] or PENDING [7]; the migration
+ * relabel (gap 5) is a status, never counted. Each counts against that
+ * pass's exec attempt [1]. The G019
+ * gaps 1-3 refusals land in CONSTRUCT [5], QUALIFY [6] and OPEN_PARENT
+ * [8], never in GAP.
+ * [10] is a subset, not a class: start_work exhausted SE_PROFILE_WORK_RETRIES
  * lost races; that refusal is also counted as [1], [3] or a refused
- * terminal fallback. Leaf frame only, at the existing witness call sites. */
+ * terminal fallback. Leaf frame only, at the existing witness call sites.
+ * G019 M4 (product publisher only, U2): [11] ENTRY, reported apart and
+ * outside Total like [10]: an exec on an OWNED route by a task with no TASK
+ * at all (no se_opaque_keys entry: a runtime exec entry or a migration in).
+ * With the product publisher [8] also counts the reader's own open or
+ * reserve refusal (a TASK present but unusable, e.g. QUARANTINED in Strict),
+ * and opaque_real_attempts counts every OWNED birth [0] and exec [1] claim:
+ * the denominator of Total and of ENTRY.
+ * [12] ADMISSION (product publisher only), outside Total like ENTRY: an exec
+ * admission fault before any reader opens (SE_ROUTE_STRICT/AUDIT/INVARIANT
+ * _FAULT from se_cap_admit or se_route_admit: capsule miss, busy, stale
+ * retire, unpinned frozen capsule, freeze error, adopting/reserved/saturated
+ * route, invariant; or an owned claim whose class differs from the frozen
+ * one). Each also counts an exec attempt [1]; Strict denies, Audit allows,
+ * neither silently. The fork source's admission faults (task_alloc:
+ * adopting, reserved, saturated or invariant route) count a birth attempt
+ * [0] plus ADMISSION the same way; the target's re-admission fault
+ * (design 13.20) counts ADMISSION too, against the birth attempt the source
+ * already counted (one class per attempt: never also CONSTRUCT); a target
+ * re-admission that is not a fault (UNSELECTED) stays CONSTRUCT [5].
+ * Another LSM's earlier deny is not ours to count. */
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE
 #ifndef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
 #error "fail-closed rate witness requires the real-policy verdict candidate"
@@ -384,8 +590,18 @@ static __always_inline void real_owner_storage_refused(__u32 index)
 #define REAL_OWNER_RATE_EVAL_WORK 3
 #define REAL_OWNER_RATE_STORAGE 4
 #define REAL_OWNER_RATE_CONSTRUCT 5
-#define REAL_OWNER_RATE_WORK_RETRY 6
-#define REAL_OWNER_RATE_CLASSES 7
+#define REAL_OWNER_RATE_QUALIFY 6
+#define REAL_OWNER_RATE_PENDING 7
+#define REAL_OWNER_RATE_OPEN_PARENT 8
+#define REAL_OWNER_RATE_GAP 9
+#define REAL_OWNER_RATE_WORK_RETRY 10
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#define REAL_OWNER_RATE_ENTRY 11
+#define REAL_OWNER_RATE_ADMISSION 12
+#define REAL_OWNER_RATE_CLASSES 13
+#else
+#define REAL_OWNER_RATE_CLASSES 11
+#endif
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, REAL_OWNER_RATE_CLASSES);
@@ -403,17 +619,363 @@ static __attribute__((noinline)) void real_owner_fail_closed_rate(__u32 index)
 		__sync_fetch_and_add(count, 1);
 }
 #define SE_FAIL_CLOSED_RATE(index) real_owner_fail_closed_rate(index)
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 2);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_attempts SEC(".maps");
+/* In the caller's existing frame (no new BPF-to-BPF frame). */
+#define SE_RATE_ATTEMPT(index)                                          \
+	do {                                                            \
+		__u32 se_rate_attempt_key = (index);                    \
+		__u64 *se_rate_attempt_count = bpf_map_lookup_elem(     \
+			&opaque_real_attempts, &se_rate_attempt_key);   \
+		if (se_rate_attempt_count)                              \
+			__sync_fetch_and_add(se_rate_attempt_count, 1); \
+	} while (0)
+#endif
 #else
 #define SE_FAIL_CLOSED_RATE(index) \
 	do {                       \
 	} while (0)
+#endif
+/* G019 M4 (product publisher): a verdict-graph tail call that returns (an
+ * empty PROG_ARRAY slot, or an exhausted tail-call budget) is a missing
+ * target: counted in [2] like the task_alloc constructor's, and the site
+ * then takes its static class verdict (Strict denies, Audit allows,
+ * uncounted otherwise). Only the code after a bpf_tail_call reaches it. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE)
+#define SE_GRAPH_MISS() SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_MISSING_TARGET)
+#else
+#define SE_GRAPH_MISS() \
+	do {            \
+	} while (0)
+#endif
+/* G019 M1 product reaper wakeups. A compact (cookie, slot, kind) record
+ * says that one exact charge became terminal: TASK DEAD (lsm/task_free after
+ * the directory withdrawal and lease release), WORK DONE (death finish),
+ * WORK ABORTED (constructor abort) or TASK ABORTED (exact semantic abort).
+ * It is a hint, never authority: the reaper re-reads the exact phase and
+ * cookie and the reap programs refuse anything not yet terminal. A refused
+ * reserve changes no enforcement or accounting; it loses one wakeup, which
+ * the reaper's fallback sweep covers, and is counted in
+ * opaque_real_reap_event_drops. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) && \
+	!defined(SE_PRODUCT_NO_TEST_RUN)
+#error "reap events require the recovered reaper or the product object"
+#endif
+/* A held death lease on a DEAD charge is a PENDING visit; only credit at
+ * exit witnesses one that stays held (SE_OR_TASK_HELD, HELD_STUCK). Without
+ * it a leaked lease would be PENDING forever with no counter, so the
+ * product reaper (reap events without recovery) requires credit at exit.
+ * Reap-event profiles without it (the OFF objects) are recovery builds for
+ * qualification only, never a product. */
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE)
+#error "product reap events require credit at exit (the held-lease witness)"
+#endif
+#define REAL_OWNER_REAP_TASK_DEAD 1
+#define REAL_OWNER_REAP_WORK_DONE 2
+#define REAL_OWNER_REAP_WORK_ABORTED 3
+#define REAL_OWNER_REAP_TASK_ABORTED 4
+struct opaque_real_reap_event {
+	__u64 cookie;
+	__u32 slot, kind;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 64 * 1024);
+} opaque_real_reap_events SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_reap_event_drops SEC(".maps");
+static __always_inline void real_owner_reap_event(__u32 kind, __u32 slot,
+						  __u64 cookie)
+{
+	struct opaque_real_reap_event *event = bpf_ringbuf_reserve(
+		&opaque_real_reap_events, sizeof(*event), 0);
+	if (!event) {
+		__u32 zero = 0;
+		__u64 *drops = bpf_map_lookup_elem(
+			&opaque_real_reap_event_drops, &zero);
+		if (drops)
+			__sync_fetch_and_add(drops, 1);
+		return;
+	}
+	event->cookie = cookie;
+	event->slot = slot;
+	event->kind = kind;
+	bpf_ringbuf_submit(event, 0);
+}
+#define SE_REAP_EVENT(kind, slot, cookie) \
+	real_owner_reap_event(REAL_OWNER_REAP_##kind, (slot), (cookie))
+#endif
+/* G019 credit at exit. The exact death settlement of a charged TASK
+ * (DEAD, exec/reader, WORK death, native, directory withdrawal, release,
+ * TASK_DEAD wakeup) runs in tp_btf/sched_process_exit instead of
+ * lsm/task_free, so a TASK credit returns at exit, not after the
+ * RCU-deferred free (~160 ms later). The exiting task never returns to
+ * userspace: no later bprm_check, exec terminal, sched_process_exec or
+ * task_alloc (as parent) can run with current == this task, and the
+ * address stays allocated (zombie or RCU-pending), so no successor can be
+ * born at it before task_free.
+ *
+ * se_exit_tombstones carries the exact identity (cookie, locator, slot) from
+ * exit to free, keyed by the physical task key bytes. An address is reused
+ * only after the slab free, so a tombstone its own free never consumed (a
+ * failed delete, a missed task_free) can be met by a later lifetime at the
+ * same address and is never trusted:
+ *   - at exit, every tombstone already at the key is an earlier lifetime's
+ *     (sched_process_exit fires once per task, before its free);
+ *   - at free, the tombstone is this lifetime's only if its start equals
+ *     task_struct.start_time (read through BTF at exit and at free) and the
+ *     directory does not name another charge at the key (a value other than
+ *     0 and the tombstone's locator: this task's own charge, still
+ *     published because its exit settled nothing). start_time alone is not
+ *     unique per lifetime: a non-leader exec (de_thread) takes the leader's
+ *     start_time, start_boottime and pid, so a thread born at the reused
+ *     address of a leader that exec'd that way can carry the earlier
+ *     lifetime's start_time again (start_boottime is copied alike and adds
+ *     nothing); the directory check is what separates such a charged
+ *     successor whose exit inserted nothing. An uncharged successor that
+ *     still matches finishes the earlier tombstone as if it were its own,
+ *     which settles nothing of its own (it has no charge).
+ *   RESERVED     inserted before se_of_record_death; the exact identity is
+ *                written as soon as se_of_record_death took the lease;
+ *   SETTLED      key DELETED and lease released at exit; free retires the
+ *                exact terminal receipt and the tombstone (TASK_FREED);
+ *   DIR_PENDING  the withdrawal was refused at exit (a receipt at the key,
+ *                CONTENDED or a failed stage): the death lease stays held,
+ *                so the reaper stays excluded (single deleter); free
+ *                rebuilds the exact lease, resumes the withdrawal and
+ *                releases it (TASK_DEAD, TASK_FREED);
+ *   FREE_PENDING the free-time resume was refused too: free released the
+ *                lease, the reaper's ordinary withdrawal retries as before
+ *                this change, and the reaper's next visit of the exact
+ *                charge retires the tombstone once no lease is held
+ *                (active_leases == 0). A free that cannot rebuild the exact
+ *                lease (identity, DEAD, active_leases == 1) or release it
+ *                counts LEASE_FAULT and leaves it held: the reaper never
+ *                retires that tombstone nor withdraws the key, so the slot
+ *                stays charged (fail-closed, a permanent loss of that one
+ *                slot, counted and reported Degraded);
+ *   RETIRING     a reaper won the FREE_PENDING -> RETIRING CAS and alone
+ *                deletes it (concurrent reapers lose the CAS);
+ *   FREED        consumed by its own free (TASK_FREED counted) just before
+ *                the delete; left only when that delete failed.
+ * A stale tombstone (an earlier lifetime's, above) found at exit or at free
+ * is counted STALE and finished as its own free would have: RESERVED and
+ * FREED are deleted, SETTLED is counted FREED and deleted, DIR_PENDING
+ * releases its held lease without resuming the withdrawal (FREE_PENDING, the
+ * reaper withdraws); the task at hand then takes its normal path. A FREED
+ * or RESERVED tombstone whose delete failed (TOMB_FAULT, Degraded) at an
+ * address no later lifetime reuses is not swept: it keeps one entry of its
+ * binding's share and of LIVE, bounded by the counted delete faults, and no
+ * credit (its charge settled or was never touched); a sweep would need a
+ * reaper-driven program over the map.
+ * Reaper exclusion: a reaper visit of a DEAD charge whose death lease is
+ * still held (an exit or free between withdrawal stages, a DIR_PENDING exit
+ * awaiting its free, a LEASE_FAULT) is PENDING (real_owner_exit_tomb_reap),
+ * never a fault: every reaper directory stage requires !active_leases.
+ * Overflow is fail-closed by ordering: the tombstone is inserted
+ * (BPF_NOEXIST) before se_of_record_death. A refused insert (the binding's
+ * share or the map full, a busy bucket, or an earlier lifetime's tombstone
+ * the reaper still owns) leaves the TASK untouched and the task_free
+ * fallback settles it exactly as before: slow, never early. Each such
+ * refusal is counted and reported Degraded (fullruntime/exit_credit.go).
+ *
+ * Accounting. A zombie holds no TASK credit: the quota bounds live tasks,
+ * the tombstones bound exited-but-unfreed ones. Each binding (TASK account,
+ * slot / SE_PROFILE_TASK_QUOTA) may hold at most SE_EXIT_TOMBSTONE_ACCOUNT
+ * tombstones (opaque_real_exit_accounts), so one workload that keeps its
+ * children as zombies overflows only its own share to the slow path; the
+ * shares sum to the map size, so the map itself cannot fill while the
+ * per-binding gauges are exact. Link order: attach the exit program before
+ * lsm/task_free and detach it before lsm/task_free, or a task settled at
+ * exit may miss its free-time consumption (then counted STALE at the
+ * address's next lifetime). */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
+#ifndef ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE
+#error "credit at exit requires the product reap events"
+#endif
+/* Witness only: counted and skipped by the node Reaper. */
+#define REAL_OWNER_REAP_TASK_FREED 5
+#ifdef SE_TEST_EXIT_TOMBSTONE_ENTRIES
+#ifndef ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC
+#error "shrunken exit tombstones require the disposable bootstrap"
+#endif
+#if SE_TEST_EXIT_TOMBSTONE_ENTRIES < 1 || \
+	SE_TEST_EXIT_TOMBSTONE_ENTRIES > 32 * SE_PROFILE_TASKS
+#error "exit tombstone override must be 1..32*SE_PROFILE_TASKS"
+#endif
+#define SE_EXIT_TOMBSTONE_ENTRIES SE_TEST_EXIT_TOMBSTONE_ENTRIES
+#else
+/* U1 sizing: the tombstone table is a profile parameter of its own,
+ * SE_PROFILE_EXIT_TOMBSTONES (node-wide, an exact multiple of the bindings),
+ * sized for the exit burst, not for the TASK pool: it bounds tasks that
+ * exited and await their RCU-deferred free (exit rate x exit-to-free
+ * latency). Measured G019 chains 6-9 (1,000-birth back-to-back bursts,
+ * steady 400/s, churn): live tombstones peaked at 824 node-wide (an older
+ * build without exit-time birth-receipt retirement held ~4.3k). Without an
+ * explicit value it stays 32 x SE_PROFILE_TASKS (4,096 / 8,192 / 16,384 at
+ * 64/8, 128/16, 256/32: unchanged objects, >= 5x the measured peak). A
+ * thread-sized TASK quota must set it explicitly (512/16: 8,192). */
+#ifndef SE_PROFILE_EXIT_TOMBSTONES
+#define SE_PROFILE_EXIT_TOMBSTONES (32 * SE_PROFILE_TASKS)
+#endif
+_Static_assert(
+	SE_PROFILE_EXIT_TOMBSTONES >= SE_PROFILE_BINDINGS &&
+		SE_PROFILE_EXIT_TOMBSTONES % SE_PROFILE_BINDINGS == 0 &&
+		SE_PROFILE_EXIT_TOMBSTONES <= (1U << 20),
+	"exit tombstones must be a multiple of the bindings, at most 2^20");
+#define SE_EXIT_TOMBSTONE_ENTRIES SE_PROFILE_EXIT_TOMBSTONES
+#endif
+/* Per-binding share of the tombstones (S4: overflow stays in its account). */
+#define SE_EXIT_TOMBSTONE_ACCOUNT \
+	(SE_EXIT_TOMBSTONE_ENTRIES / SE_PROFILE_BINDINGS)
+_Static_assert(SE_EXIT_TOMBSTONE_ACCOUNT >= 1,
+	       "every binding needs at least one exit tombstone");
+#define REAL_OWNER_EXIT_RESERVED 1
+#define REAL_OWNER_EXIT_SETTLED 2
+#define REAL_OWNER_EXIT_DIR_PENDING 3
+#define REAL_OWNER_EXIT_FREE_PENDING 4
+#define REAL_OWNER_EXIT_RETIRING 5
+#define REAL_OWNER_EXIT_FREED_STAGE 6
+/* flags: a receipt that is not this lifetime's stayed at the key. */
+#define REAL_OWNER_EXIT_FOREIGN_RECEIPT 1
+struct real_owner_exit_tombstone {
+	__u64 cookie, locator, start;
+	__u32 slot, stage, flags, account;
+};
+_Static_assert(sizeof(struct real_owner_exit_tombstone) == 40,
+	       "exit tombstone wire");
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, SE_EXIT_TOMBSTONE_ENTRIES);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u64);
+	__type(value, struct real_owner_exit_tombstone);
+} se_exit_tombstones SEC(".maps");
+/* Witness (fullruntime/exit_credit.go). Exact when quiescent:
+ * INSERTED == SETTLED + DIR_PENDING + UNSETTLED + UNSETTLED_FAULT, FREED ==
+ * SETTLED + DIR_PENDING, DIR_PENDING == DIR_RESUMED + DIR_FAULTED,
+ * REAPER_RETIRED == DIR_FAULTED, LIVE == 0; every DEAD TASK reap is SETTLED,
+ * DIR_PENDING or FALLBACK_FREE. HIGH_WATER is the largest LIVE (a lower
+ * bound: see real_owner_exit_tomb_insert). Refused inserts: OVERFLOW (map
+ * full), ACCOUNT_OVERFLOW (the binding's share full), BUSY (-EBUSY bucket),
+ * BLOCKED (an earlier lifetime's FREE_PENDING/RETIRING tombstone). UNSETTLED
+ * is se_of_record_death CONTENDED (this task never owned the charge: benign);
+ * UNSETTLED_FAULT is LIMIT, CORRUPT or STALE. RETIRE_LOST counts reaper
+ * visits that lost the FREE_PENDING -> RETIRING CAS (benign). LEASE_FAULT
+ * counts held exit leases a free could not rebuild exactly or release
+ * (real_owner_exit_finish_pending): the slot stays charged. HELD_STUCK
+ * counts DEAD charges whose death lease a reaper visit still found held
+ * REAL_OWNER_EXIT_HELD_STUCK_NS after it first found it so, with no
+ * accounted holder (real_owner_exit_held_watch): once per charge.
+ * HIGH_CROSSED counts the inserts that raised LIVE to REAL_OWNER_EXIT_HIGH_MARK
+ * (each upward crossing of the mark exactly once: the atomic increment
+ * returns that value to one insert per crossing), so a repeat peak below
+ * the lifetime HIGH_WATER is still seen in its window. */
+#define REAL_OWNER_EXIT_INSERTED 0
+#define REAL_OWNER_EXIT_LIVE 1
+#define REAL_OWNER_EXIT_HIGH_WATER 2
+#define REAL_OWNER_EXIT_OVERFLOW 3
+#define REAL_OWNER_EXIT_STALE 4
+#define REAL_OWNER_EXIT_SETTLED_COUNT 5
+#define REAL_OWNER_EXIT_DIR_PENDING_COUNT 6
+#define REAL_OWNER_EXIT_DIR_RESUMED 7
+#define REAL_OWNER_EXIT_DIR_FAULTED 8
+#define REAL_OWNER_EXIT_FALLBACK_FREE 9
+#define REAL_OWNER_EXIT_FREED 10
+#define REAL_OWNER_EXIT_REAPER_RETIRED 11
+#define REAL_OWNER_EXIT_UNSETTLED 12
+#define REAL_OWNER_EXIT_TOMB_FAULT 13
+#define REAL_OWNER_EXIT_UNSETTLED_FAULT 14
+#define REAL_OWNER_EXIT_BUSY 15
+#define REAL_OWNER_EXIT_BLOCKED 16
+#define REAL_OWNER_EXIT_ACCOUNT_OVERFLOW 17
+#define REAL_OWNER_EXIT_RETIRE_LOST 18
+#define REAL_OWNER_EXIT_LEASE_FAULT 19
+#define REAL_OWNER_EXIT_HELD_STUCK 20
+#define REAL_OWNER_EXIT_HIGH_CROSSED 21
+#define REAL_OWNER_EXIT_COUNTERS 22
+/* The high-water mark: the least LIVE with LIVE * 100 >= 75% of the map
+ * (fullruntime/exit_credit.go ExitCreditHighWaterPercent). */
+#define REAL_OWNER_EXIT_HIGH_MARK \
+	((SE_EXIT_TOMBSTONE_ENTRIES * 75ULL + 99) / 100)
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, REAL_OWNER_EXIT_COUNTERS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_exit_credit SEC(".maps");
+/* Tombstones held per binding (gauges, SE_EXIT_TOMBSTONE_ACCOUNT each). */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_PROFILE_BINDINGS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_exit_accounts SEC(".maps");
+/* Per TASK slot: the charge (cookie) a reaper visit found DEAD with its
+ * death lease held and no accounted holder, first seen at since (ktime);
+ * counted once HELD_STUCK (real_owner_exit_held_watch). */
+struct real_owner_exit_held {
+	__u64 cookie, since;
+	__u32 counted, reserved;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_PROFILE_TASKS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct real_owner_exit_held);
+} se_exit_held_watch SEC(".maps");
+static __attribute__((noinline)) void real_owner_exit_count(__u32 index)
+{
+	__u64 *counter = bpf_map_lookup_elem(&opaque_real_exit_credit, &index);
+	if (counter)
+		__sync_fetch_and_add(counter, 1);
+}
+/* Every tombstone delete goes through here, so LIVE and the binding's gauge
+ * stay exact. account is the tombstone's own (set at insert, never
+ * rewritten). */
+static __attribute__((noinline)) int real_owner_exit_tomb_delete(__u64 key,
+								 __u32 account)
+{
+	if (bpf_map_delete_elem(&se_exit_tombstones, &key)) {
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+		return -1;
+	}
+	__u32 index = REAL_OWNER_EXIT_LIVE;
+	__u64 *live = bpf_map_lookup_elem(&opaque_real_exit_credit, &index);
+	if (live)
+		__sync_fetch_and_add(live, -1);
+	__u64 *held = bpf_map_lookup_elem(&opaque_real_exit_accounts, &account);
+	if (held)
+		__sync_fetch_and_add(held, -1);
+	else
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+	return 0;
+}
 #endif
 /* WORK start retries per lost bit race (each loss is a sibling's charge).
  * Default: one per WORK credit up to 16 (min(WORK quota, 16)), so
  * contention alone never refuses at 64/8 and 128/16. The
  * rolled retry loop is re-walked per attempt; 32 attempts exceeded the 8192
  * pending-jump limit in the completion probes on AL2023 6.12 (g25d), 16
- * loaded. A smaller bound refuses fail-closed, witnessed by rate [6]. */
+ * loaded. A smaller bound refuses fail-closed, witnessed by rate [10]
+ * (WORK_RETRY, a subset of [1]/[3]). */
 #ifndef SE_PROFILE_WORK_RETRIES
 #define SE_PROFILE_WORK_RETRIES \
 	(SE_PROFILE_SCRATCH_QUOTA < 16 ? SE_PROFILE_SCRATCH_QUOTA : 16)
@@ -435,10 +997,77 @@ _Static_assert(
 		(__u64)SE_PROFILE_BINDINGS * SE_PROFILE_SCRATCH_QUOTA ==
 			SE_PROFILE_SCRATCH,
 	"verdict TASK/WORK pools must be partitioned exactly per binding");
+/* U1: TASK quota 512 per binding (the thread-sized profile) is measured at
+ * 512/16 and 512/32 on 6.12 and 6.18: every root <= 512 bytes once the TASK
+ * bitmap count is a loop instead of one unrolled register set per word
+ * (se_oc_bitmap_count, SE_OC_WORDS > 4; full/shared_pool_opaque_charge_candidate.h);
+ * the fork source and the task_alloc target then sit at exactly 512. A quota
+ * above 256 and below 512 adds words the same way and is not qualified. */
 _Static_assert(
-	SE_PROFILE_TASK_QUOTA >= 1 && SE_PROFILE_TASK_QUOTA <= 256 &&
+	((SE_PROFILE_TASK_QUOTA >= 1 && SE_PROFILE_TASK_QUOTA <= 256) ||
+	 SE_PROFILE_TASK_QUOTA == 512) &&
 		SE_PROFILE_SCRATCH_QUOTA >= 1 && SE_PROFILE_SCRATCH_QUOTA <= 32,
-	"verdict quota profile outside the measured TASK 1..256 / WORK 1..32 range");
+	"verdict quota profile outside the measured TASK 1..256 or 512 / WORK 1..32 range");
+/* A WORK quota that is not a power of two grows se_owk_begin's frame (112 ->
+ * 128 bytes: the slot arithmetic is no longer a mask), which puts the fork
+ * source at 528 > 512 bytes combined stack: unloadable. Refuse it here, at
+ * compile time (measured: 2, 4, 8 and 16 at 512; 3 at 528). */
+_Static_assert((SE_PROFILE_SCRATCH_QUOTA & (SE_PROFILE_SCRATCH_QUOTA - 1)) == 0,
+	       "verdict WORK quota must be a power of two (1..32)");
+#endif
+/* Test-only exact WORK high-water witness (G019 burst capacity): per WORK
+ * account, the largest used count any accepted charge produced, copied
+ * inside the account lock (shared_pool_opaque_work_candidate.h hooks) and
+ * raised with a bounded CAS after the unlock. lost counts a raise that lost
+ * 8 CAS rounds (the high-water is then a lower bound; tests require 0). It
+ * observes only; nothing reads it in BPF. Never in a product object. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_HIGH_WATER_DIAGNOSTIC
+#ifdef SE_PRODUCT_NO_TEST_RUN
+#error "the WORK high-water witness is diagnostic only"
+#endif
+struct opaque_real_work_high_water {
+	__u64 high;
+	__u64 lost;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_PROFILE_BINDINGS);
+	__type(key, __u32);
+	__type(value, struct opaque_real_work_high_water);
+} opaque_real_work_high_water SEC(".maps");
+static __always_inline void real_owner_work_high_water(__u32 slot, __u32 used)
+{
+	struct opaque_real_work_high_water *high =
+		bpf_map_lookup_elem(&opaque_real_work_high_water, &slot);
+	if (!high)
+		return;
+	for (int i = 0; i < 8; i++) {
+		__u64 seen = *(volatile __u64 *)&high->high;
+		if (used <= seen || __sync_val_compare_and_swap(
+					    &high->high, seen, used) == seen)
+			return;
+	}
+	__sync_fetch_and_add(&high->lost, 1);
+}
+#define SE_OWK_CHARGED_DECL __u32 se_owk_charged_used = 0
+#define SE_OWK_CHARGED_LOCKED(used) (se_owk_charged_used = (used))
+#define SE_OWK_CHARGED(slot) \
+	real_owner_work_high_water((slot), se_owk_charged_used)
+#endif
+/* Test-only WORK account fault-site witness (chain15 burst-nosync-s6): each
+ * site that sets a WORK account's fault (full/shared_pool_opaque_work_
+ * candidate.h sites 1-8, _work_reap_candidate.h site 9) also ORs its own
+ * bit into the same fault word, under the account lock it already holds:
+ * fault stays nonzero exactly as before (bit 0), and bits 1-9 name every
+ * site that fired. No local, helper or map: the fork chain's se_owk_begin
+ * sits at the 512-byte limit. The harness prints the word. Never in a
+ * product object. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_FAULT_SITE_DIAGNOSTIC
+#ifdef SE_PRODUCT_NO_TEST_RUN
+#error "the WORK fault-site witness is diagnostic only"
+#endif
+#define SE_OWK_FAULT_SITE(site) (account->fault |= 1U << (site))
+#define SE_OWK_FAULT_SITE_CLEAN(site) (account->fault = 1U | 1U << (site))
 #endif
 /* Test-only recovered-control composition. The physical admin registry
  * replaces TASK_STORAGE, but its guardian/admin protocol and native owner
@@ -482,6 +1111,11 @@ struct {
 	__type(value, __u64);
 } opaque_real_owner_rule_windows SEC(".maps");
 REAL_OWNER_CLASS_GRAPH(opaque_real_finish_strict);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+/* G019 gap 4: the static-class interpreter continuation entry. */
+REAL_OWNER_CLASS_GRAPH(opaque_real_continue_audit);
+REAL_OWNER_CLASS_GRAPH(opaque_real_continue_strict);
+#endif
 #undef REAL_OWNER_CLASS_GRAPH
 #else
 struct {
@@ -597,7 +1231,15 @@ static struct se_binding_snapshots *real_owner_work_binding_lookup(__u32 slot)
 #endif
 #define SE_OWK_CATALOGUE_EPOCH(scope, uid) se_catalogue_epoch((scope), (uid))
 #define SE_POOL_CATALOGUE_ROW_NOINLINE 1
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+/* G019 M0: first-exec qualification is part of the verdict candidate, not a
+ * diagnostic. The birth receipts, their issue/stamp/observe/retire path and
+ * real_owner_birth_qualify are built whenever the verdict candidate is;
+ * SUCCESSFUL_BIRTH_DIAGNOSTIC only adds the pure witness counters below. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC)
+#define SE_REAL_OWNER_BIRTH_QUALIFY 1
+#endif
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 /* A map row is never a successful-fork signal. task_alloc invalidates old
  * pointer state; only the charged, published child may stamp this receipt.
  * The post-success kernel tracepoint must still validate it before any
@@ -605,7 +1247,12 @@ static struct se_binding_snapshots *real_owner_work_binding_lookup(__u32 slot)
 struct opaque_birth_receipt {
 	__u64 child, child_cookie, child_locator;
 	__u64 parent, parent_cookie, scope, generation, serial;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 2: the birth claim's execution class (1 Audit, 2 Strict). */
+	__u32 slot, incarnation, record, state, observation, execution_class;
+#else
 	__u32 slot, incarnation, record, state, observation, reserved;
+#endif
 };
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -626,6 +1273,7 @@ struct {
 	__type(key, __u32);
 	__type(value, struct opaque_birth_receipt);
 } opaque_birth_receipt_zero SEC(".maps");
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 /* Test-only failed-birth witness: retired receipts that were issued and
  * stamped but never observed by sched_process_fork, i.e. copy_process failed
  * after security_task_alloc. [0] task_free retired it, [1] free_task did. */
@@ -636,8 +1284,10 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } opaque_birth_failed_retired SEC(".maps");
+#endif
 static __always_inline void real_owner_birth_retire(__u64 key, __u32 path)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 	const struct opaque_birth_receipt *receipt =
 		bpf_map_lookup_elem(&opaque_birth_receipts, &key);
 	if (receipt && receipt->state == 1 && receipt->child_cookie &&
@@ -647,8 +1297,12 @@ static __always_inline void real_owner_birth_retire(__u64 key, __u32 path)
 		if (count)
 			__sync_fetch_and_add(count, 1);
 	}
+#else
+	(void)path;
+#endif
 	(void)bpf_map_delete_elem(&opaque_birth_receipts, &key);
 }
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 /* Test-only birth accounting witness. [0] source birth start_work refused
  * before any WORK was charged; [1..5] target constructor status + 1 (OK,
  * STALE, CONTENDED, LIMIT, CORRUPT/other); [6] constructor not attempted
@@ -669,6 +1323,220 @@ static __attribute__((noinline)) void real_owner_birth_outcome(__u32 index)
 	if (count)
 		__sync_fetch_and_add(count, 1);
 }
+/* Test-only exact witness of the G019 M0 rate classes, counted where the
+ * outcome is decided (the rate witness counts it from the returned result):
+ * [0] owned exec refused on a first-exec qualification fault; [1] owned exec
+ * refused on a pending terminal receipt or drain fault; [2] birth target
+ * could not open the parent TASK. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 3);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_exec_exclusions SEC(".maps");
+static __attribute__((noinline)) void real_owner_exec_exclusion(__u32 index)
+{
+	__u32 key = index < 3 ? index : 1;
+	__u64 *count = bpf_map_lookup_elem(&opaque_real_exec_exclusions, &key);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+#define SE_EXEC_EXCLUSION_WITNESS(index) real_owner_exec_exclusion(index)
+#endif
+#endif
+#ifndef SE_EXEC_EXCLUSION_WITNESS
+#define SE_EXEC_EXCLUSION_WITNESS(index) \
+	do {                             \
+	} while (0)
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_DIAGNOSTIC
+#if (!defined(ENFORCE_EXEC_POOL_OPAQUE_ABORT_INJECTOR_DIAGNOSTIC) &&              \
+     !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                                     \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE) ||          \
+	!defined(                                                                 \
+		ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC) || \
+	!defined(SE_REAL_OWNER_BIRTH_QUALIFY)
+#error "fail-closed injectors require the abort injector or the product diagnostic twin, rate witness, success completion and birth qualification"
+#endif
+/* Test-only G019 fail-closed injectors, one selector each; 0 disables it:
+ * every[0] pending receipt: only the first exact success terminal of each
+ * task lifetime (task pointer and start_time, so a reused task_struct is a
+ * new task) is an edge, so a later exec of the same task always follows
+ * (the FORKR helper's "reexec"); the Nth edge is skipped, so its REGISTERED
+ * receipt stays pending and that next owned exec is refused (rate [7]). A
+ * later terminal of a marked task has no next exec and is never an edge.
+ * every[1] open parent: the Nth birth target behaves as if
+ * real_owner_child_open_parent failed (rate [8]); births whose parent is
+ * skip_parent are no edge. every[2] qualification: the Nth successful
+ * first-exec qualification at bprm_check is reported as a fault (rate [6]).
+ * Each fault then takes the product's own fail-closed path. */
+struct opaque_real_fc_inject_selector {
+	__u32 every[3];
+	__u32 reserved;
+	__u64 skip_parent;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, struct opaque_real_fc_inject_selector);
+} opaque_real_fc_inject_selector SEC(".maps");
+/* [0..2] edges seen while enabled, [3..5] injected, per selector. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 6);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_fc_inject_counts SEC(".maps");
+/* One task lifetime: a pending edge is its first success terminal only. */
+struct opaque_real_fc_task {
+	__u64 physical, start_time;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, struct opaque_real_fc_task);
+	__type(value, __u32);
+} opaque_real_fc_pending_marked SEC(".maps");
+static __attribute__((noinline)) int real_owner_fc_inject(__u32 kind)
+{
+	__u32 zero = 0, edge = kind < 3 ? kind : 0;
+	const struct opaque_real_fc_inject_selector *selector =
+		bpf_map_lookup_elem(&opaque_real_fc_inject_selector, &zero);
+	if (!selector)
+		return 0;
+	__u32 n = edge == 0 ? selector->every[0] :
+		  edge == 1 ? selector->every[1] :
+			      selector->every[2];
+	if (!n || (edge == 1 &&
+		   selector->skip_parent == (__u64)bpf_get_current_task_btf()))
+		return 0;
+	__u64 *seen = bpf_map_lookup_elem(&opaque_real_fc_inject_counts, &edge);
+	if (!seen || __sync_add_and_fetch(seen, 1) % n)
+		return 0;
+	__u32 hit = edge + 3;
+	__u64 *injected =
+		bpf_map_lookup_elem(&opaque_real_fc_inject_counts, &hit);
+	if (injected)
+		__sync_fetch_and_add(injected, 1);
+	return 1;
+}
+static __attribute__((noinline)) int real_owner_fc_pending_skip(__u64 physical)
+{
+	__u32 zero = 0, marked = 1;
+	const struct opaque_real_fc_inject_selector *selector =
+		bpf_map_lookup_elem(&opaque_real_fc_inject_selector, &zero);
+	if (!selector || !selector->every[0])
+		return 0;
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct opaque_real_fc_task id = { .physical = physical,
+					  .start_time = task->start_time };
+	if (bpf_map_lookup_elem(&opaque_real_fc_pending_marked, &id) ||
+	    bpf_map_update_elem(&opaque_real_fc_pending_marked, &id, &marked,
+				BPF_NOEXIST))
+		return 0;
+	return real_owner_fc_inject(0);
+}
+static __attribute__((noinline)) int real_owner_fc_qualify_fault(int qualified)
+{
+	return qualified < 0 || (qualified > 0 && real_owner_fc_inject(2));
+}
+#define SE_FC_PENDING_SKIP(physical) real_owner_fc_pending_skip(physical)
+#define SE_FC_OPEN_PARENT_FAULT() real_owner_fc_inject(1)
+#define SE_FC_QUALIFY_FAULT(qualified) real_owner_fc_qualify_fault(qualified)
+#else
+#define SE_FC_PENDING_SKIP(physical) 0
+#define SE_FC_OPEN_PARENT_FAULT() 0
+#define SE_FC_QUALIFY_FAULT(qualified) ((qualified) < 0)
+#endif
+/* The exit injector (below, with credit at exit) stays out of the product
+ * diagnostic twin: the twin's fail-closed injectors are exactly the selector,
+ * its counts and marker, and the extended injector. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_DIAGNOSTIC) && \
+	!defined(SE_PRODUCT_DIAGNOSTIC_TWIN)
+#define SE_FC_EXIT_INJECTOR 1
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_EXT_DIAGNOSTIC
+#if !defined(ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_DIAGNOSTIC) || \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) || \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE)
+#error "the extended fail-closed injector requires the fail-closed injectors and the product publisher"
+#endif
+/* Test-only G019 extended fail-closed injectors (separate from the selector
+ * above so that its objects keep their bytes), one period each; 0 disables:
+ * every[0] exec open parent: the Nth owned exec (product branch of
+ * real_owner_reader_begin_core) whose task has a TASK (se_opaque_keys hit)
+ * behaves as if real_owner_child_open_parent failed: OPEN_PARENT [8], never
+ * ENTRY; every[1] exec admission: the Nth owned first-pass exec admission
+ * takes the frozen-class mismatch path (claim released, exec attempt [1],
+ * ADMISSION [12]; Strict denies, Audit allows); every[2] birth admission:
+ * the Nth owned fork admission (real_owner_child_prepare_claimed) releases
+ * its claim before anything is parked and takes the source admission-fault
+ * path (birth attempt [0], ADMISSION [12]; Strict refuses the fork, Audit
+ * allows it unmanaged). Each fault then takes the product's own path. */
+struct opaque_real_fc_inject_ext {
+	__u32 every[3];
+	__u32 reserved;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, struct opaque_real_fc_inject_ext);
+} opaque_real_fc_inject_ext SEC(".maps");
+/* [0..2] edges seen while enabled, [3..5] injected, per period. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 6);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_fc_inject_ext_counts SEC(".maps");
+static __attribute__((noinline)) int real_owner_fc_inject_ext(__u32 kind)
+{
+	__u32 zero = 0, edge = kind < 3 ? kind : 0;
+	const struct opaque_real_fc_inject_ext *ext =
+		bpf_map_lookup_elem(&opaque_real_fc_inject_ext, &zero);
+	if (!ext)
+		return 0;
+	__u32 n = edge == 0 ? ext->every[0] :
+		  edge == 1 ? ext->every[1] :
+			      ext->every[2];
+	if (!n)
+		return 0;
+	__u64 *seen =
+		bpf_map_lookup_elem(&opaque_real_fc_inject_ext_counts, &edge);
+	if (!seen || __sync_add_and_fetch(seen, 1) % n)
+		return 0;
+	__u32 hit = edge + 3;
+	__u64 *injected =
+		bpf_map_lookup_elem(&opaque_real_fc_inject_ext_counts, &hit);
+	if (injected)
+		__sync_fetch_and_add(injected, 1);
+	return 1;
+}
+/* An edge only for a task with a TASK, so the refusal is [8], never ENTRY. */
+static __attribute__((noinline)) int
+real_owner_fc_exec_open_parent_fault(__u64 key)
+{
+	if (!bpf_map_lookup_elem(&se_opaque_keys, &key))
+		return 0;
+	return real_owner_fc_inject_ext(0);
+}
+#define SE_FC_EXEC_OPEN_PARENT_FAULT(key) \
+	real_owner_fc_exec_open_parent_fault(key)
+#define SE_FC_EXEC_ADMISSION_FAULT(later) \
+	(!(later) && real_owner_fc_inject_ext(1))
+#define SE_FC_BIRTH_ADMISSION_FAULT() real_owner_fc_inject_ext(2)
+#else
+#define SE_FC_EXEC_OPEN_PARENT_FAULT(key) 0
+#define SE_FC_EXEC_ADMISSION_FAULT(later) 0
+#define SE_FC_BIRTH_ADMISSION_FAULT() 0
 #endif
 #include "shared_pool_opaque_inherit_candidate.h"
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE
@@ -793,13 +1661,145 @@ int opaque_real_pending_receipt_cleanup(struct __sk_buff *skb)
 #endif
 #endif
 
+/* The reaper visit helpers (and the credit-at-exit pre-visit) serve both the
+ * recovery pool reaper and the product reap command opaque_real_reap; the
+ * reaper wire, control, chunk and transport are recovery-only. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) || \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE)
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE
 #define ENFORCE_EXEC_POOL_REAPER_CANDIDATE 1
 #include "shared_pool_reaper_wire_candidate.h"
 #define SE_POOL_T SE_OL_TASKS
 #define SE_POOL_W SE_OWK_WORKS
 #include "shared_pool_reaper_control_candidate.h"
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
+/* A held death lease is accounted while this charge's own tombstone shows
+ * its holder: DIR_PENDING (the exit kept it until its free, or the free is
+ * resuming it) or FREE_PENDING (the free set it before its release, or
+ * counted LEASE_FAULT). Anything else holding the lease is a program in
+ * flight (an exit before it wrote its identity, the task_free fallback
+ * between its stages: microseconds) or a lease nobody will release: more
+ * than one lease, a DIR_PENDING whose free never came after its tombstone
+ * was lost, a release that failed after the tombstone was deleted (also
+ * LEASE_FAULT). Such a visit is PENDING, never a fault; this watch counts
+ * HELD_STUCK (Degraded) once the same charge is still found so
+ * REAL_OWNER_EXIT_HELD_STUCK_NS after a visit first found it, so a held
+ * lease can never hide a lost holder forever. An accounted visit or a
+ * lease-free visit of the charge clears the watch. */
+#define REAL_OWNER_EXIT_HELD_STUCK_NS 1000000000ULL
+static __attribute__((noinline)) void real_owner_exit_held_clear(__u32 slot,
+								 __u64 cookie)
+{
+	struct real_owner_exit_held *watch =
+		bpf_map_lookup_elem(&se_exit_held_watch, &slot);
+	if (watch && watch->cookie == cookie)
+		watch->cookie = 0;
+}
+static __attribute__((noinline)) void real_owner_exit_held_watch(__u32 slot,
+								 __u64 cookie,
+								 __u64 locator,
+								 __u32 leases)
+{
+	const __u64 *original = archive_lookup(slot);
+	if (leases == 1 && original && *original) {
+		__u64 key = *original;
+		struct real_owner_exit_tombstone *tomb =
+			bpf_map_lookup_elem(&se_exit_tombstones, &key);
+		if (tomb && tomb->cookie == cookie &&
+		    tomb->locator == locator && tomb->slot == slot &&
+		    (tomb->stage == REAL_OWNER_EXIT_DIR_PENDING ||
+		     tomb->stage == REAL_OWNER_EXIT_FREE_PENDING)) {
+			real_owner_exit_held_clear(slot, cookie);
+			return;
+		}
+	}
+	struct real_owner_exit_held *watch =
+		bpf_map_lookup_elem(&se_exit_held_watch, &slot);
+	if (!watch)
+		return;
+	__u64 now = bpf_ktime_get_ns();
+	if (watch->cookie != cookie) {
+		watch->counted = 0;
+		watch->since = now;
+		watch->cookie = cookie;
+		return;
+	}
+	if (watch->counted ||
+	    now - watch->since < REAL_OWNER_EXIT_HELD_STUCK_NS)
+		return;
+	if (__sync_val_compare_and_swap(&watch->counted, 0, 1) == 0)
+		real_owner_exit_count(REAL_OWNER_EXIT_HELD_STUCK);
+}
+#define SE_OR_TASK_HELD(slot, cookie, locator, leases) \
+	real_owner_exit_held_watch((slot), (cookie), (locator), (leases))
+/* Reaper visit pre-step of the exact charge (SE_OR_TASK_PRE_VISIT). A DEAD
+ * charge whose death lease is still held never reaches it: se_or_task_visit
+ * reads active_leases in the same lock section as its stage snapshot and is
+ * PENDING then (the exit or free holding it is between withdrawal stages, a
+ * DIR_PENDING exit awaits its free, or a free counted LEASE_FAULT), which
+ * also keeps a FREE_PENDING tombstone from being retired before its lease is
+ * released; real_owner_exit_held_watch witnesses a lease that stays held.
+ * This step retires a FREE_PENDING tombstone of this exact charge. Its task was
+ * freed, its lease released, and the archive still holds its key bytes
+ * (only the reaper zeroes it, after this visit step). Exit and
+ * free never delete FREE_PENDING or RETIRING, and no successor can insert at
+ * this key while the tombstone exists (BPF_NOEXIST). Concurrent reapers are
+ * safe by CAS: only the visit that moves stage FREE_PENDING -> RETIRING
+ * deletes, after re-checking the exact identity, which nobody else writes
+ * while RETIRING. A visit that lost the CAS returns PENDING (the winner may
+ * not have deleted yet), and a later lifetime's tombstone at the same key
+ * (RESERVED .. FREED, or FREE_PENDING with another cookie) is never
+ * deleted here: a stale reaper that read FREE_PENDING before a reuse fails
+ * the CAS or the identity re-check. Returns nonzero (visit PENDING) when
+ * the delete failed or the CAS was lost, so the reaper retries before it can
+ * zero the archive. */
+static __attribute__((noinline)) int
+real_owner_exit_tomb_reap(__u32 slot, __u64 cookie, __u64 locator)
+{
+	real_owner_exit_held_clear(slot, cookie);
+	const __u64 *original = archive_lookup(slot);
+	if (!original || !*original)
+		return 0;
+	__u64 key = *original;
+	struct real_owner_exit_tombstone *tomb =
+		bpf_map_lookup_elem(&se_exit_tombstones, &key);
+	if (!tomb || tomb->stage != REAL_OWNER_EXIT_FREE_PENDING ||
+	    tomb->cookie != cookie || tomb->locator != locator ||
+	    tomb->slot != slot)
+		return 0;
+	if (__sync_val_compare_and_swap(
+		    &tomb->stage, REAL_OWNER_EXIT_FREE_PENDING,
+		    REAL_OWNER_EXIT_RETIRING) != REAL_OWNER_EXIT_FREE_PENDING) {
+		real_owner_exit_count(REAL_OWNER_EXIT_RETIRE_LOST);
+		return 1;
+	}
+	if (tomb->cookie != cookie || tomb->locator != locator ||
+	    tomb->slot != slot) {
+		/* The element was reused by a later lifetime between the checks:
+		 * not this charge's tombstone. Hand it back untouched. */
+		tomb->stage = REAL_OWNER_EXIT_FREE_PENDING;
+		real_owner_exit_count(REAL_OWNER_EXIT_RETIRE_LOST);
+		return 0;
+	}
+	if (real_owner_exit_tomb_delete(key, tomb->account)) {
+		tomb->stage = REAL_OWNER_EXIT_FREE_PENDING;
+		return 1;
+	}
+	real_owner_exit_count(REAL_OWNER_EXIT_REAPER_RETIRED);
+	return 0;
+}
+#define SE_OR_TASK_PRE_VISIT(slot, cookie, locator)               \
+	(real_owner_exit_tomb_reap((slot), (cookie), (locator)) ? \
+		 SE_OR_PENDING :                                  \
+		 SE_OR_EMPTY)
+#endif
 #include "shared_pool_opaque_reaper_visit_candidate.h"
+/* Product/qualification profile: omit the recovery-only pool reaper
+ * (se_pool_reaper_* programs, se_pool_reap_* maps); the visit helpers above
+ * stay for the product reap command opaque_real_reap. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_RECOVERY_CANDIDATE) && \
+	!defined(SE_PRODUCT_NO_POOL_REAPER)
 /* Reaper transport is not selected by the product. Its request is writable
  * only by the controller; control and receipt are writable only by BPF. */
 struct {
@@ -825,6 +1825,268 @@ struct {
 } se_pool_reap_receipt SEC(".maps");
 #include "shared_pool_opaque_reaper_chunk_candidate.h"
 #include "shared_pool_reaper_transport_candidate.h"
+#endif
+#endif
+
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE
+/* G019 M1 product reap command: one exact reap step of one charge, run with
+ * BPF_PROG_TEST_RUN from the node reaper (a syscall program is never
+ * attached). The argument is the caller's own context, so concurrent callers
+ * share no request map. It grants nothing: TASK requires the exact charge
+ * cookie, and both steps refuse (PENDING/STALE/EMPTY) anything not yet
+ * terminal. Codes: WORK = se_owk_reap_step, TASK = se_or_task_visit, 255 =
+ * malformed command; a TASK cookie the charge no longer carries is PENDING. */
+struct opaque_real_reap_command {
+	__u64 cookie;
+	__u32 slot, kind;
+};
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+/* Per-WORK visit claim (option C). A visitor of one WORK charge (the
+ * synchronous return for its whole sequence, the reap command for one step)
+ * CASes the slot's claim from 0 to the charge cookie and releases it on
+ * every path; any other visitor meanwhile gets SE_OWK_CLAIM_HELD and touches
+ * nothing. The claim is never taken while a spin lock is held. TASK charges
+ * keep the single-reaper rule (no claim). The reap command watches a claim
+ * it keeps finding held: still the same claim REAL_OWNER_WORK_CLAIM_STUCK_NS
+ * after it first saw it counts WORK_SYNC_STUCK once (Degraded), so a lost
+ * release can never hold a credit silently (the held-lease rule). */
+#define SE_OWK_CLAIM_HELD 6
+#define REAL_OWNER_WORK_CLAIM_STUCK_NS 1000000000ULL
+struct se_owk_visit_claim {
+	__u64 claim, seen, since;
+	__u32 counted, reserved;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_OWK_WORKS);
+	__type(key, __u32);
+	__type(value, struct se_owk_visit_claim);
+} se_owk_visit_claims SEC(".maps");
+/* Synchronous WORK return witness. Its presence is also the "has the
+ * synchronous return" signal (capacity (W-1)/2). Settled counts the WORKs a
+ * settling program handed to the synchronous return, per site; each ends as
+ * exactly one of returned, claim-lost (the reaper held the claim and
+ * finishes the WORK), stale (the charge no longer named a just-settled
+ * WORK), pending or fault (a stage refused: the WORK waits for the reaper;
+ * Degraded). stuck is counted by the reap command (above). */
+#define REAL_OWNER_WORK_SYNC_SETTLED_BIRTH 0
+#define REAL_OWNER_WORK_SYNC_SETTLED_EXEC 1
+#define REAL_OWNER_WORK_SYNC_SETTLED_DEATH 2
+#define REAL_OWNER_WORK_SYNC_RETURNED 3
+#define REAL_OWNER_WORK_SYNC_CLAIM_LOST 4
+#define REAL_OWNER_WORK_SYNC_STALE 5
+#define REAL_OWNER_WORK_SYNC_PENDING 6
+#define REAL_OWNER_WORK_SYNC_FAULT 7
+#define REAL_OWNER_WORK_SYNC_STUCK 8
+#define REAL_OWNER_WORK_SYNC_COUNTERS 9
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, REAL_OWNER_WORK_SYNC_COUNTERS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_work_sync SEC(".maps");
+static __attribute__((noinline)) void real_owner_work_sync_count(__u32 index)
+{
+	__u64 *count = bpf_map_lookup_elem(&opaque_real_work_sync, &index);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+/* Test-only decision witness (never in a product object). The synchronous
+ * return zeroes the evaluation WORK's payload before a test harness could
+ * read its decision; this snapshots the decision fields the harness checks
+ * (se_invocation observation.evaluator.decision deny/mode, as its payload
+ * read before a reap does) right before the return, under the visit claim,
+ * for every WORK carrying a decision. Last snapshot wins, as the harness's
+ * own payload read; count is the number of snapshots. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_DECISION_WITNESS_DIAGNOSTIC
+#ifdef SE_PRODUCT_NO_TEST_RUN
+#error "the WORK decision witness is diagnostic only"
+#endif
+struct opaque_real_work_decision {
+	__u64 count, cookie;
+	__u32 deny, mode;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct opaque_real_work_decision);
+} opaque_real_work_decision SEC(".maps");
+static __attribute__((noinline)) void
+real_owner_work_decision_snapshot(__u32 slot, __u64 cookie)
+{
+	__u32 zero = 0;
+	struct se_owk_payload *payload = SE_OWK_PAYLOAD_LOOKUP(slot);
+	struct opaque_real_work_decision *witness =
+		bpf_map_lookup_elem(&opaque_real_work_decision, &zero);
+	if (!payload || !witness)
+		return;
+	const struct fe_decision *decision =
+		&payload->semantic.observation.evaluator.decision;
+	__u32 mode = decision->mode;
+	if (!mode)
+		return;
+	witness->deny = decision->deny;
+	witness->mode = mode;
+	witness->cookie = cookie;
+	__sync_fetch_and_add(&witness->count, 1);
+}
+#define SE_WORK_DECISION_SNAPSHOT(slot, cookie) \
+	real_owner_work_decision_snapshot((slot), (cookie))
+#else
+#define SE_WORK_DECISION_SNAPSHOT(slot, cookie) ((void)0)
+#endif
+/* One reap-command step under the visit claim. */
+static __attribute__((noinline)) int real_owner_work_reap_claimed(__u32 slot,
+								  __u64 cookie)
+{
+	struct se_owk_visit_claim *claim =
+		bpf_map_lookup_elem(&se_owk_visit_claims, &slot);
+	if (!claim)
+		return SE_OWK_CORRUPT;
+	__u64 held = __sync_val_compare_and_swap(&claim->claim, 0, cookie);
+	if (held) {
+		__u64 now = bpf_ktime_get_ns();
+		if (claim->seen != held) {
+			claim->seen = held;
+			claim->since = now;
+			claim->counted = 0;
+		} else if (!claim->counted &&
+			   now - claim->since >=
+				   REAL_OWNER_WORK_CLAIM_STUCK_NS &&
+			   __sync_val_compare_and_swap(&claim->counted, 0, 1) ==
+				   0) {
+			real_owner_work_sync_count(REAL_OWNER_WORK_SYNC_STUCK);
+		}
+		return SE_OWK_CLAIM_HELD;
+	}
+	claim->seen = 0;
+	int result = se_owk_reap_step(slot, cookie);
+	(void)__sync_val_compare_and_swap(&claim->claim, cookie, 0);
+	return result;
+}
+struct real_owner_work_sync_ctx {
+	__u64 cookie;
+	__u32 slot;
+	int result;
+};
+#ifndef SE_OWK_SYNC_STRAIGHT_LINE
+static long real_owner_work_sync_step(__u64 index, void *raw)
+{
+	struct real_owner_work_sync_ctx *ctx = raw;
+	(void)index;
+	ctx->result = se_owk_reap_step(ctx->slot, ctx->cookie);
+	return ctx->result != SE_OWK_PROGRESS;
+}
+#endif
+/* The synchronous return of the WORK a settling program just moved to DONE
+ * (settled = its slot + 1; 0: nothing settled). Called only at a settling
+ * program's top level: the bpf_loop ctx lives in this frame, never in a
+ * root frame. The cookie is read from the charge; only a charge whose meta
+ * is still DONE or ABORTED under that same cookie is visited, so a stale or
+ * reused slot is counted stale and left alone. The claim is tried once: a
+ * reaper step holding it finishes the WORK itself (claim-lost). The seven
+ * reaper stages run unchanged, one per iteration, and stop at the first
+ * result that is not PROGRESS. Every exit other than returned or claim-lost
+ * emits WORK_DONE again, so the reaper always has a recovery wakeup. */
+static __attribute__((noinline)) void real_owner_work_sync_return(__u32 settled,
+								  __u32 site)
+{
+	if (!settled || settled > SE_OWK_WORKS)
+		return;
+	real_owner_work_sync_count(site);
+	__u32 slot = settled - 1;
+	struct se_owk_charge *charge = SE_OWK_CHARGE_LOOKUP(slot);
+	struct se_owk_meta *meta = SE_OWK_META_LOOKUP(slot);
+	struct se_owk_visit_claim *claim =
+		bpf_map_lookup_elem(&se_owk_visit_claims, &slot);
+	if (!charge || !meta || !claim) {
+		real_owner_work_sync_count(REAL_OWNER_WORK_SYNC_FAULT);
+		return;
+	}
+	__u64 cookie = *(volatile __u64 *)&charge->cookie;
+	bpf_spin_lock(&meta->lock);
+	int settled_exact =
+		cookie && meta->cookie == cookie &&
+		(meta->phase == SE_OWK_DONE || meta->phase == SE_OWK_ABORTED);
+	bpf_spin_unlock(&meta->lock);
+	if (!settled_exact) {
+		real_owner_work_sync_count(REAL_OWNER_WORK_SYNC_STALE);
+		if (cookie)
+			SE_REAP_EVENT(WORK_DONE, slot, cookie);
+		return;
+	}
+	if (__sync_val_compare_and_swap(&claim->claim, 0, cookie)) {
+		real_owner_work_sync_count(REAL_OWNER_WORK_SYNC_CLAIM_LOST);
+		return;
+	}
+	/* Before stage 3 zeroes the payload (test-only witness). */
+	SE_WORK_DECISION_SNAPSHOT(slot, cookie);
+	struct real_owner_work_sync_ctx ctx = {
+		.cookie = cookie,
+		.slot = slot,
+		.result = SE_OWK_PENDING,
+	};
+#ifdef SE_OWK_SYNC_STRAIGHT_LINE
+	/* Fallback if bpf_loop with spin locks in its callback is refused
+	 * (run-g19sync-spike.sh): the same seven stages as direct calls. */
+	ctx.result = se_owk_reap_step(slot, cookie);
+	if (ctx.result == SE_OWK_PROGRESS)
+		ctx.result = se_owk_reap_step(slot, cookie);
+	if (ctx.result == SE_OWK_PROGRESS)
+		ctx.result = se_owk_reap_step(slot, cookie);
+	if (ctx.result == SE_OWK_PROGRESS)
+		ctx.result = se_owk_reap_step(slot, cookie);
+	if (ctx.result == SE_OWK_PROGRESS)
+		ctx.result = se_owk_reap_step(slot, cookie);
+	if (ctx.result == SE_OWK_PROGRESS)
+		ctx.result = se_owk_reap_step(slot, cookie);
+	if (ctx.result == SE_OWK_PROGRESS)
+		ctx.result = se_owk_reap_step(slot, cookie);
+#else
+	if (bpf_loop(7, real_owner_work_sync_step, &ctx, 0) < 0)
+		ctx.result = SE_OWK_PENDING;
+#endif
+	(void)__sync_val_compare_and_swap(&claim->claim, cookie, 0);
+	if (ctx.result == SE_OWK_RETURNED) {
+		real_owner_work_sync_count(REAL_OWNER_WORK_SYNC_RETURNED);
+		return;
+	}
+	real_owner_work_sync_count(
+		ctx.result == SE_OWK_CORRUPT ? REAL_OWNER_WORK_SYNC_FAULT :
+		ctx.result == SE_OWK_STALE ||
+				ctx.result == SE_OWK_ALREADY_RETURNED ?
+					       REAL_OWNER_WORK_SYNC_STALE :
+					       REAL_OWNER_WORK_SYNC_PENDING);
+	SE_REAP_EVENT(WORK_DONE, slot, cookie);
+}
+#define SE_OWK_REAP_CLAIMED(slot, cookie) \
+	real_owner_work_reap_claimed((slot), (cookie))
+#define SE_WORK_SYNC_RETURN(settled, site) \
+	real_owner_work_sync_return((settled), (site))
+#endif
+SEC("syscall")
+int opaque_real_reap(struct opaque_real_reap_command *args)
+{
+	__u64 cookie = args->cookie;
+	__u32 slot = args->slot, kind = args->kind;
+	if (!cookie)
+		return 255;
+	if (kind == 1)
+		return slot < SE_OWK_WORKS ? SE_OWK_REAP_CLAIMED(slot, cookie) :
+					     255;
+	if (kind != 2 || slot >= SE_OL_TASKS)
+		return 255;
+	struct se_oc_charge *charge = charge_lookup(slot);
+	if (!charge)
+		return SE_OR_FAULT;
+	/* The charge no longer carries this cookie: returned (or reused) after
+	 * the caller read it. Nothing of that charge is left to reap. */
+	if (charge->cookie != cookie)
+		return SE_OR_PENDING;
+	return se_or_task_visit(slot);
+}
 #endif
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC
@@ -1231,6 +2493,9 @@ struct {
 	__type(key, __u64);
 	__type(value, struct se_failure_handler_frame);
 } se_failure_handler_frames SEC(".maps");
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+#include "shared_exec_interp_continuation.h"
+#endif
 
 static __always_inline int real_owner_failure_scope(void)
 {
@@ -1398,7 +2663,9 @@ int BPF_PROG(opaque_real_owner_failure_fexit_probe, struct linux_binprm *bprm)
 		return 0;
 	__u64 key = (__u64)bpf_get_current_task_btf();
 	if (real_owner_failure_fexit_publish(key, (__u64)bprm))
-		(void)real_owner_work_completion_shape(key);
+		SE_WORK_SYNC_RETURN(
+			SE_SETTLE_SLOT(real_owner_work_completion_shape(key)),
+			REAL_OWNER_WORK_SYNC_SETTLED_EXEC);
 	/* Outer kretprobe still cleans its frames. If completion retired the
 	 * receipt, its later terminal CAS is a no-op, not a second completion. */
 	return 0;
@@ -1518,6 +2785,12 @@ real_owner_policy_stage_begin(struct se_owk_payload *payload)
 /* begin -> policy -> prepare -> stage -> rule x windows -> finish. */
 _Static_assert(256 / REAL_OWNER_RULE_WINDOW_STEPS + 4 <= 33,
 	       "rule windows must fit the tail-call budget");
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+/* An interpreter pass: begin -> continue -> prepare -> stage -> rule x
+ * windows -> finish. Each bprm_check pass has its own tail-call budget. */
+_Static_assert(256 / REAL_OWNER_RULE_WINDOW_STEPS + 5 <= 33,
+	       "an interpreter pass must fit the tail-call budget");
+#endif
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_RULE_WINDOW_DIAGNOSTIC
 static __attribute__((always_inline)) inline int
@@ -1589,7 +2862,7 @@ static __attribute__((always_inline)) inline int
 real_owner_policy_rule_claimed_eval(__u64 scope)
 {
 	struct se_owk_payload *payload =
-		se_owk_suspended_current(scope, REAL_OWNER_EVAL_STAGE, 3);
+		se_owk_suspended_current(scope, REAL_OWNER_EVAL_RESUME, 3);
 	return payload ? real_owner_policy_rule_window(payload) : -7;
 }
 #endif
@@ -1779,7 +3052,72 @@ static __attribute__((noinline)) void real_owner_child_missing_target(void)
 	 !defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_LIVE_BOOTSTRAP_DIAGNOSTIC))
 #error "birth fault injection requires successful-birth disposable bootstrap"
 #endif
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#ifndef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE
+#error "the birth park's task_free release rides the exec capsule death retire"
+#endif
+/* G019 gaps 1 and 2: the birth park and the cross-generation first-exec
+ * qualification (full/shared_birth_receipt.h). The park is per-task storage
+ * on the forking task. */
+struct se_birth_park;
+static __always_inline struct se_birth_park *real_owner_birth_park(__u64 flags);
+static __attribute__((noinline)) void real_owner_birth_park_count(__u32 index);
+#define SE_BIRTH_PARK_LOOKUP(create) \
+	real_owner_birth_park((create) ? BPF_LOCAL_STORAGE_GET_F_CREATE : 0)
+#define SE_BIRTH_PARK_COUNT(index) real_owner_birth_park_count(index)
+#define SE_BIRTH_CLAIM_RELEASE(claim) real_owner_child_release_claim(claim)
+#define SE_BIRTH_ROUTE_LOOKUP(slot) route_lookup(slot)
+#include "shared_birth_receipt.h"
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct se_birth_park);
+} se_birth_parks SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_BIRTH_PARK_CELLS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_birth_park SEC(".maps");
+static __always_inline struct se_birth_park *real_owner_birth_park(__u64 flags)
+{
+	return bpf_task_storage_get(&se_birth_parks, bpf_get_current_task_btf(),
+				    0, flags);
+}
+static __attribute__((noinline)) void real_owner_birth_park_count(__u32 index)
+{
+	__u64 *count = bpf_map_lookup_elem(&opaque_real_birth_park, &index);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_BIRTH_PARK_SPIN_DIAGNOSTIC
+/* Never in a product object. Like the publication fault injector, its one
+ * product-composition carrier is the explicit test twin
+ * (SE_PRODUCT_DIAGNOSTIC_TWIN: se_admin authority, so the product publisher
+ * binds and publishes on it; product admission refuses that twin by its
+ * injector map). */
+#if defined(SE_PRODUCT_NO_TEST_RUN) && !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)
+#error "the birth-park spin widens a diagnostic twin's straddle window only"
+#endif
+/* Test only (diagnostic twins): busy-wait between the source's park and
+ * the target's take, so a revision every few milliseconds overlaps parked
+ * births (the parked early claim holds its record, ACTIVE -> RETIRING, and
+ * blocks only the withdrawal and reuse of that record). */
+static long real_owner_birth_park_spin_step(__u64 index, void *ctx)
+{
+	(void)index;
+	(void)ctx;
+	return 0;
+}
+static __attribute__((noinline)) void real_owner_birth_park_spin(void)
+{
+	(void)bpf_loop(1 << 16, real_owner_birth_park_spin_step, 0, 0);
+}
+#endif
+#endif
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 /* This issue is not proof of a successful fork. A zero row is allocated
  * while the original claim is held; raw sched_process_fork must later see
  * the same physical parent/child and exact charged child before eligibility. */
@@ -1816,20 +3154,35 @@ real_owner_child_birth_issue(struct task_struct *child,
 	receipt->slot = claim->slot;
 	receipt->incarnation = claim->incarnation;
 	receipt->record = claim->record;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	receipt->execution_class = claim->execution_class;
+#endif
 	receipt->state = 1;
 	return receipt->parent ? 0 : -1;
 }
 
 /* A failed post-transition close must not leave a usable qualified TASK.
  * Only the exact charged generation is poisoned; a reused pointer is not
- * sufficient authority. The receipt also remains faulted if reopening fails. */
-static __attribute__((noinline)) void
+ * sufficient authority. The receipt also remains faulted if reopening fails.
+ * The product publisher's adoption quarantine (B5) needs to know whether the
+ * TASK was actually marked: there it returns 0 marked, 1 not marked (no
+ * such TASK, another generation, or a failed open). Without the flag the
+ * function is unchanged (void). */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#define SE_BIRTH_QUARANTINE_T int
+#define SE_BIRTH_QUARANTINE_RETURN(marked) return (marked) ? 0 : 1
+#else
+#define SE_BIRTH_QUARANTINE_T void
+#define SE_BIRTH_QUARANTINE_RETURN(marked) return
+#endif
+static __attribute__((noinline)) SE_BIRTH_QUARANTINE_T
 real_owner_birth_quarantine(__u64 key, __u64 cookie, __u64 locator)
 {
 	struct se_ol_payload_handle owner = {};
 	if (se_ol_task_open(&key, &owner) != SE_OL_OK)
-		return;
+		SE_BIRTH_QUARANTINE_RETURN(0);
 	struct se_task_state *task = 0;
+	int marked = 0;
 	if (se_op_task_semantic_begin(&owner, &task) == SE_OL_OK) {
 		if (owner.lease.cookie == cookie &&
 		    owner.lease.locator == locator &&
@@ -1841,10 +3194,13 @@ real_owner_birth_quarantine(__u64 key, __u64 cookie, __u64 locator)
 			}
 			if (task->exec.owned)
 				se_exec_fault_locked(&task->exec);
+			marked = 1;
 		}
 		se_op_task_semantic_end(&owner, &task);
 	}
 	(void)se_ol_payload_close(&owner);
+	(void)marked;
+	SE_BIRTH_QUARANTINE_RETURN(marked);
 }
 
 /* 1: qualified; 0: no eligible receipt; -1: uncertain transition. State 4
@@ -1862,7 +3218,12 @@ real_owner_birth_qualify(struct task_struct *target)
 	    !receipt->parent || !receipt->parent_cookie ||
 	    !receipt->child_cookie || !receipt->child_locator ||
 	    !receipt->scope || !receipt->generation || !receipt->serial ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    receipt->slot >= SE_PROFILE_BINDINGS ||
+	    receipt->execution_class < 1 || receipt->execution_class > 2)
+#else
 	    receipt->slot >= SE_PROFILE_BINDINGS || receipt->reserved)
+#endif
 		return 0;
 	__u64 cgroup = 0;
 	if (BPF_CORE_READ_INTO(&cgroup, target, cgroups, dfl_cgrp, kn, id) ||
@@ -1871,12 +3232,25 @@ real_owner_birth_qualify(struct task_struct *target)
 	struct se_route_claim claim = {};
 	if (se_route_admit(cgroup, &claim) != SE_ROUTE_OWNED)
 		return 0;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 2: a child born under an older generation of the same route
+	 * qualifies under the current one (2); a receipt newer than the route
+	 * is an invariant fault (-1, QUALIFY), its claim released below. */
+	int admits = se_birth_receipt_admits(
+		receipt->scope, receipt->generation, receipt->serial,
+		receipt->slot, receipt->incarnation, receipt->record,
+		receipt->execution_class, claim.scope, claim.generation,
+		claim.serial, claim.slot, claim.incarnation, claim.record,
+		claim.execution_class);
+	int same_claim = admits > 0;
+#else
 	int same_claim = claim.scope == receipt->scope &&
 			 claim.generation == receipt->generation &&
 			 claim.serial == receipt->serial &&
 			 claim.slot == receipt->slot &&
 			 claim.incarnation == receipt->incarnation &&
 			 claim.record == receipt->record;
+#endif
 	__u64 cookie = receipt->child_cookie, locator = receipt->child_locator;
 	__u64 parent = receipt->parent, parent_cookie = receipt->parent_cookie;
 	int qualified = 0, transitioned = 0;
@@ -1923,6 +3297,27 @@ real_owner_birth_qualify(struct task_struct *target)
 		released = -1;
 #endif
 	receipt = bpf_map_lookup_elem(&opaque_birth_receipts, &key);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	if (qualified && !released && receipt && receipt->state == 4 &&
+	    receipt->child == key && receipt->child_cookie == cookie &&
+	    receipt->child_locator == locator && receipt->parent == parent &&
+	    receipt->parent_cookie == parent_cookie &&
+	    se_birth_receipt_admits(
+		    receipt->scope, receipt->generation, receipt->serial,
+		    receipt->slot, receipt->incarnation, receipt->record,
+		    receipt->execution_class, claim.scope, claim.generation,
+		    claim.serial, claim.slot, claim.incarnation, claim.record,
+		    claim.execution_class) == admits) {
+		receipt->state = 3;
+		if (admits == 2)
+			real_owner_birth_park_count(
+				SE_BIRTH_PARK_CROSS_GENERATION);
+		return 1;
+	}
+	if (transitioned)
+		real_owner_birth_quarantine(key, cookie, locator);
+	return same_claim || released || admits < 0 ? -1 : 0;
+#else
 	if (qualified && !released && receipt && receipt->state == 4 &&
 	    receipt->child == key && receipt->child_cookie == cookie &&
 	    receipt->child_locator == locator && receipt->parent == parent &&
@@ -1938,8 +3333,10 @@ real_owner_birth_qualify(struct task_struct *target)
 	if (transitioned)
 		real_owner_birth_quarantine(key, cookie, locator);
 	return same_claim || released ? -1 : 0;
+#endif
 }
 
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 SEC("lsm/task_kill")
 long BPF_PROG(opaque_real_owner_birth_signal0_diagnostic,
 	      struct task_struct *target, struct kernel_siginfo *info,
@@ -1953,6 +3350,7 @@ long BPF_PROG(opaque_real_owner_birth_signal0_diagnostic,
 	return 0;
 }
 #endif
+#endif
 
 /* Keep the route claim's stack quantum out of the LSM wrapper. A source
  * return of -2 means a suspended WORK may remain and needs exact fallback. */
@@ -1963,7 +3361,25 @@ real_owner_child_prepare_claimed(struct task_struct *child,
 {
 	struct se_route_claim claim = {};
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
+	/* Test-only birth admission fault: the claim is released here, before
+	 * anything is parked, and the fork takes the admission-fault path. */
+	if (admission == SE_ROUTE_OWNED && SE_FC_BIRTH_ADMISSION_FAULT()) {
+		(void)real_owner_child_release_claim(&claim);
+		admission = claim.execution_class == 2 ? SE_ROUTE_STRICT_FAULT :
+							 SE_ROUTE_AUDIT_FAULT;
+	}
 	if (admission != SE_ROUTE_OWNED) {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		/* G019 M4: a fork admission fault (adopting, reserved,
+		 * saturated or invariant route) is a counted attempt and a
+		 * counted ADMISSION, Audit too; outside Total. */
+		if (admission == SE_ROUTE_STRICT_FAULT ||
+		    admission == SE_ROUTE_AUDIT_FAULT ||
+		    admission == SE_ROUTE_INVARIANT_FAULT) {
+			SE_RATE_ATTEMPT(0);
+			SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_ADMISSION);
+		}
+#endif
 		*mode_out = admission == SE_ROUTE_STRICT_FAULT ||
 					    admission ==
 						    SE_ROUTE_INVARIANT_FAULT ?
@@ -1972,6 +3388,9 @@ real_owner_child_prepare_claimed(struct task_struct *child,
 		return -1;
 	}
 	*mode_out = claim.execution_class;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	SE_RATE_ATTEMPT(0);
+#endif
 	if (terminal_fault) {
 		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_SOURCE);
 		(void)real_owner_child_release_claim(&claim);
@@ -1981,11 +3400,24 @@ real_owner_child_prepare_claimed(struct task_struct *child,
 	int result = clone_flags & (1ULL << 33) ?
 			     -1 :
 			     real_owner_child_prepare(&claim, &parent_cookie);
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	if (!result &&
 	    real_owner_child_birth_issue(child, &claim, parent_cookie))
 		result =
 			-2; /* finish the suspended WORK, never construct a child */
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 1: the claim goes to the target through the birth park. A
+	 * failed put releases it here and finishes the suspended WORK through
+	 * the missing-target path (-2, counted there: one class). */
+	if (!result && !se_birth_park_put(&claim, (__u64)child, parent_cookie)) {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_BIRTH_PARK_SPIN_DIAGNOSTIC
+		real_owner_birth_park_spin();
+#endif
+		return 0;
+	}
+	if (!result)
+		result = -2;
 #endif
 	int released = real_owner_child_release_claim(&claim);
 	if (released && result == 0)
@@ -2005,7 +3437,7 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 	__s64 prior_ret = (__s64)ctx[2];
 	if (prior_ret)
 		return prior_ret;
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	/* A reused task_struct address must never inherit a prior receipt. If
 	 * deletion fails, NOEXIST at publication leaves it unqualified. */
 	__u64 birth_key = (__u64)child;
@@ -2014,7 +3446,7 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 	if (!real_owner_image_configured())
 		return 0;
 	int birth_fault = 0;
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	birth_fault =
 		real_owner_birth_qualify(
 			(struct task_struct *)bpf_get_current_task_btf()) < 0;
@@ -2047,6 +3479,9 @@ long BPF_PROG(opaque_real_owner_child_source_candidate,
 	bpf_tail_call(ctx, &opaque_real_owner_child_targets, 0);
 	/* Missing target is not a successful child constructor. An audit route
 	 * remains nonblocking; strict enforcement denies. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	se_birth_park_abandon(&mode);
+#endif
 	real_owner_child_missing_target();
 	if (mode == 2)
 		return -1;
@@ -2061,7 +3496,11 @@ real_owner_child_claimed_construct(struct se_owk_semantic_handle *semantic,
 				   struct task_struct *child, __u32 *mode_out)
 {
 	struct se_route_claim claim = {};
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	int admission = se_birth_park_take((__u64)child, &claim, mode_out);
+#else
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
+#endif
 	int committed = 0;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE
 	int attempted = 0;
@@ -2078,7 +3517,18 @@ real_owner_child_claimed_construct(struct se_owk_semantic_handle *semantic,
 				const struct se_snapshot *snapshot =
 					&binding->state.records[record];
 				struct task_struct *child_key = child;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+				/* G019 gap 3: the claim's own record, ACTIVE or
+				 * RETIRING (a revision committed after the
+				 * source parked its claim). */
+				if ((snapshot->phase == SE_SNAPSHOT_ACTIVE ||
+				     snapshot->phase ==
+					     SE_SNAPSHOT_RETIRING) &&
+				    snapshot->serial == claim.serial &&
+				    snapshot->generation == claim.generation) {
+#else
 				if (snapshot->phase == SE_SNAPSHOT_ACTIVE) {
+#endif
 					int status =
 						se_op_construct_child_from_parent_work(
 							semantic, &claim,
@@ -2113,7 +3563,19 @@ counted:
 		if (real_owner_child_release_claim(&claim) && !committed)
 			*mode_out = 2; /* published child must not be denied */
 	} else {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		/* G019 13.20: a target admission fault is ADMISSION (its birth
+		 * attempt was counted by the source), anything else CONSTRUCT:
+		 * exactly one class per attempt. */
+		SE_FAIL_CLOSED_RATE(admission == SE_ROUTE_STRICT_FAULT ||
+						    admission == SE_ROUTE_AUDIT_FAULT ||
+						    admission ==
+							    SE_ROUTE_INVARIANT_FAULT ?
+					    REAL_OWNER_RATE_ADMISSION :
+					    REAL_OWNER_RATE_CONSTRUCT);
+#else
 		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_CONSTRUCT);
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 		real_owner_birth_outcome(6);
 #endif
@@ -2139,12 +3601,18 @@ real_owner_child_fault_open_parent(const struct se_ol_payload_handle *parent)
 		meta->cleanup_error = 1;
 	bpf_spin_unlock(&meta->lock);
 }
-static __attribute__((noinline)) int
+static __attribute__((noinline)) SE_SETTLE_T
 real_owner_child_finish(struct task_struct *child, __u32 *mode_out)
 {
 	struct se_ol_payload_handle parent = {};
-	if (real_owner_child_open_parent(&parent) != SE_OL_OK)
-		return -1;
+	if (SE_FC_OPEN_PARENT_FAULT() ||
+	    real_owner_child_open_parent(&parent) != SE_OL_OK) {
+		SE_EXEC_EXCLUSION_WITNESS(2);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		se_birth_park_abandon(mode_out);
+#endif
+		return -3; /* fail-closed rate [8], counted by the caller */
+	}
 	struct se_owk_ticket ticket = {};
 	if (se_owk_resume(&parent, 1, &ticket) != SE_OL_OK)
 		goto close_parent;
@@ -2155,22 +3623,28 @@ real_owner_child_finish(struct task_struct *child, __u32 *mode_out)
 		(void)se_owk_done(&parent, &ticket);
 		goto close_parent;
 	}
-	int result =
+	SE_SETTLE_T result =
 		real_owner_child_claimed_construct(&semantic, child, mode_out);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_CLOSE_FAULT_DIAGNOSTIC
 	/* Test only: the child is already published, but the semantic handle
 	 * cannot complete. The strict LSM return must not deny that child. */
-	if (!result)
+	if (!SE_SETTLE_RESULT(result))
 		semantic.held = 0;
 #endif
 	if (se_owk_semantic_done(&semantic, &work) != SE_OL_OK) {
 		se_owk_fault_ticket(&ticket);
 		real_owner_child_fault_open_parent(&parent);
 	}
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+	/* The birth WORK is exactly DONE: hand its slot to the top level in the
+	 * high half of R0 (no stack in this 512-byte chain). */
+	else
+		result = SE_SETTLE_PACK(result, ticket.work_slot + 1);
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_POST_PUBLISH_TASK_CLOSE_FAULT_DIAGNOSTIC
 	/* Test only: logical close precondition fails after successful WORK DONE.
 	 * The exact TASK lease remains held, so reaping must remain impossible. */
-	if (!result)
+	if (!SE_SETTLE_RESULT(result))
 		parent.locked = 1;
 #endif
 	if (se_ol_payload_close(&parent) != SE_OL_OK)
@@ -2179,6 +3653,9 @@ real_owner_child_finish(struct task_struct *child, __u32 *mode_out)
 	 * now a retained structural fault, never a reason to deny that child. */
 	return result;
 close_parent:
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	se_birth_park_abandon(mode_out);
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
 	real_owner_birth_outcome(7);
 #endif
@@ -2188,7 +3665,7 @@ close_parent:
 	return -1;
 }
 
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 /* Separate lexical frame: putting a receipt value in the constructor's
  * nested WORK/publication call exceeds Rocky 4.18's 512-byte BPF stack. */
 static __attribute__((noinline)) void
@@ -2257,12 +3734,16 @@ long BPF_PROG(opaque_real_owner_child_target_candidate,
 	if (!real_owner_image_configured())
 		return 0;
 	__u32 mode = 1;
-	int result = real_owner_child_finish(child, &mode);
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
-	if (!result)
+	SE_SETTLE_T result = real_owner_child_finish(child, &mode);
+	if (SE_SETTLE_RESULT(result) == -3)
+		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_OPEN_PARENT);
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
+	if (!SE_SETTLE_RESULT(result))
 		real_owner_child_birth_stamp(child);
 #endif
-	if (result && mode == 2) {
+	SE_WORK_SYNC_RETURN(SE_SETTLE_SLOT(result),
+			    REAL_OWNER_WORK_SYNC_SETTLED_BIRTH);
+	if (SE_SETTLE_RESULT(result) && mode == 2) {
 		/* Keep the strict deny as a signed 64-bit LSM return. Newer
 		 * verifiers reject Clang's folded 32-bit boolean negation. */
 		asm volatile("" ::: "memory");
@@ -2271,7 +3752,7 @@ long BPF_PROG(opaque_real_owner_child_target_candidate,
 	return 0;
 }
 
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 /* Rocky 4.18 tracing programs cannot use the spinlocked TASK/route maps.
  * This hook only records independent success for the exact source-issued
  * parent/child pair. A separate LSM consumer must authenticate the charged
@@ -2384,9 +3865,43 @@ real_owner_child_exec_death(struct se_of_lease *lease,
 	return done ? SE_OL_OK : SE_OL_CORRUPT;
 }
 
-static __attribute__((noinline)) void
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+/* The dying TASK's current WORK slot + 1 (0: none), read before
+ * se_owk_finish_suspended_death clears the tuple. Only an SE_OL_OK finish
+ * hands it to the synchronous return, which re-checks DONE and the cookie. */
+static __attribute__((noinline)) __u32
+real_owner_work_death_slot(struct se_of_lease *lease)
+{
+	struct se_ol_meta *meta = lease->meta;
+	if (!meta)
+		return 0;
+	bpf_spin_lock(&meta->lock);
+	__u32 slot = meta->current_work_slot;
+	int owned = meta->current_work_owned == 1 && slot < SE_OWK_WORKS;
+	bpf_spin_unlock(&meta->lock);
+	return owned ? slot + 1 : 0;
+}
+#endif
+static __attribute__((noinline)) SE_DEATH_T
 real_owner_child_work_death(struct se_of_lease *lease)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+	__u32 settled = real_owner_work_death_slot(lease);
+	int death = se_owk_finish_suspended_death(lease);
+	if (death == SE_OL_OK)
+		return settled;
+	if (death != SE_OL_CORRUPT)
+		return 0;
+	struct se_ol_meta *meta = lease->meta;
+	if (!meta)
+		return 0;
+	bpf_spin_lock(&meta->lock);
+	if (lease->held == 1 && meta->locator == lease->locator &&
+	    meta->cookie == lease->cookie && meta->phase == SE_OL_DEAD)
+		meta->cleanup_error = 1;
+	bpf_spin_unlock(&meta->lock);
+	return 0;
+#else
 	/* STALE means no suspended WORK; CONTENDED means a live WORK callback
 	 * still owns completion. Neither is a fabricated WORK_DONE receipt. */
 	if (se_owk_finish_suspended_death(lease) != SE_OL_CORRUPT)
@@ -2399,6 +3914,7 @@ real_owner_child_work_death(struct se_of_lease *lease)
 	    meta->cookie == lease->cookie && meta->phase == SE_OL_DEAD)
 		meta->cleanup_error = 1;
 	bpf_spin_unlock(&meta->lock);
+#endif
 }
 
 /* G025: the physical-reuse directory withdrawal is a correctness fix of
@@ -2409,6 +3925,588 @@ real_owner_child_work_death(struct se_of_lease *lease)
 #ifndef SE_OP_INSERT_RETRY
 #error "real-map birth requires the physical-reuse single insert retry"
 #endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
+#ifdef SE_FC_EXIT_INJECTOR
+/* Test-only exit injector. opaque_real_exit_inject_every[0] = N arms it (0
+ * disables), [1] selects the fault (REAL_OWNER_EXIT_INJECT_*; 0 means
+ * BEFORE_CLAIM):
+ *   BEFORE_CLAIM, AFTER_CLAIM, AFTER_ADVANCE  every Nth exit that reaches
+ *       its withdrawal stops before stage 1 (the key stays PUBLISHED),
+ *       after stage 1 (WITHDRAW_CLAIM) or after stage 2 (WITHDRAWN_ZERO), as
+ *       if the next stage refused: DIR_PENDING, resumed at free from there;
+ *   UNSETTLED, UNSETTLED_FAULT  every Nth exit reports se_of_record_death
+ *       CONTENDED or CORRUPT without calling it: the TASK is untouched and
+ *       the task_free fallback settles it;
+ *   SKIP_DELETE, SKIP_FREE  a cumulative budget instead of a period: while
+ *       [1] injected < N, the next free of a SETTLED tombstone skips its
+ *       delete (FREED left, as a failed delete) or its whole consumption
+ *       (SETTLED left, as a missed task_free); the address's next lifetime
+ *       finds it STALE;
+ *   PENDING_SKIP_FREE  the same cumulative budget at the exit's withdrawal:
+ *       the next exit refuses it before stage 1 (DIR_PENDING, lease held)
+ *       and marks its tombstone (REAL_OWNER_EXIT_INJECT_SKIP_FREE_FLAG) so
+ *       that its free skips the whole consumption (as a missed task_free;
+ *       the free sets REAL_OWNER_EXIT_INJECT_FREE_SKIPPED as its witness):
+ *       the address's next lifetime finds a stale DIR_PENDING.
+ * Counts: [0] edges seen while enabled, [1] injected. */
+#define REAL_OWNER_EXIT_INJECT_BEFORE_CLAIM 1
+#define REAL_OWNER_EXIT_INJECT_AFTER_CLAIM 2
+#define REAL_OWNER_EXIT_INJECT_AFTER_ADVANCE 3
+#define REAL_OWNER_EXIT_INJECT_UNSETTLED 4
+#define REAL_OWNER_EXIT_INJECT_UNSETTLED_FAULT 5
+#define REAL_OWNER_EXIT_INJECT_SKIP_DELETE 6
+#define REAL_OWNER_EXIT_INJECT_SKIP_FREE 7
+#define REAL_OWNER_EXIT_INJECT_PENDING_SKIP_FREE 8
+/* Test-only tombstone flags (injector objects only). */
+#define REAL_OWNER_EXIT_INJECT_SKIP_FREE_FLAG 2
+#define REAL_OWNER_EXIT_INJECT_FREE_SKIPPED 4
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 2);
+	__uint(map_flags, BPF_F_RDONLY_PROG);
+	__type(key, __u32);
+	__type(value, __u32);
+} opaque_real_exit_inject_every SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 2);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_exit_inject_counts SEC(".maps");
+/* Returns 1 when this edge of a fault in [lo, hi] is injected. */
+static __attribute__((noinline)) int real_owner_exit_inject(__u32 lo, __u32 hi)
+{
+	__u32 zero = 0, one = 1;
+	const __u32 *every =
+		bpf_map_lookup_elem(&opaque_real_exit_inject_every, &zero);
+	const __u32 *mode =
+		bpf_map_lookup_elem(&opaque_real_exit_inject_every, &one);
+	if (!every || !*every || !mode)
+		return 0;
+	__u32 fault = *mode ? *mode : REAL_OWNER_EXIT_INJECT_BEFORE_CLAIM;
+	if (fault < lo || fault > hi)
+		return 0;
+	__u64 n = *every;
+	__u64 *seen =
+		bpf_map_lookup_elem(&opaque_real_exit_inject_counts, &zero);
+	__u64 *injected =
+		bpf_map_lookup_elem(&opaque_real_exit_inject_counts, &one);
+	if (!seen || !injected)
+		return 0;
+	if (fault >= REAL_OWNER_EXIT_INJECT_SKIP_DELETE) {
+		__sync_fetch_and_add(seen, 1);
+		__u64 used = *injected;
+		return used < n && __sync_val_compare_and_swap(
+					   injected, used, used + 1) == used ?
+			       fault :
+			       0;
+	}
+	if (__sync_add_and_fetch(seen, 1) % n)
+		return 0;
+	__sync_fetch_and_add(injected, 1);
+	return fault;
+}
+/* The exit's withdrawal under the injector: se_of_withdraw_directory, or
+ * its own stages (full/shared_pool_opaque_final_free_candidate.h) stopped
+ * before stage 1, 2 or 3. */
+static __attribute__((noinline)) int
+real_owner_exit_withdraw(struct se_of_lease *lease,
+			 struct task_struct *physical)
+{
+	int fault =
+		real_owner_exit_inject(REAL_OWNER_EXIT_INJECT_BEFORE_CLAIM,
+				       REAL_OWNER_EXIT_INJECT_AFTER_ADVANCE);
+	if (!fault &&
+	    real_owner_exit_inject(REAL_OWNER_EXIT_INJECT_PENDING_SKIP_FREE,
+				   REAL_OWNER_EXIT_INJECT_PENDING_SKIP_FREE)) {
+		__u64 key = (__u64)physical;
+		struct real_owner_exit_tombstone *tomb =
+			bpf_map_lookup_elem(&se_exit_tombstones, &key);
+		if (tomb)
+			tomb->flags |= REAL_OWNER_EXIT_INJECT_SKIP_FREE_FLAG;
+		return SE_OL_CONTENDED;
+	}
+	if (!fault)
+		return se_of_withdraw_directory(lease, physical);
+	if (fault == REAL_OWNER_EXIT_INJECT_BEFORE_CLAIM)
+		return SE_OL_CONTENDED;
+	if (!lease || lease->held != 1 || lease->locked || !lease->meta ||
+	    !physical || lease->physical != physical || !lease->cookie)
+		return SE_OL_CORRUPT;
+	__u32 slot = 0;
+	if (se_ol_decode(lease->locator, &slot) != SE_OL_OK ||
+	    slot != lease->slot)
+		return SE_OL_CORRUPT;
+	const __u64 *archive = SE_OW_ARCHIVE_LOOKUP(slot);
+	if (!archive || *archive != (__u64)(unsigned long)physical)
+		return SE_OL_CONTENDED;
+	struct se_ol_meta *meta = lease->meta;
+	if (se_of_withdraw_claim(meta, lease->cookie, lease->locator) !=
+		    SE_OL_OK ||
+	    fault == REAL_OWNER_EXIT_INJECT_AFTER_CLAIM)
+		return SE_OL_CONTENDED;
+	(void)se_of_withdraw_advance(meta, archive, lease->cookie,
+				     lease->locator);
+	return SE_OL_CONTENDED;
+}
+static __always_inline int
+real_owner_exit_record_death(struct task_struct *physical,
+			     struct se_of_lease *lease)
+{
+	int fault =
+		real_owner_exit_inject(REAL_OWNER_EXIT_INJECT_UNSETTLED,
+				       REAL_OWNER_EXIT_INJECT_UNSETTLED_FAULT);
+	if (fault)
+		return fault == REAL_OWNER_EXIT_INJECT_UNSETTLED ?
+			       SE_OL_CONTENDED :
+			       SE_OL_CORRUPT;
+	return se_of_record_death(physical, lease);
+}
+#define SE_FC_EXIT_WITHDRAW(lease, physical) \
+	real_owner_exit_withdraw((lease), (physical))
+#define SE_FC_EXIT_RECORD_DEATH(physical, lease) \
+	real_owner_exit_record_death((physical), (lease))
+#define SE_FC_EXIT_FREE_FAULT()                                    \
+	real_owner_exit_inject(REAL_OWNER_EXIT_INJECT_SKIP_DELETE, \
+			       REAL_OWNER_EXIT_INJECT_SKIP_FREE)
+#else
+#define SE_FC_EXIT_WITHDRAW(lease, physical) \
+	se_of_withdraw_directory((lease), (physical))
+#define SE_FC_EXIT_RECORD_DEATH(physical, lease) \
+	se_of_record_death((physical), (lease))
+#endif
+
+/* RESERVED tombstone, inserted before se_of_record_death, charged to the
+ * TASK binding of the charge the directory names (account). Returns 0 when
+ * inserted; nonzero leaves the TASK to the task_free fallback (slow, never
+ * early). On -EEXIST the tombstone at this key is an earlier lifetime's
+ * (the exit fires once per task, before its free): one that is not the
+ * reaper's is finished as stale (real_owner_exit_tomb_stale) and the insert
+ * retried once; one that vanished between the insert and the lookup (its
+ * free, stale finish or reaper retirement completed meanwhile) is retried
+ * once too. */
+static __attribute__((noinline)) int
+real_owner_exit_tomb_stale(__u64 key, struct real_owner_exit_tombstone *tomb,
+			   struct task_struct *physical);
+static __attribute__((noinline)) int
+real_owner_exit_tomb_insert(__u64 key, __u64 start, __u32 account,
+			    struct task_struct *physical)
+{
+	__u64 *held = account < SE_PROFILE_BINDINGS ?
+			      bpf_map_lookup_elem(&opaque_real_exit_accounts,
+						  &account) :
+			      0;
+	if (!held) {
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+		return -1;
+	}
+	if (__sync_add_and_fetch(held, 1) > SE_EXIT_TOMBSTONE_ACCOUNT) {
+		__sync_fetch_and_add(held, -1);
+		real_owner_exit_count(REAL_OWNER_EXIT_ACCOUNT_OVERFLOW);
+		return -1;
+	}
+	struct real_owner_exit_tombstone reserved = {
+		.start = start,
+		.stage = REAL_OWNER_EXIT_RESERVED,
+		.account = account,
+	};
+	long err = bpf_map_update_elem(&se_exit_tombstones, &key, &reserved,
+				       BPF_NOEXIST);
+	if (err == -17 /* EEXIST */) {
+		struct real_owner_exit_tombstone *old =
+			bpf_map_lookup_elem(&se_exit_tombstones, &key);
+		if (!old || !real_owner_exit_tomb_stale(key, old, physical))
+			err = bpf_map_update_elem(&se_exit_tombstones, &key,
+						  &reserved, BPF_NOEXIST);
+	}
+	if (err) {
+		__sync_fetch_and_add(held, -1);
+		/* -EEXIST: an earlier lifetime's tombstone the reaper still
+		 * owns (FREE_PENDING/RETIRING); -EBUSY: a busy bucket lock;
+		 * otherwise (-E2BIG/-ENOMEM) the map is full. */
+		real_owner_exit_count(err == -17 ? REAL_OWNER_EXIT_BLOCKED :
+				      err == -16 ? REAL_OWNER_EXIT_BUSY :
+						   REAL_OWNER_EXIT_OVERFLOW);
+		return -1;
+	}
+	real_owner_exit_count(REAL_OWNER_EXIT_INSERTED);
+	__u32 index = REAL_OWNER_EXIT_LIVE;
+	__u64 *live = bpf_map_lookup_elem(&opaque_real_exit_credit, &index);
+	if (!live)
+		return 0;
+	__u64 n = __sync_add_and_fetch(live, 1);
+	if (n == REAL_OWNER_EXIT_HIGH_MARK)
+		real_owner_exit_count(REAL_OWNER_EXIT_HIGH_CROSSED);
+	index = REAL_OWNER_EXIT_HIGH_WATER;
+	__u64 *high = bpf_map_lookup_elem(&opaque_real_exit_credit, &index);
+	/* Raise HIGH_WATER to n. Each lost CAS means another insert raised it
+	 * meanwhile, so after 16 losses the gauge may stay below n by at most
+	 * the inserts still racing: HIGH_WATER is a lower bound of the peak,
+	 * exact without 16 concurrent raises. */
+#pragma unroll
+	for (int i = 0; i < 16; i++) {
+		if (!high)
+			break;
+		__u64 seen = *high;
+		if (seen >= n ||
+		    __sync_val_compare_and_swap(high, seen, n) == seen)
+			break;
+	}
+	return 0;
+}
+
+/* Retire this lifetime's exact terminal receipt at the key, if any. */
+static __always_inline void
+real_owner_exit_retire_receipt(__u64 key, __u64 cookie, __u64 locator)
+{
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
+	if (receipt && receipt->physical == key && receipt->cookie == cookie &&
+	    receipt->locator == locator)
+		(void)bpf_map_delete_elem(&se_exec_terminal_receipts, &key);
+#endif
+}
+
+/* The exact death settlement, moved unchanged from task_free (G019 credit
+ * at exit). The typed tracepoint argument is current: it is used, as in
+ * task_free, only as eight opaque key bytes, as the lease's physical and
+ * for its start_time (the tombstone's stale-lifetime check; the directory
+ * check separates a successor that carries the same start_time).
+ * se_of_record_death's precondition (no later exec, terminal or birth on
+ * this task, no successor at this address) holds from do_exit on, so the
+ * exit is a second exact-death source next to task_free; only one of them
+ * settles a lifetime (the tombstone decides). */
+SEC("tp_btf/sched_process_exit")
+int BPF_PROG(opaque_real_owner_child_exit_candidate,
+	     struct task_struct *physical)
+{
+	if (!real_owner_image_configured())
+		return 0;
+	__u64 key = (__u64)physical;
+	if (!key || key != (__u64)bpf_get_current_task_btf())
+		return 0;
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
+	/* Retire this task's birth receipt at exit, charged or not: an exited
+	 * task never execs again (no first-exec qualification can read it) and
+	 * its address cannot be reused before the free, so the receipt map is
+	 * bounded by live tasks instead of tasks awaiting the RCU-deferred free.
+	 * Not counted as a failed birth: a task that reached do_exit was born.
+	 * task_free and free_task keep retiring as the fallback (failed births,
+	 * exits before this link was attached). */
+	(void)bpf_map_delete_elem(&opaque_birth_receipts, &key);
+#endif
+	/* An uncharged task carries nothing: one directory lookup. */
+	const __u64 *published = SE_OL_LOOKUP(&key);
+	if (!published)
+		return 0;
+	/* A zero value names no charge: an unpublished or aborted
+	 * constructor's key, or an earlier lifetime's withdrawal stopped
+	 * between stages 2 and 3 (WITHDRAWN_ZERO; a birth meeting it is
+	 * refused, so this task holds no charge here). Nothing to settle and
+	 * no fault. */
+	__u64 value = se_ol_load_scalar(published);
+	if (!value)
+		return 0;
+	/* The binding the charge belongs to (pools are partitioned exactly
+	 * per binding). An undecodable entry is left to task_free. */
+	__u32 charged = 0;
+	if (se_ol_decode(value, &charged) != SE_OL_OK ||
+	    charged >= SE_OL_TASKS) {
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+		return 0;
+	}
+	/* Overflow, busy, blocked: the TASK is untouched; task_free settles it. */
+	if (real_owner_exit_tomb_insert(key, physical->start_time,
+					charged / SE_OC_QUOTA, physical))
+		return 0;
+	struct real_owner_exit_tombstone *tomb =
+		bpf_map_lookup_elem(&se_exit_tombstones, &key);
+	if (!tomb) {
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+		return 0;
+	}
+	struct se_of_lease lease = {};
+	int death = SE_FC_EXIT_RECORD_DEATH(physical, &lease);
+	if (death != SE_OL_OK) {
+		/* Nothing settled; task_free's fallback retries as before.
+		 * CONTENDED: this task never owned the charge (benign). */
+		real_owner_exit_count(death == SE_OL_CONTENDED ?
+					      REAL_OWNER_EXIT_UNSETTLED :
+					      REAL_OWNER_EXIT_UNSETTLED_FAULT);
+		(void)real_owner_exit_tomb_delete(key, tomb->account);
+		return 0;
+	}
+	/* The exact identity, before anything else can see the held lease
+	 * (a reaper visit, a stale finish at a later lifetime). */
+	tomb->cookie = lease.cookie;
+	tomb->locator = lease.locator;
+	tomb->slot = lease.slot;
+	(void)real_owner_child_exec_death(&lease, physical);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+	SE_WORK_SYNC_RETURN(real_owner_child_work_death(&lease),
+			    REAL_OWNER_WORK_SYNC_SETTLED_DEATH);
+#else
+	real_owner_child_work_death(&lease);
+#endif
+	__u32 flags = 0;
+	/* Receipt retirement moved here from task_free: both terminal producers
+	 * run in this task's own syscall before do_exit, so none can follow.
+	 * Retire only this exact lease's receipt; any other receipt at the key
+	 * keeps it for its consumer (DIR_PENDING, as se_or_task_terminal_guard
+	 * would); a failed delete is retried at free. */
+	real_owner_exit_retire_receipt(key, lease.cookie, lease.locator);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
+	if (bpf_map_lookup_elem(&se_exec_terminal_receipts, &key))
+		flags = REAL_OWNER_EXIT_FOREIGN_RECEIPT;
+#endif
+	(void)se_of_complete_native_unheld(&lease, physical);
+	tomb->flags = flags;
+	/* Withdraw the directory entry under the exact death lease (batch F,
+	 * full/shared_pool_opaque_final_free_candidate.h), then release. Any
+	 * refusal keeps the lease: the reaper stays excluded and task_free
+	 * resumes the withdrawal. */
+	int settled = !flags &&
+		      SE_FC_EXIT_WITHDRAW(&lease, physical) == SE_OL_OK &&
+		      se_of_release(&lease, physical) == SE_OL_OK;
+	tomb->stage = settled ? REAL_OWNER_EXIT_SETTLED :
+				REAL_OWNER_EXIT_DIR_PENDING;
+	real_owner_exit_count(settled ? REAL_OWNER_EXIT_SETTLED_COUNT :
+					REAL_OWNER_EXIT_DIR_PENDING_COUNT);
+	if (settled)
+		SE_REAP_EVENT(TASK_DEAD, lease.slot, lease.cookie);
+	return 0;
+}
+
+/* Free-time resume of a DIR_PENDING withdrawal under the exit's lease,
+ * rebuilt by the caller. It enters se_of_withdraw_directory's own stages
+ * (full/shared_pool_opaque_final_free_candidate.h) from the state the exit
+ * left: PUBLISHED (stage 1 refused or skipped), WITHDRAW_CLAIM (stage 2
+ * refused) or WITHDRAWN_ZERO (stage 3 refused). Single deleter: the lease
+ * (active_leases == 1) still excludes the reaper's claim, advance and
+ * delete, and only this lease's holder owns exclusive_owner == locator; no
+ * successor exists before the slab free. */
+static __attribute__((noinline)) int
+real_owner_exit_withdraw_resume(struct se_of_lease *lease,
+				struct task_struct *physical)
+{
+	if (!lease || lease->held != 1 || lease->locked || !lease->meta ||
+	    !physical || lease->physical != physical || !lease->cookie)
+		return SE_OL_CORRUPT;
+	__u32 slot = 0;
+	if (se_ol_decode(lease->locator, &slot) != SE_OL_OK ||
+	    slot != lease->slot)
+		return SE_OL_CORRUPT;
+	struct se_ol_meta *meta = lease->meta;
+	__u64 locator = lease->locator, cookie = lease->cookie;
+	bpf_spin_lock(&meta->lock);
+	__u32 directory = meta->directory_state;
+	int owned = meta->phase == SE_OL_DEAD && meta->cookie == cookie &&
+		    meta->locator == locator && meta->active_leases == 1 &&
+		    !meta->reserved && meta->exclusive == 1 &&
+		    meta->exclusive_owner == locator;
+	bpf_spin_unlock(&meta->lock);
+	if (directory == SE_OL_PUBLISHED)
+		return se_of_withdraw_directory(lease, physical);
+	if (!owned || (directory != SE_OL_WITHDRAW_CLAIM &&
+		       directory != SE_OL_WITHDRAWN_ZERO))
+		return SE_OL_CONTENDED;
+	const __u64 *archive = SE_OW_ARCHIVE_LOOKUP(slot);
+	if (!archive || *archive != (__u64)(unsigned long)physical)
+		return SE_OL_CONTENDED;
+	if (directory == SE_OL_WITHDRAW_CLAIM) {
+		int advanced =
+			se_of_withdraw_advance(meta, archive, cookie, locator);
+		if (advanced != SE_OL_OK)
+			return advanced;
+	}
+	return se_of_withdraw_delete(meta, archive, cookie);
+}
+
+/* Finish a DIR_PENDING tombstone's still-held exit lease. resume: this is
+ * the free of the tombstone's own lifetime, so the withdrawal is resumed;
+ * otherwise (a stale tombstone found at a later lifetime) it is not, since
+ * a successor now exists at this address. Rebuilds the lease from the exact
+ * identity, then releases it (TASK_DEAD). A withdrawal not completed here is
+ * the reaper's: stage FREE_PENDING, set before the release; the reaper
+ * retires it only once no lease is held (real_owner_exit_tomb_reap), so it
+ * can never zero the archive first. A lease that cannot be rebuilt exactly
+ * (identity, DEAD, active_leases == 1) or released is a LEASE_FAULT: it
+ * stays held, so the reaper never retires the tombstone nor withdraws the
+ * key and the slot stays charged (fail-closed). Returns 1 when the
+ * tombstone stays (FREE_PENDING), 0 when the withdrawal completed. */
+static __attribute__((noinline)) int
+real_owner_exit_finish_pending(__u64 key,
+			       struct real_owner_exit_tombstone *tomb,
+			       struct task_struct *physical, int resume)
+{
+	__u64 cookie = tomb->cookie, locator = tomb->locator;
+	__u32 slot = tomb->slot;
+	struct se_ol_meta *meta = slot < SE_OL_TASKS ? SE_OL_META_LOOKUP(slot) :
+						       0;
+	int exact = 0;
+	if (meta) {
+		bpf_spin_lock(&meta->lock);
+		exact = meta->cookie == cookie && meta->locator == locator &&
+			meta->phase == SE_OL_DEAD && meta->active_leases == 1 &&
+			!meta->reserved;
+		bpf_spin_unlock(&meta->lock);
+	}
+	int result = SE_OL_CORRUPT;
+	struct se_of_lease lease = {
+		.meta = meta,
+		.physical = physical,
+		.locator = locator,
+		.cookie = cookie,
+		.slot = slot,
+		.held = 1,
+	};
+	if (exact) {
+		result = SE_OL_CONTENDED;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
+		if (resume &&
+		    !bpf_map_lookup_elem(&se_exec_terminal_receipts, &key))
+#else
+		if (resume)
+#endif
+			result = real_owner_exit_withdraw_resume(&lease,
+								 physical);
+	}
+	if (result != SE_OL_OK)
+		tomb->stage = REAL_OWNER_EXIT_FREE_PENDING;
+	real_owner_exit_count(result == SE_OL_OK ? REAL_OWNER_EXIT_DIR_RESUMED :
+						   REAL_OWNER_EXIT_DIR_FAULTED);
+	if (!exact || se_of_release(&lease, physical) != SE_OL_OK)
+		real_owner_exit_count(REAL_OWNER_EXIT_LEASE_FAULT);
+	else
+		SE_REAP_EVENT(TASK_DEAD, slot, cookie);
+	return result != SE_OL_OK;
+}
+
+/* A tombstone of an earlier lifetime at this address (see
+ * se_exit_tombstones), found at exit or at free: finish it as its own free
+ * would have, counted STALE. RESERVED and FREED (already counted) are
+ * deleted; SETTLED is counted FREED (its receipt retired) and deleted;
+ * DIR_PENDING releases its lease without resuming (FREE_PENDING, counted
+ * FREED) and stays for the reaper. FREE_PENDING and RETIRING are the
+ * reaper's and are left alone. Returns 0 when the key is free again. */
+static __attribute__((noinline)) int
+real_owner_exit_tomb_stale(__u64 key, struct real_owner_exit_tombstone *tomb,
+			   struct task_struct *physical)
+{
+	__u32 stage = tomb->stage;
+	if (stage == REAL_OWNER_EXIT_FREE_PENDING ||
+	    stage == REAL_OWNER_EXIT_RETIRING)
+		return 1;
+	real_owner_exit_count(REAL_OWNER_EXIT_STALE);
+	if (stage == REAL_OWNER_EXIT_DIR_PENDING) {
+		/* Locals: once its lease is released a FREE_PENDING tombstone
+		 * is the reaper's, which may retire (delete) it at any time. */
+		__u64 cookie = tomb->cookie;
+		__u32 slot = tomb->slot, account = tomb->account;
+		int stays =
+			real_owner_exit_finish_pending(key, tomb, physical, 0);
+		real_owner_exit_count(REAL_OWNER_EXIT_FREED);
+		SE_REAP_EVENT(TASK_FREED, slot, cookie);
+		if (stays)
+			return 1;
+		return real_owner_exit_tomb_delete(key, account) ? 1 : 0;
+	}
+	if (stage == REAL_OWNER_EXIT_SETTLED) {
+		real_owner_exit_retire_receipt(key, tomb->cookie,
+					       tomb->locator);
+		real_owner_exit_count(REAL_OWNER_EXIT_FREED);
+		SE_REAP_EVENT(TASK_FREED, tomb->slot, tomb->cookie);
+		tomb->stage = REAL_OWNER_EXIT_FREED_STAGE;
+	} else if (stage != REAL_OWNER_EXIT_RESERVED &&
+		   stage != REAL_OWNER_EXIT_FREED_STAGE) {
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+		return 1;
+	}
+	return real_owner_exit_tomb_delete(key, tomb->account) ? 1 : 0;
+}
+
+/* task_free side, run whether or not the image gate is armed (a gate
+ * disarmed between exit and free must not leak the tombstone; everything
+ * here is exact-identity and fail-closed). Returns 1 when this lifetime was
+ * settled at exit (SETTLED or DIR_PENDING with this task's start_time and
+ * no other charge published at the key): the fallback below must not run.
+ * No tombstone (no exit settlement: overflow,
+ * a late copy_process failure, or the exit link not attached), RESERVED (an
+ * exit that settled nothing), a stale tombstone of an earlier lifetime
+ * (finished, counted STALE) and FREE_PENDING/RETIRING (an earlier lifetime
+ * the reaper owns) return 0: the fallback settles this task exactly as
+ * before. */
+static __attribute__((noinline)) int
+real_owner_exit_free(struct task_struct *physical)
+{
+	__u64 key = (__u64)physical;
+	struct real_owner_exit_tombstone *tomb =
+		bpf_map_lookup_elem(&se_exit_tombstones, &key);
+	if (!tomb)
+		return 0;
+	__u32 stage = tomb->stage;
+	if (stage == REAL_OWNER_EXIT_FREE_PENDING ||
+	    stage == REAL_OWNER_EXIT_RETIRING)
+		return 0;
+	int foreign = tomb->start != physical->start_time;
+	if (!foreign && (stage == REAL_OWNER_EXIT_SETTLED ||
+			 stage == REAL_OWNER_EXIT_DIR_PENDING)) {
+		/* Its own SETTLED exit deleted the key and its own DIR_PENDING
+		 * keeps its locator or zero there; any other value is this
+		 * task's own charge, untouched at exit (see se_exit_tombstones:
+		 * start_time can repeat across lifetimes). */
+		const __u64 *published = SE_OL_LOOKUP(&key);
+		__u64 value = published ? se_ol_load_scalar(published) : 0;
+		foreign = value && value != tomb->locator;
+	}
+	if (foreign) {
+		(void)real_owner_exit_tomb_stale(key, tomb, physical);
+		return 0;
+	}
+	if (stage == REAL_OWNER_EXIT_RESERVED) {
+		(void)real_owner_exit_tomb_delete(key, tomb->account);
+		return 0;
+	}
+	if (stage != REAL_OWNER_EXIT_SETTLED &&
+	    stage != REAL_OWNER_EXIT_DIR_PENDING) {
+		/* FREED of this very lifetime: a free cannot run twice. */
+		real_owner_exit_count(REAL_OWNER_EXIT_TOMB_FAULT);
+		return 1;
+	}
+#ifdef SE_FC_EXIT_INJECTOR
+	if (stage == REAL_OWNER_EXIT_DIR_PENDING &&
+	    (tomb->flags & REAL_OWNER_EXIT_INJECT_SKIP_FREE_FLAG)) {
+		tomb->flags |= REAL_OWNER_EXIT_INJECT_FREE_SKIPPED;
+		return 1;
+	}
+	int fault = stage == REAL_OWNER_EXIT_SETTLED ? SE_FC_EXIT_FREE_FAULT() :
+						       0;
+	if (fault == REAL_OWNER_EXIT_INJECT_SKIP_FREE)
+		return 1;
+#endif
+	__u64 cookie = tomb->cookie, locator = tomb->locator;
+	__u32 slot = tomb->slot;
+	/* Normally retired at exit; retire a receipt whose exit-time delete
+	 * failed. Exact match only. */
+	real_owner_exit_retire_receipt(key, cookie, locator);
+	int stays = stage == REAL_OWNER_EXIT_DIR_PENDING &&
+		    real_owner_exit_finish_pending(key, tomb, physical, 1);
+	/* Emit before the delete: a drained LIVE implies every wakeup. */
+	real_owner_exit_count(REAL_OWNER_EXIT_FREED);
+	SE_REAP_EVENT(TASK_FREED, slot, cookie);
+	if (stays)
+		return 1;
+	tomb->stage = REAL_OWNER_EXIT_FREED_STAGE;
+#ifdef SE_FC_EXIT_INJECTOR
+	if (fault == REAL_OWNER_EXIT_INJECT_SKIP_DELETE)
+		return 1;
+#endif
+	(void)real_owner_exit_tomb_delete(key, tomb->account);
+	return 1;
+}
+#endif
 /* Exact physical death is the only source of the DEAD transition. This
  * callback settles exec/reader and certifies an empty native owner account.
  * Nonempty native refs remain pending for a future source-owned closer; this
@@ -2417,9 +4515,16 @@ SEC("lsm/task_free")
 int BPF_PROG(opaque_real_owner_child_final_free_candidate,
 	     struct task_struct *physical)
 {
-	if (!real_owner_image_configured())
+	if (!real_owner_image_configured()) {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
+		/* Consume a tombstone the armed exit left: a gate disarmed
+		 * between exit and free must not strand it. No fallback runs,
+		 * as before credit at exit. */
+		(void)real_owner_exit_free(physical);
+#endif
 		return 0;
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
+	}
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	real_owner_birth_retire((__u64)physical, 0);
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_RECOVERED_INITIAL_TASK_DIAGNOSTIC
@@ -2433,12 +4538,21 @@ int BPF_PROG(opaque_real_owner_child_final_free_candidate,
 	(void)bpf_map_delete_elem(&se_failure_handler_frames, &failure_key);
 	(void)bpf_map_delete_elem(&se_failure_outer_frames, &failure_key);
 #endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
+	if (real_owner_exit_free(physical))
+		return 0;
+#endif
 	struct se_of_lease lease = {};
 	/* On failure the receipt survives and a reused address is quarantined:
 	 * fail-closed, an accepted availability cost. */
 	if (se_of_record_death(physical, &lease) == SE_OL_OK) {
 		(void)real_owner_child_exec_death(&lease, physical);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_SYNC_RETURN_CANDIDATE
+		SE_WORK_SYNC_RETURN(real_owner_child_work_death(&lease),
+				    REAL_OWNER_WORK_SYNC_SETTLED_DEATH);
+#else
 		real_owner_child_work_death(&lease);
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
 		/* No terminal retry can run after final free. Retire only this
 		 * exact lease's receipt so a reused task address never inherits
@@ -2465,6 +4579,12 @@ int BPF_PROG(opaque_real_owner_child_final_free_candidate,
 #endif
 			(void)se_of_withdraw_directory(&lease, physical);
 		(void)se_of_release(&lease, physical);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_EXIT_CREDIT_CANDIDATE
+		real_owner_exit_count(REAL_OWNER_EXIT_FALLBACK_FREE);
+#endif
+#ifdef SE_REAP_EVENT
+		SE_REAP_EVENT(TASK_DEAD, lease.slot, lease.cookie);
+#endif
 	}
 	return 0;
 }
@@ -2757,7 +4877,8 @@ real_owner_policy_close_fault(struct se_ol_payload_handle *owner, __u64 bprm,
 	(void)se_op_task_owned_fault(owner, bprm);
 	if (suspended) {
 		struct se_owk_ticket ticket = {};
-		if (se_owk_resume(owner, 1, &ticket) == SE_OL_OK)
+		if (se_owk_resume(owner, REAL_OWNER_PREPARE_RESUME, &ticket) ==
+		    SE_OL_OK)
 			(void)se_owk_done(owner, &ticket);
 	}
 	/* Best effort under the still-owned handle. The caller also attempts
@@ -2862,12 +4983,30 @@ real_owner_policy_finish_stage_one(__u64 physical, __u64 bprm)
 	struct se_owk_ticket ticket = {};
 	/* Consume the WORK at whichever stage it is suspended. A stage
 	 * mismatch is a non-mutating STALE replay in se_owk_resume. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+	/* Any pass's evaluation, prepare or terminal stage: an interpreter
+	 * pass refused before its rebind leaves the previous pass's proposed
+	 * WORK at its terminal stage 3p (G019 gap 4). */
+	int resumed = exact && se_owk_resume(&owner, REAL_OWNER_EVAL_RESUME,
+					     &ticket) == SE_OL_OK;
+	if (exact && !resumed) {
+		ticket = (struct se_owk_ticket){};
+		resumed = se_owk_resume(&owner, REAL_OWNER_PREPARE_RESUME,
+					&ticket) == SE_OL_OK;
+	}
+	if (exact && !resumed) {
+		ticket = (struct se_owk_ticket){};
+		resumed = se_owk_resume(&owner, REAL_OWNER_TERMINAL_RESUME,
+					&ticket) == SE_OL_OK;
+	}
+#else
 	int resumed = exact && se_owk_resume(&owner, REAL_OWNER_EVAL_STAGE,
 					     &ticket) == SE_OL_OK;
 	if (exact && !resumed && REAL_OWNER_EVAL_STAGE != 1) {
 		ticket = (struct se_owk_ticket){};
 		resumed = se_owk_resume(&owner, 1, &ticket) == SE_OL_OK;
 	}
+#endif
 	int closed = resumed && se_owk_done(&owner, &ticket) == SE_OL_OK;
 	(void)se_ol_payload_close(&owner);
 	return closed ? 0 : -1;
@@ -2998,7 +5137,7 @@ real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
 	int result = 0;
 	if (owner.lease.cookie != receipt->cookie ||
 	    owner.lease.locator != receipt->locator ||
-	    se_owk_resume(&owner, REAL_OWNER_EVAL_STAGE, &ticket) != SE_OL_OK)
+	    se_owk_resume(&owner, REAL_OWNER_EVAL_RESUME, &ticket) != SE_OL_OK)
 		goto close;
 	if (se_owk_semantic_open(&owner, &ticket, &semantic, &work) !=
 	    SE_OL_OK) {
@@ -3019,8 +5158,10 @@ real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
 	/* A clean proposal keeps this WORK for the exec terminal; a failed
 	 * suspension faults the ticket and falls back to the class verdict. */
 	if ((result & 2) &&
-	    se_owk_semantic_suspend(&semantic, &work,
-				    REAL_OWNER_TERMINAL_STAGE) != SE_OL_OK)
+	    se_owk_semantic_suspend(
+		    &semantic, &work,
+		    REAL_OWNER_NEXT_STAGE(ticket, REAL_OWNER_TERMINAL_STAGE)) !=
+		    SE_OL_OK)
 		result = 0;
 	if (semantic.held && work &&
 	    se_owk_semantic_done(&semantic, &work) != SE_OL_OK)
@@ -3080,7 +5221,8 @@ static __attribute__((noinline)) int real_owner_prepare_frame(__u64 physical)
 	int result = 0;
 	if (owner.lease.cookie != receipt->cookie ||
 	    owner.lease.locator != receipt->locator ||
-	    se_owk_resume(&owner, 1, &ticket) != SE_OL_OK)
+	    se_owk_resume(&owner, REAL_OWNER_PREPARE_RESUME, &ticket) !=
+		    SE_OL_OK)
 		goto close;
 	if (se_owk_semantic_open(&owner, &ticket, &semantic, &work) !=
 	    SE_OL_OK) {
@@ -3092,7 +5234,9 @@ static __attribute__((noinline)) int real_owner_prepare_frame(__u64 physical)
 	work->observation.facts.stdin_pipe = -1;
 	if (real_owner_prepare_reader_frame(&semantic, receipt, physical) ==
 		    SE_OL_OK &&
-	    se_owk_semantic_suspend(&semantic, &work, REAL_OWNER_EVAL_STAGE) ==
+	    se_owk_semantic_suspend(
+		    &semantic, &work,
+		    REAL_OWNER_NEXT_STAGE(ticket, REAL_OWNER_EVAL_STAGE)) ==
 		    SE_OL_OK)
 		result = 1;
 	else if (semantic.held && work)
@@ -3117,6 +5261,7 @@ real_owner_prepare_class(unsigned long long *ctx, struct linux_binprm *bprm,
 			bpf_tail_call(ctx, &opaque_real_stage_audit, 0);
 		else
 			bpf_tail_call(ctx, &opaque_real_stage_strict, 0);
+		SE_GRAPH_MISS();
 	}
 	(void)bprm;
 	if (real_owner_policy_failure_global(ctx, mode)) {
@@ -3138,6 +5283,7 @@ real_owner_policy_class(unsigned long long *ctx, struct linux_binprm *bprm,
 			bpf_tail_call(ctx, &opaque_real_prepare_audit, 0);
 		else
 			bpf_tail_call(ctx, &opaque_real_prepare_strict, 0);
+		SE_GRAPH_MISS();
 	}
 	/* A global function's result is an unknown scalar to the caller; map it
 	 * to the two explicit signed-64 LSM verdicts (dead end #25). */
@@ -3165,7 +5311,7 @@ real_owner_stage_class(unsigned long long *ctx, struct linux_binprm *bprm,
 	    !receipt->reserved) {
 		__u64 scope = receipt->scope;
 		struct se_owk_payload *payload = se_owk_suspended_current(
-			scope, REAL_OWNER_EVAL_STAGE, 1);
+			scope, REAL_OWNER_EVAL_RESUME, 1);
 		if (payload) {
 			int begun = real_owner_policy_stage_begin(payload);
 			real_owner_rule_progress(0, begun);
@@ -3179,9 +5325,10 @@ real_owner_stage_class(unsigned long long *ctx, struct linux_binprm *bprm,
 					bpf_tail_call(ctx,
 						      &opaque_real_rule_strict,
 						      0);
+				SE_GRAPH_MISS();
 			}
 			(void)se_owk_suspended_current(
-				scope, REAL_OWNER_EVAL_STAGE, 2);
+				scope, REAL_OWNER_EVAL_RESUME, 2);
 		}
 	}
 	return real_owner_policy_failure(physical, (__u64)bprm, mode);
@@ -3212,7 +5359,7 @@ real_owner_rule_class(unsigned long long *ctx, struct linux_binprm *bprm,
 		/* Keep the nonfinal reservation across window re-entry: the next
 		 * window re-reads it with operation 3. Release only at the end. */
 		if (evaluated != 2 &&
-		    !se_owk_suspended_current(scope, REAL_OWNER_EVAL_STAGE, 2))
+		    !se_owk_suspended_current(scope, REAL_OWNER_EVAL_RESUME, 2))
 			evaluated = 0;
 	}
 	if (evaluated == 2) {
@@ -3238,6 +5385,7 @@ real_owner_rule_class(unsigned long long *ctx, struct linux_binprm *bprm,
 		else
 			bpf_tail_call(ctx, &opaque_real_finish_strict, 0);
 	}
+	SE_GRAPH_MISS();
 	/* A missing frozen graph entry (or exhausted tail-call budget) is a
 	 * configuration invariant breach. Return the static class verdict;
 	 * Strict never allows here. A reservation kept for window re-entry is
@@ -3246,7 +5394,7 @@ real_owner_rule_class(unsigned long long *ctx, struct linux_binprm *bprm,
 	 * suspended until task death and the pending receipt quarantines this
 	 * task's next admission meanwhile. */
 	if (held)
-		(void)se_owk_suspended_current(held, REAL_OWNER_EVAL_STAGE, 2);
+		(void)se_owk_suspended_current(held, REAL_OWNER_EVAL_RESUME, 2);
 	(void)physical;
 	if (mode == 2) {
 		asm volatile("" ::: "memory");
@@ -3278,6 +5426,248 @@ real_owner_finish_class(unsigned long long *ctx, struct linux_binprm *bprm,
 	return real_owner_policy_failure(physical, (__u64)bprm, mode);
 }
 
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+/* G019 gap 4 (review H1): the same-bprm script-interpreter continuation.
+ * A #! script (or binfmt_misc) exec runs one bprm_check per
+ * search_binary_handler pass with the same bprm; pass 0 registered the
+ * receipt and left its proposed evaluation WORK at its terminal stage. A
+ * later pass p (1..5) is admitted on the capsule's frozen ORIGINAL route
+ * and class (SE_CAP_LATER), then authenticated here before it evaluates its
+ * own bprm->file through the unchanged prepare/stage/rule/finish graph:
+ *  (a) the outer failure frame is still the single certain frame bound by
+ *      pass 0 to exactly this receipt, and this pass's handler frame is
+ *      for the same bprm;
+ *  (b) the original reader classifies CONTINUE (the current-WORK premise
+ *      relaxed only for CONTINUE; (d) proves which WORK it is);
+ *  (c) reader recovery returns exactly the receipt's invocation (read
+ *      only: never a second reader begin) and the reader still pins the
+ *      same snapshot;
+ *  (d) the current WORK resumes at a terminal-class stage 3p with p <= 5,
+ *      and is the receipt's proposed WORK of the static class.
+ * The WORK is then reset to exactly a fresh bridge's state (payload past
+ * the view zeroed, view re-prepared from the pinned snapshot, evaluator
+ * token re-issued) and suspended to 3p+1 for the prepare program, which
+ * snapshots the TASK's accumulated exec transaction anew. No pass charges
+ * a WORK credit; every proposal accumulates into the one transaction the
+ * terminal commits once. Any refusal is a GAP [9] with its reason in
+ * opaque_real_interp_stats, then the static class failure: Strict denies,
+ * Audit allows; the reader is aborted quarantined and the TASK
+ * quarantined. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_INTERP_STATS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_interp_stats SEC(".maps");
+static __attribute__((noinline)) void real_owner_interp_stat(__u32 index)
+{
+	__u32 key = index < SE_INTERP_STATS ? index : SE_INTERP_STAT_REBIND;
+	__u64 *count = bpf_map_lookup_elem(&opaque_real_interp_stats, &key);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+/* reason < SE_INTERP_STATS: a GAP [9] continuation refusal with its reason;
+ * SE_INTERP_STATS: a pass refused before any continuation (its rate class
+ * already counted by the caller), with the same verdict and cleanup. */
+static __attribute__((always_inline)) inline long
+real_owner_continue_refuse(unsigned long long *ctx, __u32 reason, __u32 mode)
+{
+	if (reason < SE_INTERP_STATS) {
+		real_owner_interp_stat(reason);
+		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_GAP);
+	}
+	long verdict = real_owner_policy_failure_global(ctx, mode);
+	(void)real_owner_reader_quarantine_pending(
+		(__u64)bpf_get_current_task_btf());
+	if (mode != 1 || verdict) {
+		asm volatile("" ::: "memory");
+		return -1L;
+	}
+	return 0;
+}
+/* (a): the failure frames, in their own frame. */
+static __attribute__((noinline)) int
+real_owner_interp_frames(const struct se_exec_terminal_receipt *receipt,
+			 __u64 key, __u64 bprm)
+{
+	const struct se_failure_outer_frame *outer =
+		bpf_map_lookup_elem(&se_failure_outer_frames, &key);
+	const struct se_failure_handler_frame *handler =
+		bpf_map_lookup_elem(&se_failure_handler_frames, &key);
+	return receipt->phase == SE_EXEC_TERMINAL_REGISTERED &&
+	       !receipt->reserved &&
+	       SE_EXEC_CONTINUE_FRAMES_EXACT(receipt, outer, handler, key,
+					     bprm);
+}
+/* (b), (c): 0, or the refusal reason. */
+static __attribute__((noinline)) int
+real_owner_interp_reader(struct se_ol_payload_handle *owner,
+			 const struct se_exec_terminal_receipt *receipt,
+			 __u64 bprm, struct real_owner_policy_auth *auth)
+{
+	if (!real_owner_policy_authenticate(owner, receipt, bprm, auth) ||
+	    auth->slot >= SE_OC_ACCOUNTS || auth->record >= 2 || !auth->serial)
+		return SE_INTERP_STAT_CLASSIFY;
+	__u64 key = (__u64)bpf_get_current_task_btf();
+	struct se_shared_binding *binding =
+		bpf_map_lookup_elem(&se_bindings, &auth->slot);
+	if (!binding ||
+	    se_op_exec_reader_classify_continue(owner, &binding->state, receipt,
+						key, bprm) !=
+		    SE_EXEC_READER_CONTINUE)
+		return SE_INTERP_STAT_CLASSIFY;
+	__u64 recovered = 0;
+	if (se_op_exec_reader_recover(owner, &binding->state, bprm,
+				      &recovered) != SE_OL_OK ||
+	    recovered != receipt->invocation)
+		return SE_INTERP_STAT_RECOVER;
+	return 0;
+}
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC
+/* Test-only: the harness writes N; each of the next N continuations
+ * resumes with the prepare class instead of the terminal class. That is a
+ * non-mutating STALE replay in se_owk_resume, refused as RESUME; the WORK
+ * stays at its terminal stage for the refusal's cleanup cascade. */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_interp_stale_resume SEC(".maps");
+static __attribute__((noinline)) int real_owner_interp_stale_armed(void)
+{
+	__u32 zero = 0;
+	__u64 *armed =
+		bpf_map_lookup_elem(&opaque_real_interp_stale_resume, &zero);
+	if (!armed || !*armed)
+		return 0;
+	__sync_fetch_and_sub(armed, 1);
+	return 1;
+}
+#endif
+/* (d) and the rebind: 0 with the WORK suspended at 3p+1, or the reason
+ * with the WORK consumed (DONE) or never resumed. */
+static __attribute__((noinline)) int
+real_owner_interp_rebind(struct se_ol_payload_handle *owner,
+			 const struct se_exec_terminal_receipt *receipt,
+			 const struct se_snapshot *snapshot, __u32 mode)
+{
+	struct se_owk_ticket ticket = {};
+	struct se_owk_semantic_handle semantic = {};
+	struct se_invocation *work = 0;
+	__u32 resume = REAL_OWNER_TERMINAL_RESUME;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC
+	if (real_owner_interp_stale_armed())
+		resume = REAL_OWNER_PREPARE_RESUME;
+#endif
+	if (se_owk_resume(owner, resume, &ticket) != SE_OL_OK)
+		return SE_INTERP_STAT_RESUME;
+	__u32 pass = se_exec_continue_pass(ticket.continuation_stage,
+					   SE_OWK_EXEC_PASSES);
+	int reason = SE_INTERP_STAT_DEPTH;
+	if (!pass)
+		goto done_ticket;
+	reason = SE_INTERP_STAT_RESUME;
+	if (se_owk_semantic_open(owner, &ticket, &semantic, &work) != SE_OL_OK)
+		goto done_ticket;
+	if (!se_exec_continue_work_exact(work, receipt, mode))
+		goto done_semantic;
+	reason = SE_INTERP_STAT_REBIND;
+	__u32 zero = 0;
+	const struct se_owk_payload *empty =
+		bpf_map_lookup_elem(&se_opaque_work_zero, &zero);
+	if (!empty ||
+	    bpf_probe_read_kernel(
+		    &semantic.payload->semantic.history,
+		    sizeof(struct se_owk_payload) -
+			    __builtin_offsetof(struct se_owk_payload,
+					       semantic.history),
+		    &empty->semantic.history))
+		goto done_semantic;
+	if (real_owner_policy_prepare(work, receipt->scope, receipt->generation,
+				      snapshot))
+		goto done_semantic;
+	struct fm_global_token *token =
+		&work->observation.stage_workspace.token;
+	if (se_owk_evaluator_token(&semantic, token) != SE_OL_OK ||
+	    se_owk_view_from_identity(token->slot, token->cookie) !=
+		    &work->view)
+		goto done_semantic;
+	if (se_owk_semantic_suspend(&semantic, &work,
+				    ticket.continuation_stage + 1U) !=
+	    SE_OL_OK)
+		goto done_semantic;
+	real_owner_interp_stat(SE_INTERP_STAT_CONTINUED_FIRST + pass - 1);
+	return 0;
+done_semantic:
+	if (semantic.held && work)
+		(void)se_owk_semantic_done(&semantic, &work);
+	return reason;
+done_ticket:
+	(void)se_owk_done(owner, &ticket);
+	return reason;
+}
+/* 0 with the WORK suspended at 3p+1 and the TASK lease closed, or the
+ * refusal reason. */
+static __attribute__((noinline)) int
+real_owner_interp_continue_core(struct linux_binprm *bprm, __u32 mode)
+{
+	__u64 key = (__u64)bpf_get_current_task_btf();
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
+	if (!receipt || !real_owner_interp_frames(receipt, key, (__u64)bprm))
+		return SE_INTERP_STAT_FRAME;
+	struct se_ol_payload_handle owner = {};
+	if (real_owner_child_open_parent(&owner) != SE_OL_OK)
+		return SE_INTERP_STAT_CLASSIFY;
+	struct real_owner_policy_auth auth = {};
+	int reason =
+		real_owner_interp_reader(&owner, receipt, (__u64)bprm, &auth);
+	if (!reason) {
+		/* Scalar-bounded record index (Rocky 4.18 state joins). */
+		volatile __u64 bounded_record = auth.record;
+		struct se_shared_binding *binding =
+			auth.slot < SE_OC_ACCOUNTS ?
+				bpf_map_lookup_elem(&se_bindings, &auth.slot) :
+				0;
+		const struct se_snapshot *snapshot =
+			binding ? &binding->state.records[bounded_record & 1ULL] :
+				  0;
+		if (!snapshot || snapshot->serial != auth.serial ||
+		    snapshot->scope != receipt->scope ||
+		    snapshot->generation != receipt->generation)
+			reason = SE_INTERP_STAT_RECOVER;
+		else
+			reason = real_owner_interp_rebind(&owner, receipt,
+							  snapshot, mode);
+	}
+	if (se_ol_payload_close(&owner) != SE_OL_OK) {
+		/* Consumes a WORK already suspended at 3p+1 (prepare class). */
+		real_owner_policy_close_fault(&owner, (__u64)bprm, !reason);
+		if (!reason)
+			reason = SE_INTERP_STAT_REBIND;
+	}
+	return reason;
+}
+static __attribute__((always_inline)) inline long
+real_owner_continue_class(unsigned long long *ctx, struct linux_binprm *bprm,
+			  __u32 mode)
+{
+	__s64 prior = (__s64)ctx[1];
+	if (prior)
+		return prior;
+	__u32 reason = real_owner_interp_continue_core(bprm, mode);
+	if (!reason) {
+		if (mode == 1)
+			bpf_tail_call(ctx, &opaque_real_prepare_audit, 0);
+		else
+			bpf_tail_call(ctx, &opaque_real_prepare_strict, 0);
+		reason = SE_INTERP_STAT_GRAPH_MISS;
+	}
+	return real_owner_continue_refuse(ctx, reason, mode);
+}
+#endif
 #define REAL_OWNER_CLASS_PROGRAM(name, body, mode)                \
 	SEC("lsm/bprm_check_security")                            \
 	long BPF_PROG(name, struct linux_binprm *bprm, int prior) \
@@ -3304,6 +5694,12 @@ REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_finish_audit,
 			 real_owner_finish_class, 1)
 REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_finish_strict,
 			 real_owner_finish_class, 2)
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_continue_audit,
+			 real_owner_continue_class, 1)
+REAL_OWNER_CLASS_PROGRAM(opaque_real_owner_continue_strict,
+			 real_owner_continue_class, 2)
+#endif
 #undef REAL_OWNER_CLASS_PROGRAM
 #endif
 
@@ -3502,28 +5898,63 @@ real_owner_continue_reader(struct linux_binprm *bprm, int prior_denied)
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE
 /* Source-only physical-exec capsule (full/shared_exec_capsule.h, G005-A).
- * Arrays are sized by the loader to the guest pid_max; maps are private. */
+ * G019 M4 (user decision (ii)): capsule and marker live in BPF task local
+ * storage on the executing task (no pid_max-sized ARRAY, no loader sizing),
+ * created only for an exec that can matter; maps are private. The tgid/pid
+ * adapter arguments are unused: the storage key is the current task. */
 struct se_exec_capsule;
 struct se_exec_marker;
-static __always_inline struct se_exec_capsule *real_owner_capsule(__u32 tgid);
-static __always_inline struct se_exec_marker *real_owner_marker(__u32 pid);
+static __always_inline struct se_exec_capsule *real_owner_capsule(__u64 flags);
+static __always_inline struct se_exec_marker *real_owner_marker(__u64 flags);
+static __always_inline int real_owner_capsule_matters(void);
 static __always_inline __u64 real_owner_capsule_sequence(void);
 static __always_inline void real_owner_capsule_stat(__u32 index);
-#define SE_CAP_LOOKUP(tgid) real_owner_capsule(tgid)
-#define SE_CAP_MARKER_LOOKUP(pid) real_owner_marker(pid)
+#define SE_CAP_ABSENT_OK 1
+#define SE_CAP_LOOKUP(tgid) ((void)(tgid), real_owner_capsule(0))
+#define SE_CAP_CREATE(tgid) \
+	((void)(tgid), real_owner_capsule(BPF_LOCAL_STORAGE_GET_F_CREATE))
+#define SE_CAP_MARKER_LOOKUP(pid) ((void)(pid), real_owner_marker(0))
+#define SE_CAP_MARKER_CREATE(pid) \
+	((void)(pid), real_owner_marker(BPF_LOCAL_STORAGE_GET_F_CREATE))
+/* Test-only (G019 M4 review M2 attached test): no exec matters at entry or
+ * begin, so every exec is uncovered and freezes at its first selected
+ * admission (the begin-time create skip, made deterministic). */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_CAPSULE_UNCOVERED_DIAGNOSTIC
+#ifdef SE_PRODUCT_NO_TEST_RUN
+#error "the uncovered-capsule diagnostic is test only"
+#endif
+#define SE_CAP_MATTERS() (real_owner_capsule_matters() && 0)
+#else
+#define SE_CAP_MATTERS() real_owner_capsule_matters()
+#endif
 #define SE_CAP_NEXT_SEQUENCE() real_owner_capsule_sequence()
 #define SE_CAP_STAT(index) real_owner_capsule_stat(index)
+/* Product objects: an exec entry with a live capsule is always marked (review
+ * OQ: stale-capsule detection after a missed terminal and a missed begin).
+ * Gated so the Step-0 / Phase A IDENT objects keep their bytes. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#define SE_CAP_ENTRY_MARKS_LIVE_CAPSULE 1
+#endif
+/* G019 gap 4: a frozen re-admission of the same exec reports SE_CAP_LATER
+ * (the interpreter pass); real_owner_reader_begin_core masks it. Absent
+ * storage must stay a first (uncovered) admission, never a later one. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+#ifndef SE_CAP_ABSENT_OK
+#error "interpreter continuation requires the task-storage capsule adapter"
+#endif
+#define SE_CAP_REPORT_LATER 1
+#endif
 #include "shared_exec_capsule.h"
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
 	__type(value, struct se_exec_capsule);
 } se_exec_capsules SEC(".maps");
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
 	__type(value, struct se_exec_marker);
 } se_exec_markers SEC(".maps");
 struct {
@@ -3541,13 +5972,40 @@ struct {
 	__type(key, __u32);
 	__type(value, struct real_owner_capsule_stats);
 } se_exec_capsule_stats SEC(".maps");
-static __always_inline struct se_exec_capsule *real_owner_capsule(__u32 tgid)
+/* In the fentry/fexit capsule programs the kernel uses the tracing variant
+ * of bpf_task_storage_get (bpf_task_storage_get_recur), which returns NULL
+ * when this CPU's task-storage busy trylock is held (a nested task-storage
+ * user), even for existing storage and even with F_CREATE. The adapter's
+ * "absent means the exec never mattered" holds only because such a miss is
+ * fail-closed or availability-only: a matters-begin whose lookup/create
+ * misses is a counted FAULT (its admission then freezes uncovered, or
+ * degrades and counts ADMISSION); a stale capsule left by a missed terminal
+ * lookup is retired by the task's next begin, its first selected admission,
+ * or lsm/task_free (its pin, if any, blocks publication until then). In the LSM
+ * admission and the death retire the non-recursive helper is used. */
+static __always_inline struct se_exec_capsule *real_owner_capsule(__u64 flags)
 {
-	return bpf_map_lookup_elem(&se_exec_capsules, &tgid);
+	return bpf_task_storage_get(&se_exec_capsules,
+				    bpf_get_current_task_btf(), 0, flags);
 }
-static __always_inline struct se_exec_marker *real_owner_marker(__u32 pid)
+static __always_inline struct se_exec_marker *real_owner_marker(__u64 flags)
 {
-	return bpf_map_lookup_elem(&se_exec_markers, &pid);
+	return bpf_task_storage_get(&se_exec_markers,
+				    bpf_get_current_task_btf(), 0, flags);
+}
+/* An exec can matter when its current cgroup has a route-index entry (a
+ * selected or faulting route) or its task holds a TASK key (it may migrate
+ * into a selected cgroup with its TASK). Only those create storage before
+ * admission; any other exec creates it only at its first selected
+ * admission. A hint, read without the route lock. */
+static __always_inline int real_owner_capsule_matters(void)
+{
+	__u64 cgroup = bpf_get_current_cgroup_id();
+	const __u64 *entry = SE_ROUTE_INDEX_LOOKUP(&cgroup);
+	if (entry && *entry)
+		return 1;
+	__u64 key = (__u64)bpf_get_current_task_btf();
+	return bpf_map_lookup_elem(&se_opaque_keys, &key) != 0;
 }
 static __always_inline __u64 real_owner_capsule_sequence(void)
 {
@@ -3566,8 +6024,10 @@ static __always_inline void real_owner_capsule_stat(__u32 index)
 	if (s && index < SE_CAP_STATS)
 		__sync_fetch_and_add(&s->events[index], 1);
 }
-/* Loader attach order is a hard invariant: terminal, entry, begin, then the
- * LSM admission; detach in exact reverse. */
+/* Loader attach order is a hard invariant: the death retire
+ * (real_owner_capsule_free), terminal, entry, begin, then the LSM
+ * admission; detach in exact reverse (the death retire is attached before
+ * any capsule can exist and detached after the last one can be created). */
 SEC("fexit/bprm_execve")
 int BPF_PROG(real_owner_capsule_terminal, struct linux_binprm *bprm, int ret)
 {
@@ -3601,6 +6061,22 @@ int BPF_PROG(real_owner_capsule_begin, struct linux_binprm *bprm)
 			      is_check);
 	return 0;
 }
+/* Task death (task-storage adapter): retire a capsule whose terminal was
+ * missed, releasing its original-route pin, before the kernel frees the
+ * task's storage (security_task_free runs before bpf_task_storage_free). Its
+ * own program and frame: the product task_free program's 512-byte chain is
+ * not touched. Lookup only, never create. */
+SEC("lsm/task_free")
+int BPF_PROG(real_owner_capsule_free, struct task_struct *task)
+{
+	(void)se_cap_on_free(
+		bpf_task_storage_get(&se_exec_capsules, task, 0, 0));
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	se_birth_park_drop(bpf_task_storage_get(&se_birth_parks, task, 0, 0),
+			   SE_BIRTH_PARK_STALE);
+#endif
+	return 0;
+}
 /* Separate frame: the capsule admission's views/tokens/lock sections must
  * not sum with the begin_core claim/TASK frames (dead ends 18/23). The class
  * is the frozen ORIGINAL class; the current cgroup never selects it after
@@ -3610,9 +6086,20 @@ real_owner_cap_admit(struct linux_binprm *bprm, struct se_route_claim *claim,
 		     __u32 *frozen)
 {
 	__u64 id = bpf_get_current_pid_tgid();
-	return se_cap_admit(id >> 32, (__u64)bpf_get_current_task_btf(),
-			    (__u64)bprm, bpf_get_current_cgroup_id(), claim,
-			    frozen);
+	return se_cap_admit(id >> 32, (__u32)id,
+			    (__u64)bpf_get_current_task_btf(), (__u64)bprm,
+			    bpf_get_current_cgroup_id(), claim, frozen);
+}
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+/* G019 gap 4: the receipt classification in its own frame. A stale
+ * same-bprm-address receipt at a first admission stays pending. */
+static __attribute__((noinline)) int
+real_owner_pending_class(__u64 key, __u64 bprm, __u32 later)
+{
+	return se_exec_receipt_pending_class(
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key), key,
+		bprm, later);
 }
 #endif
 static __attribute__((noinline)) int
@@ -3624,20 +6111,41 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE
 	__u32 frozen_class = 0;
 	int admission = real_owner_cap_admit(bprm, &claim, &frozen_class);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+	__u32 later = frozen_class & SE_CAP_LATER;
+	frozen_class &= ~SE_CAP_LATER;
+#endif
 	if (admission == SE_ROUTE_OWNED &&
-	    frozen_class != claim.execution_class) {
-		/* Defense in depth: an owned claim must carry the frozen class. */
+	    (frozen_class != claim.execution_class ||
+	     SE_FC_EXEC_ADMISSION_FAULT(later))) {
+		/* Defense in depth: an owned claim must carry the frozen class.
+		 * Deny only a Strict frozen class; Audit never blocks. */
 		(void)real_owner_child_release_claim(&claim);
-		return 1;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		SE_RATE_ATTEMPT(1);
+		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_ADMISSION);
+#endif
+		return frozen_class == 2 ? 1 : 0;
 	}
 #else
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
 #endif
-	if (admission != SE_ROUTE_OWNED)
+	if (admission != SE_ROUTE_OWNED) {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		/* G019 M4: every admission fault is a counted attempt and a
+		 * counted ADMISSION; Audit faults too (never silent). */
+		if (admission == SE_ROUTE_STRICT_FAULT ||
+		    admission == SE_ROUTE_AUDIT_FAULT ||
+		    admission == SE_ROUTE_INVARIANT_FAULT) {
+			SE_RATE_ATTEMPT(1);
+			SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_ADMISSION);
+		}
+#endif
 		return admission == SE_ROUTE_STRICT_FAULT ||
 				       admission == SE_ROUTE_INVARIANT_FAULT ?
 			       1 :
 			       0;
+	}
 	__u32 mode = claim.execution_class;
 	__u64 key = (__u64)bpf_get_current_task_btf();
 	struct se_ol_payload_handle owner = {};
@@ -3645,18 +6153,60 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 	 * waiting for an authenticated consumer. Otherwise a second begin can
 	 * replace the exact sequence needed for retry-safe receipt retirement. */
 	int pending_terminal = 0;
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+	/* G019 gap 4: a later admission of the same exec whose pass-0 receipt
+	 * is still REGISTERED is an interpreter pass, not a pending receipt.
+	 * Its own frame returns before any TASK/reader frame (stack). The
+	 * claim is released here; the continuation re-derives everything from
+	 * the receipt, the failure frames and the original reader. Result 16
+	 * (with 1 for a Strict frozen class) dispatches the static-class
+	 * continuation; 32 is a failed claim release (refused). */
+	int pending_class =
+		real_owner_pending_class(key, (__u64)bprm, later);
+	if (pending_class == SE_EXEC_PENDING_CONTINUE) {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		SE_RATE_ATTEMPT(1); /* every pass is one exec attempt */
+#endif
+		int unreleased = real_owner_child_release_claim(&claim) != 0;
+		return 16 | (unreleased ? 32 : 0) | (mode == 2 ? 1 : 0);
+	}
+	pending_terminal = pending_class != SE_EXEC_PENDING_NONE;
+#elif defined(ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE)
 	pending_terminal =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key) != 0;
 #endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* U2: terminal and pending faults keep their own classes; a failed
+	 * open is ENTRY only when the task has no TASK at all (lock-free key
+	 * lookup: se_ol_observe's STALE does not distinguish), else [8]. */
+	SE_RATE_ATTEMPT(1);
+	int good = 0;
+	if (!terminal_fault && !pending_terminal) {
+		good = !SE_FC_EXEC_OPEN_PARENT_FAULT(key) &&
+		       real_owner_child_open_parent(&owner) == SE_OL_OK;
+		if (!good)
+			SE_FAIL_CLOSED_RATE(
+				bpf_map_lookup_elem(&se_opaque_keys, &key) ?
+					REAL_OWNER_RATE_OPEN_PARENT :
+					REAL_OWNER_RATE_ENTRY);
+	}
+#else
 	int good = !terminal_fault && !pending_terminal &&
 		   real_owner_child_open_parent(&owner) == SE_OL_OK;
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE
 	int transfer = 0;
 	if (good) {
 		__u64 invocation = 0;
 		int opened = real_owner_reader_open_exact(&owner, &claim, bprm,
 							  &invocation);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		/* The TASK opened but its reader could not begin: the Strict
+		 * reserve refuses a QUARANTINED TASK (exec.h), or the begin or
+		 * recover failed. A genuine fault, in Total; never ENTRY. */
+		if (!opened)
+			SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_OPEN_PARENT);
+#endif
 		int step = real_owner_reader_finish_exact(&owner, &claim, bprm,
 							  invocation, opened);
 		good = step & 1;
@@ -3743,8 +6293,10 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 	/* This probe has no evaluator. Never allow a selected strict exec even
 	 * when its ownership/cleanup diagnostics all succeeded. */
 	int result = mode == 2 ? 1 : 0;
-	if (pending_terminal || terminal_fault)
+	if (pending_terminal || terminal_fault) {
 		result |= 8;
+		SE_EXEC_EXCLUSION_WITNESS(terminal_fault & 2 ? 0 : 1);
+	}
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE
 	if (transfer)
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
@@ -3793,23 +6345,57 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PENDING_RECEIPT_DIAGNOSTIC
 	(void)real_pending_receipt_inject();
 #endif
+	/* 2: first-exec qualification fault (rate [6]); 1: terminal drain
+	 * fault. Either, or a pending terminal receipt, refuses the exec. */
 	int terminal_fault = 0;
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
-	if (real_owner_image_configured())
-		terminal_fault = real_owner_birth_qualify(
-					 (struct task_struct *)
-						 bpf_get_current_task_btf()) <
-				 0;
+#ifdef SE_REAL_OWNER_BIRTH_QUALIFY
+	if (real_owner_image_configured() &&
+	    SE_FC_QUALIFY_FAULT(real_owner_birth_qualify(
+		    (struct task_struct *)bpf_get_current_task_btf())))
+		terminal_fault = 2;
 #endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SOURCE_TERMINAL_DRAIN_DIAGNOSTIC
 	/* Keep completion outside the new claim/TASK-open stack frame. */
-	if (real_owner_image_configured())
-		terminal_fault |= real_owner_source_terminal_drain();
+	if (real_owner_image_configured() && real_owner_source_terminal_drain())
+		terminal_fault |= 1;
 #endif
 	int result = real_owner_reader_begin_core(bprm, terminal_fault);
-	if (result & 8)
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
+	if (result & 16) {
+		/* The class is the capsule's frozen ORIGINAL class. A graph miss
+		 * (or a failed claim release) is a counted GAP refusal with the
+		 * static class verdict: Strict denies, Audit allows. A terminal
+		 * fault (2: first-exec qualification, 1: terminal drain) refuses
+		 * the pass before any dispatch, counted once in its own class
+		 * exactly as on a first pass (QUALIFY [6] or PENDING [7]), never
+		 * also GAP: the continuation was never attempted. */
+		__u32 reason = SE_INTERP_STAT_FRAME;
+		if (terminal_fault) {
+			SE_FAIL_CLOSED_RATE(terminal_fault & 2 ?
+						    REAL_OWNER_RATE_QUALIFY :
+						    REAL_OWNER_RATE_PENDING);
+			reason = SE_INTERP_STATS;
+		} else if (!(result & 32)) {
+			if (result & 1)
+				bpf_tail_call(ctx, &opaque_real_continue_strict,
+					      0);
+			else
+				bpf_tail_call(ctx, &opaque_real_continue_audit,
+					      0);
+			reason = SE_INTERP_STAT_GRAPH_MISS;
+		}
+		if (result & 1)
+			return real_owner_continue_refuse(ctx, reason, 2);
+		return real_owner_continue_refuse(ctx, reason, 1);
+	}
+#endif
+	if (result & 8) {
 		(void)real_owner_reader_quarantine_pending(
 			(__u64)bpf_get_current_task_btf());
+		SE_FAIL_CLOSED_RATE(terminal_fault & 2 ?
+					    REAL_OWNER_RATE_QUALIFY :
+					    REAL_OWNER_RATE_PENDING);
+	}
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_BRIDGE_CANDIDATE
 	if (result & 2) {
 		if (result & 4) {
@@ -3820,6 +6406,7 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
 			else
 				bpf_tail_call(ctx, &opaque_real_policy_audit,
 					      0);
+			SE_GRAPH_MISS();
 #else
 			bpf_tail_call(ctx, &opaque_real_owner_policy_targets,
 				      0);
@@ -3861,13 +6448,15 @@ int BPF_PROG(opaque_real_owner_reader_success_probe,
 	struct se_exec_terminal_receipt *receipt =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &key);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESS_SOURCE_COMPLETION_DIAGNOSTIC
-	if (receipt &&
+	if (receipt && !SE_FC_PENDING_SKIP(key) &&
 	    real_owner_terminal_transition(
 		    receipt, key, (__u64)bprm, receipt->cookie,
 		    receipt->locator, receipt->invocation, receipt->scope,
 		    receipt->generation, SE_EXEC_TERMINAL_SUCCESS)) {
 		/* The callee may delete the receipt; do not use its pointer again. */
-		(void)real_owner_work_completion_shape(key);
+		SE_WORK_SYNC_RETURN(
+			SE_SETTLE_SLOT(real_owner_work_completion_shape(key)),
+			REAL_OWNER_WORK_SYNC_SETTLED_EXEC);
 	}
 #else
 	if (receipt)
@@ -3888,7 +6477,11 @@ int BPF_PROG(opaque_real_owner_reader_success_probe,
 #endif
 /* Never attached or selected. The controller supplies only a physical-key
  * selector; the read-only plain receipt map is written by the actual success
- * tracepoint, never by userspace. This probe cannot invent a terminal. */
+ * tracepoint, never by userspace. This probe cannot invent a terminal. The
+ * product object (SE_PRODUCT_NO_TEST_RUN) has neither the TEST_RUN probes
+ * nor their selector maps; the completion helpers stay for the real
+ * terminal producers. */
+#ifndef SE_PRODUCT_NO_TEST_RUN
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -3903,6 +6496,7 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } opaque_real_owner_work_completion_selector SEC(".maps");
+#endif
 
 static __attribute__((noinline)) int
 real_owner_work_delete_receipt_exact(__u64 key,
@@ -3935,7 +6529,7 @@ static __attribute__((noinline)) void real_owner_terminal_outcome(__u32 outcome)
 }
 #endif
 
-static __attribute__((noinline)) int
+static __attribute__((noinline)) SE_SETTLE_T
 real_owner_work_complete_active(struct se_ol_payload_handle *owner, __u64 key)
 {
 	struct se_owk_ticket ticket = {};
@@ -3943,7 +6537,7 @@ real_owner_work_complete_active(struct se_ol_payload_handle *owner, __u64 key)
 	/* Complete into the proposed evaluation WORK. Only STALE (no WORK
 	 * suspended at this stage) charges a fresh WORK, and only while the
 	 * terminal receipt is still exact; CORRUPT or any other result refuses. */
-	int resumed = se_owk_resume(owner, REAL_OWNER_TERMINAL_STAGE, &ticket);
+	int resumed = se_owk_resume(owner, REAL_OWNER_TERMINAL_RESUME, &ticket);
 	if (resumed != SE_OL_OK) {
 		if (resumed != SE_OL_STALE ||
 		    !real_owner_work_receipt_exact(key, owner)) {
@@ -4009,7 +6603,9 @@ real_owner_work_complete_active(struct se_ol_payload_handle *owner, __u64 key)
 			ok ? REAL_OWNER_TERMINAL_RESUMED_COMPLETED :
 			     REAL_OWNER_TERMINAL_RESUMED_FAILED);
 #endif
-	return ok ? 0 : -1;
+	/* A closed (exactly DONE) evaluation WORK goes to the synchronous return
+	 * in the high half of R0. */
+	return SE_SETTLE_PACK(ok ? 0 : -1, closed ? ticket.work_slot + 1 : 0);
 semantic_done:
 	(void)se_owk_semantic_done(&semantic, &work);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
@@ -4066,7 +6662,7 @@ real_owner_work_open_key(__u64 key, struct se_ol_payload_handle *owner)
 	return se_ol_task_open(&key, owner);
 }
 
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_TERMINAL_RACE_DIAGNOSTIC
+#ifdef SE_TERMINAL_RACE_RENDEZVOUS
 struct opaque_real_terminal_race_witness {
 	__u64 attempts;
 	__u64 commits;
@@ -4097,12 +6693,18 @@ static __attribute__((noinline)) void real_owner_terminal_auth_enter(void)
 	__u64 entered = __sync_add_and_fetch(&witness->auth_inflight, 1);
 	if (entered > 1)
 		__sync_fetch_and_add(&witness->auth_overlap, 1);
+		/* SE_TERMINAL_RACE_NO_SPIN (the latency object only): keep the witness
+	 * counts but not the wait, so the exec hot path is measured as the
+	 * product runs it (up to 4096 bpf_ktime_get_ns spins, ~50 us, per
+	 * completion otherwise). */
+#ifndef SE_TERMINAL_RACE_NO_SPIN
 	for (__u32 spin = 0; spin < 4096; spin++) {
 		volatile __u64 tick = bpf_ktime_get_ns();
 		(void)tick;
 		if (*(volatile __u64 *)&witness->auth_inflight > 1)
 			break;
 	}
+#endif
 }
 static __attribute__((noinline)) void real_owner_terminal_auth_exit(void)
 {
@@ -4114,19 +6716,20 @@ static __attribute__((noinline)) void real_owner_terminal_auth_exit(void)
 }
 #endif
 
-static __attribute__((noinline)) int real_owner_work_completion_shape(__u64 key)
+static __attribute__((noinline)) SE_SETTLE_T
+real_owner_work_completion_shape(__u64 key)
 {
-	int result = -1;
+	SE_SETTLE_T result = -1;
 	struct se_ol_payload_handle owner = {};
 	if (real_owner_work_open_key(key, &owner) != SE_OL_OK)
 		return -1;
 	if (!real_owner_work_receipt_exact(key, &owner))
 		goto close;
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_TERMINAL_RACE_DIAGNOSTIC
+#ifdef SE_TERMINAL_RACE_RENDEZVOUS
 	real_owner_terminal_auth_enter();
 #endif
 	result = real_owner_work_complete_active(&owner, key);
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_TERMINAL_RACE_DIAGNOSTIC
+#ifdef SE_TERMINAL_RACE_RENDEZVOUS
 	real_owner_terminal_auth_exit();
 #endif
 close:
@@ -4136,7 +6739,8 @@ close:
 	return result;
 }
 
-#ifdef ENFORCE_EXEC_POOL_OPAQUE_TERMINAL_RACE_DIAGNOSTIC
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_TERMINAL_RACE_DIAGNOSTIC) && \
+	!defined(SE_PRODUCT_NO_TEST_RUN)
 SEC("tc")
 int opaque_real_owner_terminal_race_complete(struct __sk_buff *skb)
 {
@@ -4156,7 +6760,8 @@ int opaque_real_owner_terminal_race_complete(struct __sk_buff *skb)
 		if (entered > 1)
 			__sync_fetch_and_add(&witness->overlap, 1);
 	}
-	int done = real_owner_work_completion_shape(*selected) == 0;
+	int done = SE_SETTLE_RESULT(
+			   real_owner_work_completion_shape(*selected)) == 0;
 	if (witness) {
 		if (done)
 			__sync_fetch_and_add(&witness->commits, 1);
@@ -4166,6 +6771,7 @@ int opaque_real_owner_terminal_race_complete(struct __sk_buff *skb)
 }
 #endif
 
+#ifndef SE_PRODUCT_NO_TEST_RUN
 SEC("tc")
 int opaque_real_owner_work_completion_probe(struct __sk_buff *skb)
 {
@@ -4176,9 +6782,11 @@ int opaque_real_owner_work_completion_probe(struct __sk_buff *skb)
 	const __u64 *selected = bpf_map_lookup_elem(
 		&opaque_real_owner_work_completion_selector, &zero);
 	if (armed && *armed == 1 && selected && *selected)
-		(void)real_owner_work_completion_shape(*selected);
+		(void)SE_SETTLE_RESULT(
+			real_owner_work_completion_shape(*selected));
 	return 0;
 }
+#endif
 
 /* Separate bounded retry program: a postcommit fault must never rerun the
  * accepted-role patch. An owned transaction is intentionally NOT handled by
@@ -4225,7 +6833,8 @@ static __attribute__((noinline)) int real_owner_source_terminal_drain(void)
 	if (result == -2)
 		return -1;
 	if (result) {
-		result = real_owner_work_completion_shape(key);
+		result =
+			SE_SETTLE_RESULT(real_owner_work_completion_shape(key));
 		if (result == -2)
 			return -1;
 		if (result)
@@ -4237,6 +6846,7 @@ static __attribute__((noinline)) int real_owner_source_terminal_drain(void)
 }
 #endif
 
+#ifndef SE_PRODUCT_NO_TEST_RUN
 SEC("tc")
 int opaque_real_owner_work_retry_probe(struct __sk_buff *skb)
 {
@@ -4250,5 +6860,9 @@ int opaque_real_owner_work_retry_probe(struct __sk_buff *skb)
 		(void)real_owner_work_retry_shape(*selected);
 	return 0;
 }
+#endif
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#include "opaque_real_owner_product_publisher.h"
 #endif
 char LICENSE[] SEC("license") = "GPL";

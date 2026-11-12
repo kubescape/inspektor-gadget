@@ -104,6 +104,11 @@ int opaque_real_live_bootstrap_control(struct __sk_buff *skb)
 	route->active_record = 0;
 	route->execution_class = execution_class;
 	route->phase = SE_ROUTE_ACTIVE;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	route->rec[0] = (struct se_route_rec){ .serial = 1,
+					       .generation = 1,
+					       .phase = SE_SNAPSHOT_ACTIVE };
+#endif
 	bpf_spin_unlock(&route->lock);
 	__u64 locator = se_route_locator(0, 1);
 	return bpf_map_update_elem(&se_route_index, &gate->cgroup, &locator,
@@ -180,6 +185,11 @@ int opaque_real_live_bootstrap_second_route(struct __sk_buff *skb)
 	route->active_record = 0;
 	route->execution_class = execution_class;
 	route->phase = SE_ROUTE_ACTIVE;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	route->rec[0] = (struct se_route_rec){ .serial = 1,
+					       .generation = 1,
+					       .phase = SE_SNAPSHOT_ACTIVE };
+#endif
 	bpf_spin_unlock(&route->lock);
 	__u64 locator = se_route_locator(1, 1);
 	return bpf_map_update_elem(&se_route_index, &gate->cgroup, &locator,
@@ -254,6 +264,14 @@ int opaque_real_live_bootstrap_advance(struct __sk_buff *skb)
 	/* The previous retiring record has no reader (its commit required
 	 * zero claims and new readers only acquire the active record). */
 	if (s->phase == SE_SNAPSHOT_RETIRING) {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		/* G019 gap 3: the retiring record may still have holders (its
+		 * commit no longer required none): busy, retried (code 1). */
+		if (s->claims || se_route_rec_held(route, record)) {
+			code = 1;
+			goto out;
+		}
+#endif
 		if (s->count != 1 || s->claims || s->commands ||
 		    s->tickets[0].phase != SE_TICKET_HELD ||
 		    s->tickets[0].object_slot != record || !target->pins)
@@ -262,6 +280,10 @@ int opaque_real_live_bootstrap_advance(struct __sk_buff *skb)
 		s->tickets[0].phase = SE_TICKET_RELEASED;
 		if (se_snapshot_reclaim_locked(s))
 			goto out;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		route->rec[se_route_rec_index(record)] =
+			(struct se_route_rec){};
+#endif
 	}
 	if (target->pins == (__u32)~0U)
 		goto out;
@@ -410,7 +432,10 @@ int opaque_real_live_reap_work(struct __sk_buff *skb)
 	if (!gate || gate->enabled != 1 || !request || request->enabled != 1 ||
 	    !request->cookie)
 		return SE_OWK_STALE;
-	return se_owk_reap_step(request->slot, request->cookie);
+	/* The visit claim when the object returns WORK synchronously (G019
+	 * option C): this test reaper and BPF's own return never step one WORK
+	 * at once. */
+	return SE_OWK_REAP_CLAIMED(request->slot, request->cookie);
 }
 
 struct opaque_real_live_task_reap_request {

@@ -8,10 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/spf13/viper"
+	"golang.org/x/sys/unix"
 
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
@@ -31,6 +38,256 @@ type sharedHostState struct {
 	claimed, operatorClosed, released, ready bool
 	commandsJoined                           bool
 	startAttempted                           bool
+	// qualified is set only by startQualifiedSharedNode (qualification build
+	// plus explicit opt-in). It admits the candidate attach set, nothing else.
+	qualified bool
+	live      *sharedLiveCandidate
+	// started receives the qualified startup result once: Start's error, or
+	// the operator Readiness result (sharedQualifiedOperator.Ready), which
+	// the gadget context evaluates right before it publishes the gadget as
+	// running.
+	started chan error
+	// stopGadget tears down the host gadget (the manager detach), set as
+	// soon as SharedNodeQualification.Run returns it. It lives outside the
+	// live candidate, which startLiveCandidate installs concurrently.
+	stopGadget    func(context.Context) error
+	gadgetStopped bool
+	// newPublisher is the qualification route publisher factory
+	// (SharedNodeQualification.Publisher); nil keeps Publish unavailable.
+	newPublisher func(operators.GadgetContext) (SharedRoutePublisher, error)
+	// newReaper builds the product reaper over the started host gadget
+	// context; nil selects borrowSharedCandidateReaper. Tests only override it.
+	newReaper func(operators.GadgetContext, ReaperConfig) (*Reaper, error)
+	// exitCredit borrows the credit-at-exit witness reader; nil selects
+	// borrowSharedExitCredit. Tests only override it.
+	exitCredit func(operators.GadgetContext) (sharedExitCreditRead, error)
+	// capsuleStats borrows the exec-capsule witness reader; nil selects
+	// borrowSharedCapsuleStats. Tests only override it.
+	capsuleStats func(operators.GadgetContext) (sharedCapsuleStatsRead, error)
+	// birthParkStats borrows the birth-park witness reader (product
+	// objects); nil selects borrowSharedBirthParkStats. Tests only.
+	birthParkStats func(operators.GadgetContext) (sharedBirthParkStatsRead, error)
+	// failClosed borrows the fail-closed rate witness reader; nil selects
+	// borrowSharedFailClosed. failClosedClock is its clock (nil: time.Now).
+	// Tests only override them.
+	failClosed      func(operators.GadgetContext, int) (sharedFailClosedRead, error)
+	failClosedClock func() time.Time
+	// newProductPublisher replaces borrowSharedProductPublisher (G1).
+	// Package tests only.
+	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)
+	// strictRefused is why Strict publication is refused on this node
+	// (design 13.8: the agent is not in the initial pid/time namespaces).
+	strictRefused error
+}
+
+// sharedLiveCandidate is the one node-wide candidate collection, owned by the
+// host gadget. Bindings own route slots (scopeSlots) of it, never a collection.
+type sharedLiveCandidate struct {
+	receipts  map[string]*operators.NativeAttachment
+	publisher SharedRoutePublisher
+	reaper    *sharedLiveReaper
+	exit      *sharedLiveExitCredit
+	capsule   *sharedLiveCapsule
+	// birthPark is the birth-park witness (nil: not a product object).
+	birthPark *sharedLiveBirthPark
+	// failClosed polls the fail-closed rate witness (nil: the object has
+	// none and is not a product object).
+	failClosed *sharedLiveFailClosed
+	// healthStopped is set once stopLiveHealth ran: the reaper and the
+	// witness no longer watch the node, so it is never healthy again.
+	healthStopped bool
+	// The withdraw -> recycle loops (startRecycle), joined before the
+	// publisher closes; recycleFault is their sticky refusal.
+	recyclers     sync.WaitGroup
+	recycleCtx    context.Context
+	recycleCancel context.CancelFunc
+	recycleFault  error
+	// publisherClosed: closeLivePublisher detached the publisher (node
+	// teardown); a later withdrawal is recorded pending and counted in
+	// teardownPending (TeardownPendingWithdrawals).
+	publisherClosed bool
+	teardownPending uint64
+	// recycleStopped is set (under n.mu) before the loops are joined:
+	// startRecycle then refuses, so no Add races the Wait.
+	recycleStopped bool
+}
+
+// sharedCandidateAttachSet is the pinned steady-state attach set of the
+// shared candidate (G009; TestCandidateAttachSetObjects): 8 links, task_free 2
+// (the product release and the exec capsule's death retire), task_alloc 1,
+// bprm_execve 3, creds_for_exec 1, bprm_check 1. Every other
+// program of the image must be disabled by its packaged metadata.
+var sharedCandidateAttachSet = map[string]string{
+	"opaque_real_owner_child_final_free_candidate": "bpf_lsm_task_free",
+	"opaque_real_owner_child_source_candidate":     "bpf_lsm_task_alloc",
+	"real_owner_capsule_free":                      "bpf_lsm_task_free",
+	"opaque_real_owner_failure_fexit_probe":        "bprm_execve",
+	"real_owner_capsule_terminal":                  "bprm_execve",
+	"real_owner_capsule_entry":                     "bprm_execve",
+	"real_owner_capsule_begin":                     "security_bprm_creds_for_exec",
+	"opaque_real_owner_reader_begin_probe":         "bpf_lsm_bprm_check_security",
+}
+
+// sharedCandidateProbeSet is the pinned non-trampoline part of the steady
+// state, exactly what the qualified loader (TestOpaqueRealPolicyVerdictAttached)
+// also attaches: the four exec failure-frame kprobes, the free_task birth
+// kprobe, the sched_process_fork raw_tp, the sched_process_exec tp_btf and
+// the credit-at-exit sched_process_exit tp_btf (nativeattach.Rank: attached
+// after task_free and, since Stop detaches in exact reverse, detached before
+// it).
+// They attach through bpf links and take no trampoline slot. Values are the
+// object's section names; the kernel-specific failure-frame symbols are set
+// through programs.<name>.attach_to.
+var sharedCandidateProbeSet = map[string]string{
+	"opaque_real_owner_child_exit_candidate":       "tp_btf/sched_process_exit",
+	"opaque_real_owner_failure_outer_enter":        "kprobe/do_execveat_common.isra.38",
+	"opaque_real_owner_failure_outer_exit":         "kretprobe/do_execveat_common.isra.38",
+	"opaque_real_owner_failure_handler_enter":      "kprobe/search_binary_handler",
+	"opaque_real_owner_failure_handler_exit":       "kretprobe/search_binary_handler",
+	"opaque_real_owner_birth_free_task_candidate":  "kprobe/free_task",
+	"opaque_real_owner_successful_birth_candidate": "raw_tp/sched_process_fork",
+	"opaque_real_owner_reader_success_probe":       "tp_btf/sched_process_exec",
+}
+
+// sharedCandidateCommandSet is the pinned set of enabled syscall commands:
+// the product reaper's opaque_real_reap, which startLiveCandidate borrows and
+// TEST_RUNs. A command is never attached and never disabled; every other
+// syscall program (se_command) must be disabled by the packaged metadata.
+var sharedCandidateCommandSet = map[string]ebpf.ProgramType{
+	"opaque_real_reap": ebpf.Syscall,
+}
+
+// sharedCandidateCommandsOf is the exact enabled command set of a manifest
+// (G2): sharedCandidateCommandSet, plus the 8 product publisher commands
+// (sharedProductCommands) when the object carries the product publisher
+// (ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE). The product
+// commands come all or none; their exact syscall shape is checked by the
+// caller, and product publication additionally requires them
+// (validateSharedProductControl). A product command present in the object
+// but disabled by the metadata is refused (it is in the set, so it must be
+// an enabled, unattached syscall), never treated as absent: an object with
+// the publisher compiled in always exposes all 8 commands.
+func sharedCandidateCommandsOf(programs map[string]operators.NativeProgramResource) (map[string]ebpf.ProgramType, error) {
+	out := maps.Clone(sharedCandidateCommandSet)
+	present := 0
+	for _, name := range sharedProductCommands {
+		if _, ok := programs[name]; ok {
+			present++
+			out[name] = ebpf.Syscall
+		}
+	}
+	if present != 0 && present != len(sharedProductCommands) {
+		return nil, fmt.Errorf("shared candidate carries %d of the %d product publisher commands", present, len(sharedProductCommands))
+	}
+	return out, nil
+}
+
+// validateSharedCandidateGeometry requires the loaded TASK/WORK maps to be
+// exactly the profile's geometry (sharedOpaqueOwnerGeometry): node TASK and
+// WORK slots, per-binding accounts and binding count. A profile that differs
+// from the object (for example the per-binding quota declared as the node
+// total) is refused, never adapted.
+func validateSharedCandidateGeometry(p SharedProfile, resources *operators.NativeResources) error {
+	if resources == nil {
+		return fmt.Errorf("missing shared candidate manifest")
+	}
+	want, _, err := sharedOpaqueOwnerGeometry(p)
+	if err != nil {
+		return fmt.Errorf("shared candidate profile: %w", err)
+	}
+	if p.exitTombstones() > math.MaxUint32 {
+		return fmt.Errorf("shared candidate profile: exit tombstones exceed uint32")
+	}
+	maps.Copy(want, sharedExitCreditGeometry(p))
+	for name, shape := range want {
+		if got, ok := resources.Maps[name]; !ok || got != shape {
+			return fmt.Errorf("shared candidate map %s is %+v, profile (tasks %d/%d per binding, work %d/%d, bindings %d) requires %+v",
+				name, got, p.Tasks, p.PerBinding.Tasks, p.Scratch, p.PerBinding.Scratch, p.Bindings, shape)
+		}
+	}
+	return nil
+}
+
+// sharedExitCreditGeometry is the exact credit-at-exit map geometry of
+// profile p: the burst-sized node-wide tombstone table
+// (SharedProfile.ExitTombstones; struct real_owner_exit_tombstone, 40 bytes),
+// one tombstone gauge per binding, and the witness counters. A
+// reduced-tombstone test build (SE_TEST_EXIT_TOMBSTONE_ENTRIES) is refused.
+func sharedExitCreditGeometry(p SharedProfile) map[string]operators.NativeMapResource {
+	return map[string]operators.NativeMapResource{
+		"se_exit_tombstones":        {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 40, MaxEntries: uint32(p.exitTombstones()), Flags: unix.BPF_F_RDONLY},
+		"opaque_real_exit_accounts": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: uint32(p.Bindings), Flags: unix.BPF_F_RDONLY},
+		"opaque_real_exit_credit":   {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: ExitCreditCounters, Flags: unix.BPF_F_RDONLY},
+	}
+}
+
+// sharedExitCreditCapacity checks the credit-at-exit witness shape
+// (opaque_real_exit_credit: an array of ExitCreditCounters u64 counters) and
+// returns the tombstone capacity (se_exit_tombstones max_entries).
+func sharedExitCreditCapacity(resources *operators.NativeResources) (uint64, error) {
+	witness, ok := resources.Maps["opaque_real_exit_credit"]
+	if !ok || witness.Type != uint32(ebpf.Array) || witness.KeySize != 4 || witness.ValueSize != 8 || witness.MaxEntries != ExitCreditCounters {
+		return 0, fmt.Errorf("shared candidate credit-at-exit witness opaque_real_exit_credit missing or malformed")
+	}
+	tombstones, ok := resources.Maps["se_exit_tombstones"]
+	if !ok || tombstones.MaxEntries == 0 {
+		return 0, fmt.Errorf("shared candidate tombstone map se_exit_tombstones missing")
+	}
+	return uint64(tombstones.MaxEntries), nil
+}
+
+func sharedCandidateAttached(name string) bool {
+	_, trampoline := sharedCandidateAttachSet[name]
+	_, probe := sharedCandidateProbeSet[name]
+	return trampoline || probe
+}
+
+const sharedProgramDisabled = "gadget_program_disabled"
+
+// validateSharedCandidateAttachSet is qualification-only admission: exactly the
+// pinned attach set plus the pinned syscall commands is enabled. It is not the
+// product resource validator.
+func validateSharedCandidateAttachSet(resources *operators.NativeResources) error {
+	if resources == nil {
+		return fmt.Errorf("missing shared candidate manifest")
+	}
+	for _, set := range []map[string]string{sharedCandidateAttachSet, sharedCandidateProbeSet} {
+		for name := range set {
+			p, ok := resources.Programs[name]
+			if !ok || p.Target == "" || p.Target == sharedProgramDisabled {
+				return fmt.Errorf("shared candidate attach program %s missing or disabled", name)
+			}
+		}
+	}
+	commands, err := sharedCandidateCommandsOf(resources.Programs)
+	if err != nil {
+		return err
+	}
+	for name, typ := range commands {
+		p, ok := resources.Programs[name]
+		if !ok || p.Type != uint32(typ) || p.Target != "" {
+			return fmt.Errorf("shared candidate command %s missing, disabled or attached", name)
+		}
+	}
+	// The pinned exit program settles credit at exit; its witness and
+	// tombstone map are node health inputs (sharedLiveExitCredit).
+	if _, err := sharedExitCreditCapacity(resources); err != nil {
+		return err
+	}
+	// The capsule hooks are pinned; their witness is a node health input
+	// (sharedLiveCapsule).
+	if err := sharedCapsuleStatsShape(resources); err != nil {
+		return err
+	}
+	for name, p := range resources.Programs {
+		if _, command := commands[name]; command {
+			continue // exact shape checked above
+		}
+		if !sharedCandidateAttached(name) && p.Target != sharedProgramDisabled {
+			return fmt.Errorf("shared candidate program %s is outside the pinned attach set", name)
+		}
+	}
+	return nil
 }
 
 // NewNodeEnforcer constructs a host-owned node handle without starting a gadget
@@ -65,13 +322,22 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 }
 
 func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources) error {
+	// Product admission (every path but the tagged qualification one)
+	// refuses diagnostic-twin maps by name before any allowlist.
+	if n.host == nil || !n.host.qualified || !sharedQualificationBuild {
+		if err := refuseSharedProductForbiddenMaps(resources); err != nil {
+			return err
+		}
+	}
 	if n.config.RecoveryDevelopment {
 		if err := validateSharedRecoveryImageGeometry(n.config.Profile, resources); err != nil {
 			return err
 		}
 		return fmt.Errorf("recovered native supervisor and link retention are not implemented: %w", ErrSharedNativeUnavailable)
 	}
-	if hasSharedOpaqueTaskMaps(resources) {
+	// Set only by startQualifiedSharedNode in a qualification build.
+	qualified := n.host != nil && n.host.qualified && sharedQualificationBuild
+	if hasSharedOpaqueTaskMaps(resources) && !qualified {
 		var err error
 		if _, hasWork := resources.Maps["se_opaque_work_accounts"]; hasWork {
 			_, err = validateSharedOpaqueOwnerResources(n.config.Profile, resources)
@@ -82,6 +348,41 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 			return err
 		}
 		return fmt.Errorf("opaque TASK/WORK product hooks and source cleanup are incomplete: %w", ErrSharedNativeUnavailable)
+	}
+	if qualified {
+		// Qualification only: the product validators above refuse this image.
+		if err := validateSharedCandidateGeometry(n.config.Profile, resources); err != nil {
+			return err
+		}
+		if err := validateSharedCandidateAttachSet(resources); err != nil {
+			return err
+		}
+		// A product-publisher object is admitted only with its exact
+		// tail-call slots (pre-load: the operator installs them before
+		// attach), so the hooks it arms can reach a verdict, and never with
+		// a userspace-writable test gate (its hooks are armed only by the
+		// authenticated configuration).
+		if sharedHasProductCommands(resources) {
+			if err := validateSharedProductNoTestGate(resources); err != nil {
+				return err
+			}
+			if err := validateSharedProductTailCalls(resources); err != nil {
+				return err
+			}
+			if err := validateSharedProductCapsules(resources); err != nil {
+				return err
+			}
+			if err := validateSharedProductWorkSync(resources); err != nil {
+				return err
+			}
+		}
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		if n.closing || n.closed || n.host.released {
+			return fmt.Errorf("shared native admission closed")
+		}
+		n.host.admitted = sharedAdmittedCopy(resources)
+		return nil
 	}
 	if hasSharedPoolMaps(resources) {
 		if _, err := validateSharedPoolImageResources(n.config.Profile, resources); err != nil {
@@ -111,7 +412,7 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 	}
 	// Accepted manifests have no nested map templates; shallow value copies are
 	// complete independent snapshots. Never retain caller-mutable map registries.
-	n.host.admitted = &operators.NativeResources{Maps: maps.Clone(resources.Maps), Programs: maps.Clone(resources.Programs)}
+	n.host.admitted = sharedAdmittedCopy(resources)
 	return nil
 }
 
@@ -126,10 +427,9 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	if (node.config.RecoveryDevelopment && recoveryAnnotation != "1") || (!node.config.RecoveryDevelopment && recoveryAnnotation != "") || !node.config.ABI3Development || gc.ImageName() != node.config.Image || metadata.GetString("annotations.enforce-exec-owner-abi") != "3" || !metadata.GetBool("annotations.enforce-exec-owner-development") || metadata.GetString("annotations.enforce-exec-shared-profile") != "1" || metadata.GetBool("annotations.enforce-exec") || metadata.GetBool("annotations.enforce-exec-full") {
 		return nil, fmt.Errorf("shared image/native capability mismatch")
 	}
-	values := map[string]uint64{"images": node.config.Profile.Images, "image-quota": node.config.Profile.PerBinding.Images, "inode-facts": node.config.Profile.InodeFacts, "inode-quota": node.config.Profile.PerBinding.InodeFacts, "tasks": node.config.Profile.Tasks, "scratch": node.config.Profile.Scratch, "accepted-uids": node.config.Profile.AcceptedUIDs, "task-quota": node.config.Profile.PerBinding.Tasks, "scratch-quota": node.config.Profile.PerBinding.Scratch, "bindings": node.config.Profile.Bindings, "slots-256": node.config.Profile.PolicySlots[0], "slots-1024": node.config.Profile.PolicySlots[1], "slots-4096": node.config.Profile.PolicySlots[2], "slots-16384": node.config.Profile.PolicySlots[3]}
-	for key, want := range values {
-		if metadata.GetString("annotations.enforce-exec-shared-"+key) != strconv.FormatUint(want, 10) {
-			return nil, fmt.Errorf("shared image geometry mismatch: %s", key)
+	for key, want := range sharedGeometryAnnotations(node.config.Profile) {
+		if metadata.GetString(key) != want {
+			return nil, fmt.Errorf("shared image geometry mismatch: %s", strings.TrimPrefix(key, "annotations.enforce-exec-shared-"))
 		}
 	}
 	cpus, err := ebpf.PossibleCPU()
@@ -144,7 +444,13 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	if err = node.admitSharedResources(resources); err != nil {
 		return nil, err
 	}
-	if err = verifySupportedKernel(); err != nil {
+	// The qualified candidate runs on its own exact kernel matrix; every
+	// other shared image keeps the persistent-owner matrix.
+	verifyKernel := verifySupportedKernel
+	if node.host.qualified && sharedQualificationBuild {
+		verifyKernel = verifySharedCandidateKernel
+	}
+	if err = verifyKernel(); err != nil {
 		return nil, err
 	}
 	node.mu.Lock()
@@ -154,8 +460,69 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	}
 	node.host.claimed = true
 	node.host.context = gc
-	return node, nil
+	return sharedOperatorInstance(node), nil
 }
+
+// sharedOperatorInstance is the operator instance of a claimed shared node:
+// sharedQualifiedOperator only for a qualified node in a qualification build.
+func sharedOperatorInstance(node *NodeEnforcer) operators.DataOperatorInstance {
+	if node.host.qualified && sharedQualificationBuild {
+		return sharedQualifiedOperator{node}
+	}
+	return node
+}
+
+// sharedQualifiedOperator is the qualified candidate's operator instance. The
+// gadget context stops a gadget whose operator Readiness fails right after
+// Start; NodeEnforcer.Ready always fails (no policy is ever Ready), so the
+// host gadget, and with it the live collection, would be torn down before
+// any Bind. Its operator readiness is therefore startup readiness only: the
+// live candidate exists and every receipt, the product reaper and credit at
+// exit are healthy. Enforcement readiness stays NodeEnforcer.Ready
+// (ErrSharedNativeUnavailable). Qualification builds only.
+type sharedQualifiedOperator struct{ *NodeEnforcer }
+
+func (o sharedQualifiedOperator) Ready(gc operators.GadgetContext) error {
+	n := o.NodeEnforcer
+	n.mu.Lock()
+	var err error
+	var health sharedLiveHealth
+	if n.host == nil || n.host.context != gc || n.host.live == nil || n.closing || n.closed {
+		err = fmt.Errorf("shared candidate startup incomplete")
+	} else {
+		health = n.liveHealthLocked()
+	}
+	n.mu.Unlock()
+	if err == nil {
+		err = health.check()
+	}
+	// StartNode reports success only after this gate, right before the gadget
+	// context publishes the gadget as running; a failure ends the gadget.
+	n.signalStarted(err)
+	return err
+}
+
+// signalStarted delivers the qualified startup result to StartNode once.
+func (n *NodeEnforcer) signalStarted(err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.host != nil && n.host.started != nil {
+		n.host.started <- err
+		n.host.started = nil
+	}
+}
+
+// sharedGeometryAnnotations is the image metadata a shared image must carry
+// for profile p (metadata keys, as read by instantiateSharedNode).
+func sharedGeometryAnnotations(p SharedProfile) map[string]string {
+	values := map[string]uint64{"images": p.Images, "image-quota": p.PerBinding.Images, "inode-facts": p.InodeFacts, "inode-quota": p.PerBinding.InodeFacts, "tasks": p.Tasks, "scratch": p.Scratch, "accepted-uids": p.AcceptedUIDs, "task-quota": p.PerBinding.Tasks, "scratch-quota": p.PerBinding.Scratch, "bindings": p.Bindings, "exit-tombstones": p.exitTombstones(), "slots-256": p.PolicySlots[0], "slots-1024": p.PolicySlots[1], "slots-4096": p.PolicySlots[2], "slots-16384": p.PolicySlots[3]}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out["annotations.enforce-exec-shared-"+key] = strconv.FormatUint(value, 10)
+	}
+	return out
+}
+
 func (*NodeEnforcer) Name() string { return "enforce-exec-shared-node" }
 
 // Start borrows and verifies the actual host-loaded program/map identities,
@@ -174,6 +541,14 @@ func (n *NodeEnforcer) Start(gc operators.GadgetContext) error {
 	admitted := n.host.admitted
 	n.mu.Unlock()
 	defer func() { cancel(); n.mu.Lock(); n.host.startup = sharedStartupOperation{}; close(done); n.mu.Unlock() }()
+	if n.host.qualified {
+		err := n.startLiveCandidate(gc, admitted)
+		if err != nil {
+			// Success is signalled by the operator Readiness, not here.
+			n.signalStarted(err)
+		}
+		return err
+	}
 	r, err := sharedControlResourcesFromContext(gc)
 	n.mu.Lock()
 	n.host.resources = r
@@ -218,10 +593,18 @@ func (n *NodeEnforcer) Start(gc operators.GadgetContext) error {
 
 func (n *NodeEnforcer) Ready(gc operators.GadgetContext) error {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.host == nil || n.host.context != gc || n.host.control == nil || n.closing || n.closed {
+	if n.host == nil || n.host.context != gc || (n.host.control == nil && n.host.live == nil) || n.closing || n.closed {
+		n.mu.Unlock()
 		return fmt.Errorf("shared host startup incomplete")
 	}
+	if n.host.live != nil {
+		// A live qualification collection still has no published policy.
+		// Receipt and witness reads run outside n.mu.
+		health := n.liveHealthLocked()
+		n.mu.Unlock()
+		return errors.Join(ErrSharedNativeUnavailable, health.check(), n.adoptionDegraded(), n.revisionDegraded())
+	}
+	n.mu.Unlock()
 	// Routing, union evaluator adaptation, qualified history publication and
 	// required attachment receipts are not integrated. Never advertise protection.
 	return ErrSharedNativeUnavailable
@@ -269,7 +652,11 @@ func (n *NodeEnforcer) beforeStopProtocolUsing(ctx context.Context, transport sh
 			continue
 		} // retain until real whole-node destruction
 		// Ordinary Remove remains strict for all registered/ambiguous accounts.
-		if err := s.Remove(ctx, 0); err != nil {
+		// A live published route is removed at its own last-good generation.
+		s.account.mu.Lock()
+		generation := s.account.route.state.Generation
+		s.account.mu.Unlock()
+		if err := s.Remove(ctx, generation); err != nil {
 			return err
 		}
 	}
@@ -292,7 +679,22 @@ func (n *NodeEnforcer) Stop(gc operators.GadgetContext) error {
 	if gc == nil {
 		return fmt.Errorf("missing shared host context")
 	}
-	return n.BeforeStop(gc.Context())
+	// The eBPF operator (lower priority) stops and closes the collection
+	// after this operator; the reaper, the recycle loops and the publisher
+	// (its pollers and admin thread) must not outlive its programs. The
+	// sessions are removed (routes withdrawn) first, while the publisher is
+	// alive, then the publisher closes.
+	n.stopLiveHealth()
+	// Never under the gadget's (possibly already canceled) context: a
+	// canceled removal would leave the sessions while the publisher closes,
+	// and a later StopNode could no longer withdraw them.
+	// Bounded: a removal that cannot finish in time leaves its route
+	// latched (withdrawLiveRoute records it pending once the publisher is
+	// closed), never a hang.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(gc.Context()), sharedTeardownTimeout)
+	defer cancel()
+	err := n.BeforeStop(ctx)
+	return errors.Join(err, n.closeLivePublisher())
 }
 
 func (n *NodeEnforcer) Close(gc operators.GadgetContext) error {
@@ -302,7 +704,11 @@ func (n *NodeEnforcer) Close(gc operators.GadgetContext) error {
 	if !valid {
 		return fmt.Errorf("foreign shared host close")
 	}
-	err := n.BeforeStop(context.WithoutCancel(gc.Context()))
+	n.stopLiveHealth() // also on a startup failure, where Stop never ran
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(gc.Context()), sharedTeardownTimeout)
+	defer cancel()
+	err := n.BeforeStop(ctx)
+	err = errors.Join(err, n.closeLivePublisher())
 	n.mu.Lock()
 	if !n.host.commandsJoined || (len(n.bindings) != 0 && n.host.protocol == nil) {
 		n.mu.Unlock()
@@ -366,4 +772,597 @@ func (n *NodeEnforcer) ReleaseAfterDetach() error {
 	}
 	// A failed trusted lease Close retains the account for this same retry path.
 	return n.releasePhysicalScopes()
+}
+
+// startLiveCandidate borrows exactly the pinned attach set's native receipts
+// (8 trampoline links, task_free 2, plus the 8 pinned kprobe/raw_tp/tp_btf links).
+// The eBPF operator published them only after the whole transaction attached;
+// their Check is the operator's nativeReadinessCheck (link present by ID,
+// same program). It then starts the product reaper over the borrowed
+// opaque_real_reap command and reap maps; a missing handle fails startup.
+// Route slots are allocated here, one per binding.
+func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *operators.NativeResources) error {
+	if admitted == nil {
+		return fmt.Errorf("shared candidate was not admitted")
+	}
+	want := len(sharedCandidateAttachSet) + len(sharedCandidateProbeSet)
+	receipts := make(map[string]*operators.NativeAttachment, want)
+	for name := range admitted.Programs {
+		value, _ := gc.GetVar(operators.NativeAttachmentPrefix + name)
+		receipt, _ := value.(*operators.NativeAttachment)
+		pinned := sharedCandidateAttached(name)
+		if receipt != nil && !pinned {
+			return fmt.Errorf("shared candidate attached %s outside the pinned attach set", name)
+		}
+		if pinned {
+			if receipt == nil || receipt.Check == nil || receipt.LinkID == 0 || receipt.ProgramID == 0 {
+				return fmt.Errorf("shared candidate receipt for %s unavailable", name)
+			}
+			receipts[name] = receipt
+		}
+	}
+	if len(receipts) != want {
+		return fmt.Errorf("shared candidate has %d of %d attach receipts", len(receipts), want)
+	}
+	for name, receipt := range receipts {
+		if err := receipt.Check(); err != nil {
+			return fmt.Errorf("shared candidate receipt %s: %w", name, err)
+		}
+	}
+	capacity, err := sharedExitCreditCapacity(admitted)
+	if err != nil {
+		return err
+	}
+	borrowExit := n.host.exitCredit
+	if borrowExit == nil {
+		borrowExit = borrowSharedExitCredit
+	}
+	read, err := borrowExit(gc)
+	if err != nil || read == nil {
+		return errors.Join(err, fmt.Errorf("shared candidate credit-at-exit witness unavailable"))
+	}
+	// The window opens here: every later health check compares against it.
+	baseline, err := read()
+	if err != nil {
+		return fmt.Errorf("shared candidate credit-at-exit witness unreadable: %w", err)
+	}
+	exit := &sharedLiveExitCredit{read: read, capacity: capacity, baseline: baseline}
+	if err := sharedCapsuleStatsShape(admitted); err != nil {
+		return err
+	}
+	borrowCapsule := n.host.capsuleStats
+	if borrowCapsule == nil {
+		borrowCapsule = borrowSharedCapsuleStats
+	}
+	readCapsule, err := borrowCapsule(gc)
+	if err != nil || readCapsule == nil {
+		return errors.Join(err, fmt.Errorf("shared candidate exec-capsule witness unavailable"))
+	}
+	capsuleBaseline, err := readCapsule()
+	if err != nil {
+		return fmt.Errorf("shared candidate exec-capsule witness unreadable: %w", err)
+	}
+	capsule := &sharedLiveCapsule{read: readCapsule, baseline: capsuleBaseline}
+	birthPark, err := n.newLiveBirthPark(gc, admitted)
+	if err != nil {
+		return err
+	}
+	// The fail-closed rate window opens here too; its poller starts only
+	// once the candidate is installed (a refused startup leaves none).
+	failClosed, err := n.newLiveFailClosed(gc, admitted)
+	if err != nil {
+		return err
+	}
+	// The route publisher (for a product object, the node's admin control)
+	// is installed before the reaper (design 12): a refused control leaves
+	// no reaper to stop.
+	var publisher SharedRoutePublisher
+	newPublisher := n.host.newPublisher
+	if newPublisher == nil && sharedHasProductCommands(admitted) {
+		// G1: an object with the product publisher gets the adopting product
+		// publisher; a qualification override (SharedNodeQualification.Publisher)
+		// still wins.
+		newPublisher = func(gc operators.GadgetContext) (SharedRoutePublisher, error) {
+			if n.host.newProductPublisher != nil {
+				return n.host.newProductPublisher(gc, admitted)
+			}
+			return n.borrowSharedProductPublisher(gc, admitted)
+		}
+	}
+	closePublisher := func() error {
+		if publisher == nil {
+			return nil
+		}
+		return publisher.Close()
+	}
+	if newPublisher != nil {
+		if publisher, err = newPublisher(gc); err != nil || sharedNilPublisher(publisher) {
+			if err != nil || publisher != nil {
+				// A failed factory owns its partial result; a value that came
+				// back with an error is never used (it may be a typed nil).
+				publisher = nil
+			}
+			return errors.Join(err, closePublisher(), fmt.Errorf("shared candidate route publisher unavailable"))
+		}
+	}
+	if r, ok := publisher.(interface{ setOnReleased(func(uint32, uint64)) }); ok {
+		r.setOnReleased(n.releasedAdoptionSlot)
+	}
+	newReaper := n.host.newReaper
+	if newReaper == nil {
+		newReaper = borrowSharedCandidateReaper
+	}
+	reaper := &sharedLiveReaper{}
+	r, err := newReaper(gc, ReaperConfig{Hooks: ReaperHooks{Fault: reaper.onFault}})
+	if err != nil || r == nil {
+		return errors.Join(err, fmt.Errorf("shared candidate product reaper unavailable"), closePublisher())
+	}
+	// The reaper is stopped explicitly (stopLiveHealth), always before the
+	// collection closes; it does not end with the gadget context.
+	if err := reaper.start(context.WithoutCancel(gc.Context()), r); err != nil {
+		return errors.Join(fmt.Errorf("shared candidate product reaper: %w", err), closePublisher())
+	}
+	n.mu.Lock()
+	var refused error
+	switch {
+	case n.closing || n.closed:
+		refused = fmt.Errorf("node stopping")
+	case n.host.live != nil:
+		refused = fmt.Errorf("shared candidate already live")
+	}
+	if refused != nil {
+		n.mu.Unlock()
+		// Outside n.mu: closing the publisher joins its pollers and ends
+		// its admin thread.
+		return errors.Join(refused, closePublisher(), reaper.stop())
+	}
+	defer n.mu.Unlock()
+	n.host.scopeSlots = make([]*sharedPhysicalScope, n.config.Profile.Bindings)
+	n.host.live = &sharedLiveCandidate{receipts: receipts, publisher: publisher, reaper: reaper, exit: exit, capsule: capsule, birthPark: birthPark, failClosed: failClosed}
+	if failClosed != nil {
+		failClosed.start() // joined by stopLiveHealth
+	}
+	return nil
+}
+
+// borrowSharedCandidateReaper builds the product reaper over handles the
+// eBPF operator published in the host gadget context: the opaque_real_reap
+// command (operators.ProgramPrefix) and the collection's maps
+// (operators.MapPrefix). The operator owns and closes them; the reaper only
+// closes its own ringbuf reader. They are deliberately not added to
+// host.borrowed, which ReleaseAfterDetach requires closed.
+func borrowSharedCandidateReaper(gc operators.GadgetContext, config ReaperConfig) (*Reaper, error) {
+	value, _ := gc.GetVar(operators.ProgramPrefix + "opaque_real_reap")
+	program, _ := value.(*ebpf.Program)
+	if program == nil {
+		return nil, fmt.Errorf("shared candidate command opaque_real_reap was not published")
+	}
+	value, _ = gc.GetVar(operators.NativeResourcesKey)
+	resources, _ := value.(*operators.NativeResources)
+	if resources == nil {
+		return nil, fmt.Errorf("shared candidate manifest unavailable")
+	}
+	c := &ebpf.Collection{Programs: map[string]*ebpf.Program{"opaque_real_reap": program}, Maps: map[string]*ebpf.Map{}}
+	for name := range resources.Maps {
+		value, _ := gc.GetVar(operators.MapPrefix + name)
+		if m, _ := value.(*ebpf.Map); m != nil {
+			c.Maps[name] = m
+		}
+	}
+	// NewReaper refuses a missing reap map or program by name.
+	return NewReaper(c, config)
+}
+
+// sharedExitCreditRead reads the credit-at-exit witness counters.
+type sharedExitCreditRead func() ([ExitCreditCounters]uint64, error)
+
+// borrowSharedExitCredit reads opaque_real_exit_credit through the map handle
+// the eBPF operator published (operators.MapPrefix); the operator owns it.
+func borrowSharedExitCredit(gc operators.GadgetContext) (sharedExitCreditRead, error) {
+	value, _ := gc.GetVar(operators.MapPrefix + "opaque_real_exit_credit")
+	m, _ := value.(*ebpf.Map)
+	if m == nil {
+		return nil, fmt.Errorf("shared candidate map opaque_real_exit_credit was not published")
+	}
+	return func() ([ExitCreditCounters]uint64, error) {
+		var out [ExitCreditCounters]uint64
+		for i := range out {
+			if err := m.Lookup(uint32(i), &out[i]); err != nil {
+				return out, fmt.Errorf("opaque_real_exit_credit[%d]: %w", i, err)
+			}
+		}
+		return out, nil
+	}, nil
+}
+
+// sharedLiveExitCredit is node health over the credit-at-exit witness: the
+// window from node start (baseline) to each check. A lease fault, a stuck
+// held lease, a tombstone fault, a stale tombstone, a faulted settlement, a
+// refused insert or the high-water mark (ExitCreditCheck: Degraded), or an
+// unreadable or inconsistent witness (Unknown) is a sticky fault: those
+// slots stay charged fail-closed and the reaper never sees them as faults.
+// Busy (-EBUSY bucket) and the high-water mark are sticky Degraded too, by
+// design: both mean credit at exit is no longer guaranteed for every exit
+// (fail-closed), even if the gauge later drops; only node teardown clears it.
+type sharedLiveExitCredit struct {
+	read     sharedExitCreditRead
+	capacity uint64
+	baseline [ExitCreditCounters]uint64
+	mu       sync.Mutex
+	fault    error // sticky, the first unhealthy window
+	closed   bool  // the collection is closing: never read again
+}
+
+// check reads the witness (unless closed) and returns the sticky fault.
+func (e *sharedLiveExitCredit) check() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.fault != nil || e.closed {
+		return e.fault
+	}
+	now, readErr := e.read()
+	v, health, err := ExitCreditCheck(e.baseline, now, readErr, e.capacity)
+	switch health {
+	case ExitCreditHealthy:
+		return nil
+	case ExitCreditDegraded:
+		e.fault = fmt.Errorf("shared candidate credit at exit degraded, node degraded: %s", v)
+	default:
+		e.fault = fmt.Errorf("shared candidate credit at exit unknown, node degraded: %w", err)
+	}
+	return e.fault
+}
+
+// close takes the final reading before the collection closes.
+func (e *sharedLiveExitCredit) close() {
+	_ = e.check() // sticky in e.fault, reported by liveHealthFault
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
+}
+
+// sharedLiveReaper is the running product reaper of the live collection.
+type sharedLiveReaper struct {
+	reaper *Reaper
+	cancel context.CancelFunc
+	waited chan struct{}
+	err    error // Reaper.Wait's result, valid once waited is closed
+	// faulted counts the charges the reaper quarantined (sticky, like
+	// ReaperStats.Faulted); lastFault is the latest one. Set by onFault on the
+	// reaper goroutine, read without touching BPF.
+	faulted   atomic.Uint64
+	lastFault atomic.Pointer[ReapFault]
+}
+
+// onFault is the reaper's Fault hook: one charge was quarantined and its
+// credit stays charged (fail-closed), so the node is degraded.
+func (l *sharedLiveReaper) onFault(f ReapFault) {
+	l.lastFault.Store(&f)
+	l.faulted.Add(1)
+}
+
+func (l *sharedLiveReaper) start(ctx context.Context, r *Reaper) error {
+	ctx, cancel := context.WithCancel(ctx)
+	if err := r.Start(ctx); err != nil {
+		cancel()
+		return err
+	}
+	l.reaper, l.cancel, l.waited = r, cancel, make(chan struct{})
+	go func() {
+		l.err = r.Wait()
+		close(l.waited)
+	}()
+	return nil
+}
+
+// stop cancels the reaper and joins its goroutine. Idempotent; it returns the
+// reaper's sticky error (nil after a clean stop).
+func (l *sharedLiveReaper) stop() error {
+	l.cancel()
+	<-l.waited
+	return l.err
+}
+
+// fault is the reaper's sticky degradation: a quarantined charge (its credit
+// never returns) or the reaper having stopped on an infrastructure error (no
+// credit returns any more). It never makes the node Ready; it only adds
+// detail to the live fault.
+func (l *sharedLiveReaper) fault() error {
+	var result error
+	if n := l.faulted.Load(); n > 0 {
+		result = fmt.Errorf("shared candidate product reaper quarantined %d charge(s) (last %s), node degraded", n, *l.lastFault.Load())
+	}
+	select {
+	case <-l.waited:
+	default:
+		return result
+	}
+	if l.err != nil {
+		result = errors.Join(result, fmt.Errorf("shared candidate product reaper stopped, node degraded: %w", l.err))
+	}
+	return result
+}
+
+// stopLiveHealth takes the final credit-at-exit reading and stops and joins
+// the live product reaper, if any. It must run before the collection closes
+// (a witness read or a TEST_RUN on a closed map or program). A fault never
+// blocks teardown; it stays sticky (liveHealthFault).
+func (n *NodeEnforcer) stopLiveHealth() {
+	n.mu.Lock()
+	var reaper *sharedLiveReaper
+	var exit *sharedLiveExitCredit
+	var capsule *sharedLiveCapsule
+	var birthPark *sharedLiveBirthPark
+	var failClosed *sharedLiveFailClosed
+	if n.host != nil && n.host.live != nil {
+		reaper, exit, capsule, failClosed = n.host.live.reaper, n.host.live.exit, n.host.live.capsule, n.host.live.failClosed
+		birthPark = n.host.live.birthPark
+		// From here on the node is never healthy: health is no longer
+		// watched although hooks may still be attached.
+		n.host.live.healthStopped = true
+	}
+	n.mu.Unlock()
+	if exit != nil {
+		exit.close()
+	}
+	if capsule != nil {
+		capsule.close()
+	}
+	if birthPark != nil {
+		birthPark.close()
+	}
+	if failClosed != nil {
+		failClosed.close() // joins the poller, then the final reading
+	}
+	if reaper != nil {
+		_ = reaper.stop() // sticky in reaper.err, reported by liveHealthFault
+	}
+}
+
+// liveHealthFault reports the sticky faults of the live product reaper, of
+// credit at exit, of the exec-capsule store and of a gated fail-closed rate
+// witness (Unknown only: a refusal rate is reported live, never as a
+// teardown failure).
+func (n *NodeEnforcer) liveHealthFault() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.host == nil || n.host.live == nil {
+		return nil
+	}
+	var result error
+	if n.host.live.reaper != nil {
+		result = n.host.live.reaper.fault()
+	}
+	if n.host.live.exit != nil {
+		result = errors.Join(result, n.host.live.exit.check())
+	}
+	if n.host.live.capsule != nil {
+		result = errors.Join(result, n.host.live.capsule.check())
+	}
+	if n.host.live.birthPark != nil {
+		result = errors.Join(result, n.host.live.birthPark.check())
+	}
+	if n.host.live.failClosed != nil {
+		result = errors.Join(result, n.host.live.failClosed.stickyFault())
+	}
+	return errors.Join(result, n.host.live.recycleFault)
+}
+
+// livePublisher returns the live qualification route publisher. Withdrawal
+// (publish=false) stays reachable while the node stops, until teardown.
+func (n *NodeEnforcer) livePublisher(publish bool) (SharedRoutePublisher, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.host == nil || n.host.live == nil || n.host.live.publisher == nil || n.host.gadgetStopped || n.host.released || n.closed || (publish && n.closing) {
+		return nil, ErrSharedNativeUnavailable
+	}
+	return n.host.live.publisher, nil
+}
+
+// checkLiveRoute compares a slot's kernel route tuple with its last-good.
+func (n *NodeEnforcer) checkLiveRoute(slot uint32, want SharedRouteState) error {
+	publisher, err := n.livePublisher(false)
+	if err != nil {
+		return err
+	}
+	have, err := publisher.Route(slot)
+	if err != nil {
+		return err
+	}
+	if have != want {
+		return fmt.Errorf("route slot %d is %+v, last-good %+v", slot, have, want)
+	}
+	return nil
+}
+
+func (n *NodeEnforcer) checkLiveReceipts() error {
+	n.mu.Lock()
+	health := n.liveHealthLocked()
+	n.mu.Unlock()
+	return health.check()
+}
+
+// sharedLiveHealth is a snapshot of the live candidate's health inputs, taken
+// under n.mu and checked outside it (link lookups and witness map reads).
+type sharedLiveHealth struct {
+	unavailable, stopped bool
+	receipts             []*operators.NativeAttachment
+	reaper               *sharedLiveReaper
+	exit                 *sharedLiveExitCredit
+	capsule              *sharedLiveCapsule
+	birthPark            *sharedLiveBirthPark
+	failClosed           *sharedLiveFailClosed
+}
+
+func (n *NodeEnforcer) liveHealthLocked() sharedLiveHealth {
+	if n.host == nil || n.host.live == nil {
+		return sharedLiveHealth{unavailable: true}
+	}
+	live := n.host.live
+	h := sharedLiveHealth{stopped: live.healthStopped, reaper: live.reaper, exit: live.exit, capsule: live.capsule, birthPark: live.birthPark, failClosed: live.failClosed}
+	for _, receipt := range live.receipts {
+		h.receipts = append(h.receipts, receipt)
+	}
+	return h
+}
+
+func (h sharedLiveHealth) check() error {
+	if h.unavailable {
+		return ErrSharedNativeUnavailable
+	}
+	var result error
+	if h.stopped {
+		result = fmt.Errorf("shared candidate health monitoring stopped (node stopping)")
+	}
+	for _, receipt := range h.receipts {
+		result = errors.Join(result, receipt.Check())
+	}
+	if h.reaper != nil {
+		result = errors.Join(result, h.reaper.fault())
+	}
+	if h.exit != nil {
+		result = errors.Join(result, h.exit.check())
+	}
+	if h.capsule != nil {
+		result = errors.Join(result, h.capsule.check())
+	}
+	if h.birthPark != nil {
+		result = errors.Join(result, h.birthPark.check())
+	}
+	if h.failClosed != nil {
+		result = errors.Join(result, h.failClosed.check())
+	}
+	return result
+}
+
+// reserveLiveRoute gives a bound account one route slot of the node
+// collection. The account keeps it until node destruction, like its pins.
+func (n *NodeEnforcer) reserveLiveRoute(a *sharedPhysicalScope) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.host == nil || n.host.live == nil || a.native.reserved {
+		return nil
+	}
+	for slot, owner := range n.host.scopeSlots {
+		if owner == nil {
+			a.native.slot, a.native.reserved = uint32(slot), true
+			n.host.scopeSlots[slot] = a
+			return nil
+		}
+	}
+	return fmt.Errorf("shared route slots exhausted")
+}
+
+// startQualifiedSharedNode loads the shared candidate collection once per node
+// through the host's gadget context. Reached only from a qualification build
+// with an explicit WithSharedNodeQualification opt-in.
+func startQualifiedSharedNode(ctx context.Context, config SharedNodeConfig, q SharedNodeQualification) (*NodeEnforcer, error) {
+	n, err := NewNodeEnforcer(config)
+	if err != nil {
+		return nil, err
+	}
+	started := make(chan error, 1)
+	n.host.qualified, n.host.started, n.host.newPublisher, n.host.newReaper, n.host.exitCredit = true, started, q.Publisher, q.newReaper, q.exitCredit
+	n.host.capsuleStats = q.capsuleStats
+	n.host.birthParkStats = q.birthParkStats
+	n.host.failClosed, n.host.failClosedClock = q.failClosed, q.failClosedClock
+	n.host.newProductPublisher = q.newProductPublisher
+	n.host.strictRefused = sharedNamespaceCheck()
+	stop, done, err := q.Run(ctx, WithNodeEnforcer(n))
+	if stop == nil {
+		return nil, errors.Join(err, fmt.Errorf("missing shared candidate host teardown"))
+	}
+	// Recorded before any wait: StopNode always joins the host teardown,
+	// whatever startLiveCandidate installs concurrently.
+	n.mu.Lock()
+	n.host.stopGadget = stop
+	n.mu.Unlock()
+	if err == nil {
+		select {
+		case err = <-started:
+		case err = <-done:
+			err = errors.Join(err, fmt.Errorf("shared candidate gadget ended before startup"))
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if err != nil {
+		// Typed refusals (nativeattach.ErrAttachCapacity, ErrNotReady) pass
+		// through; the transaction already rolled back, and teardown joins.
+		return nil, errors.Join(err, n.StopNode(context.WithoutCancel(ctx)))
+	}
+	return n, nil
+}
+
+// stopLiveCollection tears the host gadget down once, after BeforeStop.
+func (n *NodeEnforcer) stopLiveCollection(ctx context.Context) error {
+	n.mu.Lock()
+	stop, stopped := n.host.stopGadget, n.host.gadgetStopped
+	n.mu.Unlock()
+	if stop == nil || stopped {
+		return nil
+	}
+	// The reaper TEST_RUNs a collection program and the witness is a
+	// collection map: final reading and join first.
+	n.stopLiveHealth()
+	// Publisher handles reference the collection; release them first. A
+	// publisher fault (a sticky admin-thread failure) never blocks teardown:
+	// it is joined to the result.
+	closeErr := n.closeLivePublisher()
+	if err := stop(ctx); err != nil {
+		return errors.Join(err, closeErr)
+	}
+	n.mu.Lock()
+	n.host.gadgetStopped = true
+	n.collectionClosed = true
+	n.mu.Unlock()
+	return closeErr
+}
+
+// closeLivePublisher stops the recycle loops, then detaches and closes the
+// live route publisher outside n.mu (its Close joins pollers and ends the
+// product admin thread). Idempotent: shared by Stop(gc) and StopNode. The
+// publisher is detached even when Close fails.
+func (n *NodeEnforcer) closeLivePublisher() error {
+	n.mu.Lock()
+	live := n.host.live
+	n.mu.Unlock()
+	if live == nil {
+		return nil
+	}
+	n.stopRecycles(live)
+	n.mu.Lock()
+	publisher := live.publisher
+	live.publisher = nil
+	live.publisherClosed = true
+	n.mu.Unlock()
+	if publisher == nil {
+		return nil
+	}
+	return publisher.Close()
+}
+
+// sharedTeardownTimeout bounds the session removal of an operator-driven
+// teardown (Stop/Close of the host gadget).
+const sharedTeardownTimeout = 5 * time.Second
+
+// TeardownPendingWithdrawals counts the removals that reached an already
+// closed publisher during node teardown: their routes were not withdrawn
+// (they stay last-good or latched, fail-closed) and die with the collection.
+func (n *NodeEnforcer) TeardownPendingWithdrawals() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.host == nil || n.host.live == nil {
+		return 0
+	}
+	return n.host.live.teardownPending
+}
+
+// sharedAdmittedCopy is the node's independent copy of an admitted manifest:
+// maps, programs and the tail-call slots (the product control re-validates
+// them against this copy at startup).
+func sharedAdmittedCopy(r *operators.NativeResources) *operators.NativeResources {
+	return &operators.NativeResources{Maps: maps.Clone(r.Maps), Programs: maps.Clone(r.Programs), TailCalls: slices.Clone(r.TailCalls)}
 }

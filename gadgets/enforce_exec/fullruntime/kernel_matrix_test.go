@@ -36,3 +36,25 @@ func TestOwnerBuilderKernelMatrixMatchesRuntime(t *testing.T) {
 		}
 	}
 }
+
+// TestSharedCandidateKernelMatrixIsSeparate: the shared candidate matrix is
+// exactly the two qualified AL2023 kernels and shares nothing with the
+// persistent-owner matrix in either direction.
+func TestSharedCandidateKernelMatrixIsSeparate(t *testing.T) {
+	if len(sharedCandidateKernelBTF) != 2 {
+		t.Fatalf("shared candidate matrix %v", sharedCandidateKernelBTF)
+	}
+	for digest, release := range sharedCandidateKernelBTF {
+		if len(digest) != 64 || strings.ToLower(digest) != digest || !strings.HasSuffix(release, ".amzn2023.x86_64") {
+			t.Errorf("malformed entry %q: %q", digest, release)
+		}
+		if supportedKernelBTF(digest) {
+			t.Errorf("shared candidate kernel %s admitted by the persistent-owner matrix", release)
+		}
+	}
+	for _, digest := range []string{SupportedKernelBTF, SupportedKubernetesKernelBTF} {
+		if _, ok := sharedCandidateKernelBTF[digest]; ok {
+			t.Errorf("persistent-owner kernel %s in the shared candidate matrix", digest)
+		}
+	}
+}

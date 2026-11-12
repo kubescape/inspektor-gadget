@@ -29,9 +29,17 @@ static __attribute__((noinline)) struct se_owk_payload *
 se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 			 __u32 operation)
 {
+#ifdef SE_OWK_STAGE_CLASSES
+	/* A class token (pass p, residue r) admits any one stage of its class;
+	 * the claim then rechecks exactly the stage the first read observed. */
+	if (!expected_scope || operation > 3 ||
+	    !se_owk_stage_expected_valid(expected_stage))
+		return 0;
+#else
 	if (!expected_scope || !expected_stage || operation > 3 ||
 	    expected_stage > SE_OWK_CONTINUATION_MAX)
 		return 0;
+#endif
 #ifndef ENFORCE_EXEC_SUSPENDED_EVAL_READER_DIAGNOSTIC
 	/* The standalone suspended reader remains strictly observational. */
 	if (operation)
@@ -146,7 +154,12 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 		work->owner_ref_held == 1 && !work->cleanup_done &&
 		work->continuation_reserved ==
 			(operation == 2 || operation == 3) &&
+#ifdef SE_OWK_STAGE_CLASSES
+		se_owk_stage_matches(work->continuation_stage,
+				     expected_stage) &&
+#else
 		work->continuation_stage == expected_stage &&
+#endif
 		work->cookie == work_cookie && work->scope == expected_scope &&
 		work->account_slot == account_slot &&
 		work->incarnation == incarnation &&
@@ -161,6 +174,9 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 		!payload->semantic.reserved &&
 		payload->semantic.view.scope_cookie == expected_scope &&
 		payload->semantic.view.ready == 1;
+#ifdef SE_OWK_STAGE_CLASSES
+	__u32 stage_seen = work->continuation_stage;
+#endif
 	bpf_spin_unlock(&work->lock);
 	if (!suspended)
 		return 0;
@@ -186,7 +202,11 @@ se_owk_suspended_current(__u64 expected_scope, __u32 expected_stage,
 		work->phase == SE_OWK_SUSPENDED && work->active_leases == 0 &&
 		work->owner_ref_held == 1 && !work->cleanup_done &&
 		work->continuation_reserved == (operation == 2) &&
+#ifdef SE_OWK_STAGE_CLASSES
+		work->continuation_stage == stage_seen &&
+#else
 		work->continuation_stage == expected_stage &&
+#endif
 		work->cookie == work_cookie && work->scope == expected_scope &&
 		work->account_slot == account_slot &&
 		work->incarnation == incarnation &&
@@ -262,7 +282,12 @@ se_owk_suspended_view_from_token(__u32 slot, __u64 cookie)
 	int exact = meta->phase == SE_OWK_SUSPENDED &&
 		    meta->active_leases == 0 && meta->owner_ref_held == 1 &&
 		    !meta->cleanup_done && meta->continuation_reserved == 1 &&
+#ifdef SE_OWK_STAGE_CLASSES
+		    se_owk_stage_matches(meta->continuation_stage,
+					 SE_OWK_EVAL_VIEW_STAGE) &&
+#else
 		    meta->continuation_stage == SE_OWK_EVAL_VIEW_STAGE &&
+#endif
 		    meta->cookie == cookie && meta->scope &&
 		    meta->invocation_sequence &&
 		    payload->semantic.scope == meta->scope &&

@@ -23,6 +23,15 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_begin(
 	    !claim->scope || !claim->generation || !claim->serial ||
 	    owner->lease.held != 1 || !owner->lease.cookie ||
 	    !owner->lease.meta || !owner->payload ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    /* G019 gap 3: the claim's own record (ACTIVE or RETIRING). */
+	    binding->scope != claim->scope)
+		return SE_OL_CORRUPT;
+	struct se_snapshot *snapshot =
+		&binding->records[se_route_rec_index(claim->record)];
+	if ((snapshot->phase != SE_SNAPSHOT_ACTIVE &&
+	     snapshot->phase != SE_SNAPSHOT_RETIRING) ||
+#else
 	    binding->scope != claim->scope ||
 	    binding->generation != claim->generation ||
 	    binding->active_record != claim->record ||
@@ -30,6 +39,7 @@ static __attribute__((always_inline)) inline int se_op_exec_reader_begin(
 		return SE_OL_CORRUPT;
 	struct se_snapshot *snapshot = &binding->records[claim->record];
 	if (snapshot->phase != SE_SNAPSHOT_ACTIVE ||
+#endif
 	    snapshot->scope != claim->scope ||
 	    snapshot->serial != claim->serial ||
 	    snapshot->generation != claim->generation ||
@@ -281,7 +291,10 @@ se_op_exec_reader_settle_success(struct se_ol_payload_handle *owner,
 		    task->exec.sequence == invocation &&
 		    task->exec.generation == generation &&
 		    binding->scope == scope &&
+#ifndef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		    /* (product: the reader authority checks its own record) */
 		    binding->generation == generation &&
+#endif
 		    slot < SE_OC_ACCOUNTS &&
 		    (reader ? task->reader_invocation == invocation :
 			      !task->reader_invocation) &&
@@ -344,11 +357,18 @@ enum se_exec_reader_class {
 	SE_EXEC_READER_CONTINUE,
 	SE_EXEC_READER_TERMINAL,
 };
+/* suspended_work (G019 gap 4, review H1) relaxes exactly one premise and
+ * only for CONTINUE: the TASK may own a current WORK. NEW and TERMINAL are
+ * never returned in that mode. The caller (the interpreter continuation)
+ * must then prove that current WORK is the receipt's own suspended terminal
+ * WORK, by resuming it at a terminal-class stage and checking its proposed
+ * history against the receipt, before relying on the classification. */
 static __attribute__((always_inline)) inline int
-se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
-			   struct se_binding_snapshots *binding,
-			   const struct se_exec_terminal_receipt *receipt,
-			   __u64 physical, __u64 incoming_bprm)
+se_op_exec_reader_classify_core(struct se_ol_payload_handle *owner,
+				struct se_binding_snapshots *binding,
+				const struct se_exec_terminal_receipt *receipt,
+				__u64 physical, __u64 incoming_bprm,
+				int suspended_work)
 {
 	if (!owner || !binding || !physical)
 		return SE_EXEC_READER_RETAIN;
@@ -363,9 +383,9 @@ se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
 	int owned = task->exec.owned;
 	int exact = slot < SE_OC_ACCOUNTS && scope &&
 		    task->physical_cookie == owner->lease.cookie &&
-		    !owner->lease.meta->current_work_owned;
+		    (suspended_work || !owner->lease.meta->current_work_owned);
 	int classification = SE_EXEC_READER_RETAIN;
-	if (exact && !receipt && incoming_bprm && !owned)
+	if (exact && !suspended_work && !receipt && incoming_bprm && !owned)
 		classification = SE_EXEC_READER_NEW;
 	if (exact && receipt && receipt->physical == physical &&
 	    receipt->cookie == owner->lease.cookie &&
@@ -377,8 +397,9 @@ se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
 		if (receipt->phase == SE_EXEC_TERMINAL_REGISTERED && owned &&
 		    receipt->bprm == incoming_bprm)
 			classification = SE_EXEC_READER_CONTINUE;
-		else if (receipt->phase == SE_EXEC_TERMINAL_SUCCESS ||
-			 receipt->phase == SE_EXEC_TERMINAL_FAILURE)
+		else if (!suspended_work &&
+			 (receipt->phase == SE_EXEC_TERMINAL_SUCCESS ||
+			  receipt->phase == SE_EXEC_TERMINAL_FAILURE))
 			classification = SE_EXEC_READER_TERMINAL;
 	}
 	se_op_task_semantic_end(owner, &task);
@@ -405,6 +426,25 @@ se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
 	}
 	bpf_spin_unlock(&route->lock);
 	return valid ? classification : SE_EXEC_READER_RETAIN;
+}
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
+			   struct se_binding_snapshots *binding,
+			   const struct se_exec_terminal_receipt *receipt,
+			   __u64 physical, __u64 incoming_bprm)
+{
+	return se_op_exec_reader_classify_core(owner, binding, receipt,
+					       physical, incoming_bprm, 0);
+}
+/* CONTINUE or RETAIN only; see suspended_work above. */
+static __attribute__((always_inline)) inline int
+se_op_exec_reader_classify_continue(
+	struct se_ol_payload_handle *owner, struct se_binding_snapshots *binding,
+	const struct se_exec_terminal_receipt *receipt, __u64 physical,
+	__u64 incoming_bprm)
+{
+	return se_op_exec_reader_classify_core(owner, binding, receipt,
+					       physical, incoming_bprm, 1);
 }
 
 static __attribute__((always_inline)) inline int

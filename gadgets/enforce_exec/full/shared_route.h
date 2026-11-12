@@ -18,6 +18,20 @@ struct se_epoch_key {
 #define SE_ROUTE_STRICT_FAULT 3
 #define SE_ROUTE_INVARIANT_FAULT 4
 
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+/* G019 gap 3 (product publisher): per-record mirrors of the route's holder
+ * totals. A claim, a source pin and their re-claims hold exactly one record
+ * (the one they were stamped with), so a revision may commit while the
+ * previous record still has holders: it becomes RETIRING and keeps them, and
+ * only its own holders can release it. Fresh claims always stamp the ACTIVE
+ * record, so a RETIRING record's holder set only shrinks. The route-wide
+ * early_claims/source_pins stay the totals (withdrawal and recycle still
+ * require both zero). No timeout or controller assertion clears a count. */
+struct se_route_rec {
+	__u64 serial, generation;
+	__u32 early_claims, source_pins, phase, reserved;
+};
+#endif
 /* Fixed ARRAY storage, never a borrowed/recyclable HASH value. This lock is
  * the SOLE authority for the associated snapshot payload, including commands.
  * The legacy se_shared_binding.lock must not also govern this payload.
@@ -38,7 +52,21 @@ struct se_route_anchor {
 	__u64 next_source_pin;
 	__u32 source_pins, unresolved_sources;
 #endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 M4 root-task adoption (product publisher only). adopting is set
+	 * by the first publication and cleared only by a successful adoption
+	 * finish; while it is set every claim of this route faults (Strict
+	 * denies, Audit allows) and is counted in adopting_faults, which the
+	 * finish requires to be 0. Both under the route lock. */
+	__u32 adopting, adopting_faults;
+	/* G019 gap 3: holders per snapshot record (se_route_rec). */
+	struct se_route_rec rec[2];
+#endif
 };
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) && \
+	!defined(ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE)
+#error "the product publisher's route marker extends the source-pinned route"
+#endif
 #ifdef ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE
 /* This is a publication barrier, not evaluation, role or cleanup authority.
  * The adapter selects owner from protected, source-owned physical-exec state;
@@ -48,7 +76,12 @@ struct se_route_anchor {
  * recur. The source must retain that identity until its actual terminal. */
 struct se_source_mode_token {
 	__u64 scope, generation, physical, source_sequence, pin_sequence;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 3: the snapshot record the pin holds (0 or 1). */
+	__u32 slot, incarnation, execution_class, record;
+#else
 	__u32 slot, incarnation, execution_class, reserved;
+#endif
 };
 struct se_source_mode_owner {
 	struct se_source_mode_token token;
@@ -72,6 +105,39 @@ struct se_route_claim {
 	__u64 scope, serial, generation, admission_serial;
 	__u32 incarnation, record, execution_class, owned, slot, reserved;
 };
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+/* A record index proven bounded where it is used (the empty asm keeps clang
+ * from dropping the mask after an earlier range check). */
+static __attribute__((always_inline)) inline __u32 se_route_rec_index(__u32 r)
+{
+	asm volatile("" : "+r"(r));
+	return r & 1;
+}
+#define SE_ROUTE_REC(a, r) (&(a)->rec[se_route_rec_index(r)])
+#define SE_ROUTE_REC_ADD(a, r, field, delta) (SE_ROUTE_REC(a, r)->field += (delta))
+/* A record that is the claimable identity serial/generation: the ACTIVE
+ * record, or the RETIRING one its existing holders still read. */
+static __attribute__((always_inline)) inline int
+se_route_rec_live(const struct se_route_rec *x, __u64 serial, __u64 generation)
+{
+	return x->serial == serial && x->generation == generation && serial &&
+	       generation &&
+	       (x->phase == SE_SNAPSHOT_ACTIVE ||
+		x->phase == SE_SNAPSHOT_RETIRING);
+}
+static __attribute__((always_inline)) inline int
+se_route_rec_held(const struct se_route_anchor *a, __u32 r)
+{
+	const struct se_route_rec *x = SE_ROUTE_REC(a, r);
+	return x->early_claims || x->source_pins;
+}
+#define SE_SOURCE_TOKEN_RECORD_BAD(t) ((t)->record >= 2)
+#else
+#define SE_ROUTE_REC_ADD(a, r, field, delta) \
+	do {                                  \
+	} while (0)
+#define SE_SOURCE_TOKEN_RECORD_BAD(t) ((t)->reserved)
+#endif
 /* This transition runs under the route spinlock. Keep its call boundary
  * lexical: stock Rocky 4.18 rejects BPF-to-BPF calls while locked. */
 static __attribute__((always_inline)) inline int
@@ -101,11 +167,17 @@ se_route_commit_preflight_locked(struct se_route_anchor *a,
 				 struct se_binding_snapshots *b, __u32 record,
 				 __u64 serial, __u64 qualification)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	if ((a->phase != SE_ROUTE_PREPARING && a->phase != SE_ROUTE_ACTIVE) ||
+	    a->unresolved_sources || se_route_rec_held(a, record) ||
+	    a->reserved || b->scope != a->scope ||
+#else
 	if ((a->phase != SE_ROUTE_PREPARING && a->phase != SE_ROUTE_ACTIVE) ||
 #ifdef ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE
 	    a->source_pins || a->unresolved_sources ||
 #endif
 	    a->early_claims || a->reserved || b->scope != a->scope ||
+#endif
 	    a->payload_generation != b->generation ||
 	    a->active_serial != b->active_serial ||
 	    (a->active_serial && a->active_record != b->active_record) ||
@@ -121,8 +193,21 @@ static __attribute__((always_inline)) inline void
 se_route_commit_publish_locked(struct se_route_anchor *a,
 			       struct se_binding_snapshots *b, __u32 record)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* The previous record keeps its holders as RETIRING. */
+	if (b->active_serial)
+		SE_ROUTE_REC(a, b->active_record)->phase = SE_SNAPSHOT_RETIRING;
+#endif
 	se_binding_commit_publish_locked(b, record);
 	const struct se_snapshot *s = &b->records[record];
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	{
+		struct se_route_rec *x = SE_ROUTE_REC(a, record);
+		x->serial = s->serial;
+		x->generation = b->generation;
+		x->phase = SE_SNAPSHOT_ACTIVE;
+	}
+#endif
 	a->payload_generation = b->generation;
 	a->active_serial = s->serial;
 	a->active_record = record;
@@ -149,11 +234,22 @@ se_route_claim_locked(struct se_route_anchor *a, __u64 locator, __u64 cgroup,
 		return SE_ROUTE_UNSELECTED;
 	if (a->execution_class < 1 || a->execution_class > 2)
 		return SE_ROUTE_INVARIANT_FAULT; /* inadmissible class invariant violation */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* Adoption in progress: no fork or exec of this cgroup is admitted, and
+	 * each attempt fails the adoption (saturating: it never wraps to 0). */
+	if (a->adopting) {
+		if (a->adopting_faults != (__u32)~0U)
+			a->adopting_faults++;
+		return a->execution_class == 1 ? SE_ROUTE_AUDIT_FAULT :
+						 SE_ROUTE_STRICT_FAULT;
+	}
+#endif
 	if (c->owned || a->reserved || a->early_claims == (__u32)~0U ||
 	    a->admission_serial >= ~0ULL - 1)
 		return a->execution_class == 1 ? SE_ROUTE_AUDIT_FAULT :
 						 SE_ROUTE_STRICT_FAULT;
 	a->early_claims++;
+	SE_ROUTE_REC_ADD(a, a->active_record, early_claims, 1);
 	a->admission_serial++;
 	*c = (struct se_route_claim){ .scope = a->scope,
 				      .serial = a->active_serial,
@@ -170,6 +266,17 @@ static __attribute__((always_inline)) inline int
 se_route_claim_valid(const struct se_route_anchor *a,
 		     const struct se_route_claim *c)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 3: the claim's own record, ACTIVE or RETIRING, with the
+	 * route identity unchanged. */
+	const struct se_route_rec *x = SE_ROUTE_REC(a, c->record);
+	return c->owned && !c->reserved && c->record < 2 &&
+	       c->slot == a->payload_slot && a->phase == SE_ROUTE_ACTIVE &&
+	       a->early_claims && x->early_claims &&
+	       a->incarnation == c->incarnation && a->scope == c->scope &&
+	       se_route_rec_live(x, c->serial, c->generation) &&
+	       a->execution_class == c->execution_class;
+#else
 	return c->owned && !c->reserved && c->slot == a->payload_slot &&
 	       a->phase == SE_ROUTE_ACTIVE && a->early_claims &&
 	       a->incarnation == c->incarnation && a->scope == c->scope &&
@@ -177,6 +284,7 @@ se_route_claim_valid(const struct se_route_anchor *a,
 	       a->payload_generation == c->generation &&
 	       a->active_record == c->record &&
 	       a->execution_class == c->execution_class;
+#endif
 }
 #ifdef ENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE
 /* Establish protection BEFORE consuming the lexical claim or releasing the
@@ -207,8 +315,12 @@ se_route_source_pin_acquire_locked(struct se_route_anchor *a,
 		.slot = claim->slot,
 		.incarnation = claim->incarnation,
 		.execution_class = claim->execution_class,
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		.record = claim->record & 1,
+#endif
 	};
 	a->source_pins++;
+	SE_ROUTE_REC_ADD(a, claim->record, source_pins, 1);
 	owner->token = next;
 	owner->owned = 1;
 	*token = next;
@@ -227,14 +339,22 @@ se_route_source_pin_release_locked(struct se_route_anchor *a,
 				   __u64 physical, __u64 source_sequence)
 {
 	if (!owner || !token || owner->owned != 1 || owner->reserved ||
-	    token->reserved || !physical || !source_sequence ||
-	    token->physical != physical ||
+	    SE_SOURCE_TOKEN_RECORD_BAD(token) || !physical ||
+	    !source_sequence || token->physical != physical ||
 	    token->source_sequence != source_sequence || !token->pin_sequence ||
 	    token->pin_sequence > a->next_source_pin || !a->source_pins ||
 	    a->phase != SE_ROUTE_ACTIVE || a->reserved ||
 	    token->slot != a->payload_slot ||
 	    token->incarnation != a->incarnation || token->scope != a->scope ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    owner->token.record != token->record ||
+	    !SE_ROUTE_REC(a, token->record)->source_pins ||
+	    SE_ROUTE_REC(a, token->record)->generation != token->generation ||
+	    (SE_ROUTE_REC(a, token->record)->phase != SE_SNAPSHOT_ACTIVE &&
+	     SE_ROUTE_REC(a, token->record)->phase != SE_SNAPSHOT_RETIRING) ||
+#else
 	    token->generation != a->payload_generation ||
+#endif
 	    token->execution_class < 1 || token->execution_class > 2 ||
 	    token->execution_class != a->execution_class ||
 	    owner->token.scope != token->scope ||
@@ -245,10 +365,11 @@ se_route_source_pin_release_locked(struct se_route_anchor *a,
 	    owner->token.slot != token->slot ||
 	    owner->token.incarnation != token->incarnation ||
 	    owner->token.execution_class != token->execution_class ||
-	    owner->token.reserved)
+	    SE_SOURCE_TOKEN_RECORD_BAD(&owner->token))
 		return -1;
 	owner->owned = 0;
 	a->source_pins--;
+	SE_ROUTE_REC_ADD(a, token->record, source_pins, -1);
 	return 0;
 }
 /* If the source cannot publish exact physical-exec bookkeeping, latch its
@@ -281,12 +402,97 @@ se_route_claim_source_locked(struct se_route_anchor *a,
 {
 	if (frozen_class < 1 || frozen_class > 2)
 		return SE_ROUTE_INVARIANT_FAULT;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* No source pin can exist on an adopting route (publication refuses
+	 * pins); a pinned claim during adoption is a fault all the same. */
+	if (a->adopting) {
+		if (a->adopting_faults != (__u32)~0U)
+			a->adopting_faults++;
+		return frozen_class == 1 ? SE_ROUTE_AUDIT_FAULT :
+					   SE_ROUTE_STRICT_FAULT;
+	}
+#endif
 	const struct se_source_mode_token *t = &owner->token;
-	if (c->owned || owner->owned != 1 || owner->reserved || t->reserved ||
-	    !physical || !source_sequence || t->physical != physical ||
-	    t->source_sequence != source_sequence ||
+	if (c->owned || owner->owned != 1 || owner->reserved ||
+	    SE_SOURCE_TOKEN_RECORD_BAD(t) || !physical || !source_sequence ||
+	    t->physical != physical || t->source_sequence != source_sequence ||
 	    t->execution_class != frozen_class || !t->pin_sequence ||
 	    t->pin_sequence > a->next_source_pin || !a->source_pins ||
+	    a->phase != SE_ROUTE_ACTIVE || a->reserved || !a->incarnation ||
+	    t->slot != a->payload_slot || t->incarnation != a->incarnation ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    t->scope != a->scope ||
+	    !SE_ROUTE_REC(a, t->record)->source_pins ||
+	    SE_ROUTE_REC(a, t->record)->generation != t->generation ||
+	    (SE_ROUTE_REC(a, t->record)->phase != SE_SNAPSHOT_ACTIVE &&
+	     SE_ROUTE_REC(a, t->record)->phase != SE_SNAPSHOT_RETIRING) ||
+#else
+	    t->scope != a->scope || t->generation != a->payload_generation ||
+#endif
+	    a->execution_class != frozen_class ||
+	    a->early_claims == (__u32)~0U || a->admission_serial >= ~0ULL - 1)
+		return frozen_class == 1 ? SE_ROUTE_AUDIT_FAULT :
+					   SE_ROUTE_STRICT_FAULT;
+	a->early_claims++;
+	a->admission_serial++;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	{
+		struct se_route_rec *x = SE_ROUTE_REC(a, t->record);
+		x->early_claims++;
+		*c = (struct se_route_claim){
+			.scope = a->scope,
+			.serial = x->serial,
+			.generation = x->generation,
+			.admission_serial = a->admission_serial,
+			.incarnation = a->incarnation,
+			.record = t->record & 1,
+			.execution_class = a->execution_class,
+			.owned = 1,
+			.slot = a->payload_slot
+		};
+	}
+#else
+	*c = (struct se_route_claim){ .scope = a->scope,
+				      .serial = a->active_serial,
+				      .generation = a->payload_generation,
+				      .admission_serial = a->admission_serial,
+				      .incarnation = a->incarnation,
+				      .record = a->active_record,
+				      .execution_class = a->execution_class,
+				      .owned = 1,
+				      .slot = a->payload_slot };
+#endif
+	return SE_ROUTE_OWNED;
+}
+/* Identity-bound re-admission of an UNPINNED frozen exec (G019 M4 review
+ * M2): the exec's first selected admission recorded the original route's
+ * identity (slot, incarnation, scope, payload generation, class) but took
+ * no pin. A later admission of the same exec (#! or binfmt_misc re-check,
+ * possibly after migration) claims that ORIGINAL route only if it still
+ * holds exactly that payload; a republish or withdrawal in between changes
+ * the identity and faults with the frozen class (fail-closed). While this
+ * claim is held, early_claims blocks withdrawal, so each admission evaluates
+ * the recorded payload exactly as the pinned path does. */
+static __attribute__((always_inline)) inline int
+se_route_claim_ident_locked(struct se_route_anchor *a,
+			    const struct se_source_mode_token *t,
+			    __u32 frozen_class, struct se_route_claim *c)
+{
+	if (frozen_class < 1 || frozen_class > 2)
+		return SE_ROUTE_INVARIANT_FAULT;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	if (a->adopting) {
+		if (a->adopting_faults != (__u32)~0U)
+			a->adopting_faults++;
+		return frozen_class == 1 ? SE_ROUTE_AUDIT_FAULT :
+					   SE_ROUTE_STRICT_FAULT;
+	}
+#endif
+	if (c->owned || SE_SOURCE_TOKEN_RECORD_BAD(t) ||
+	    t->execution_class != frozen_class ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    t->record != a->active_record ||
+#endif
 	    a->phase != SE_ROUTE_ACTIVE || a->reserved || !a->incarnation ||
 	    t->slot != a->payload_slot || t->incarnation != a->incarnation ||
 	    t->scope != a->scope || t->generation != a->payload_generation ||
@@ -295,6 +501,7 @@ se_route_claim_source_locked(struct se_route_anchor *a,
 		return frozen_class == 1 ? SE_ROUTE_AUDIT_FAULT :
 					   SE_ROUTE_STRICT_FAULT;
 	a->early_claims++;
+	SE_ROUTE_REC_ADD(a, a->active_record, early_claims, 1);
 	a->admission_serial++;
 	*c = (struct se_route_claim){ .scope = a->scope,
 				      .serial = a->active_serial,
@@ -317,6 +524,7 @@ se_route_release_locked(struct se_route_anchor *a, struct se_route_claim *c)
 		return -1;
 	c->owned = 0;
 	a->early_claims--;
+	SE_ROUTE_REC_ADD(a, c->record, early_claims, -1);
 	return 0;
 }
 /* No zero-count gap: persistent snapshot ownership is established BEFORE the
@@ -328,6 +536,21 @@ static __attribute__((always_inline)) inline int se_route_transfer_locked(
 	struct se_route_claim *c, __u64 task_cookie,
 	struct se_reader_owner *owner, struct se_reader_token *token)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 3: a claim bound to the RETIRING record becomes a reader of
+	 * that record (its holder moves from early_claims to claims). */
+	if (!se_route_claim_valid(a, c) || b->scope != c->scope)
+		return -1;
+	if (b->generation == c->generation && b->active_record == c->record &&
+	    b->active_serial == c->serial ?
+		    se_reader_acquire_record_locked(b, c->record, c->serial,
+						    c->scope, task_cookie,
+						    owner, token) :
+		    se_reader_acquire_retiring_locked(
+			    b, c->record, c->serial, c->generation, c->scope,
+			    task_cookie, owner, token))
+		return -1;
+#else
 	if (!se_route_claim_valid(a, c) || b->generation != c->generation ||
 	    b->scope != c->scope || b->active_record != c->record ||
 	    b->active_serial != c->serial)
@@ -335,8 +558,10 @@ static __attribute__((always_inline)) inline int se_route_transfer_locked(
 	if (se_reader_acquire_record_locked(b, c->record, c->serial, c->scope,
 					    task_cookie, owner, token))
 		return -1;
+#endif
 	c->owned = 0;
 	a->early_claims--;
+	SE_ROUTE_REC_ADD(a, c->record, early_claims, -1);
 	return 0;
 }
 static __attribute__((always_inline)) inline int

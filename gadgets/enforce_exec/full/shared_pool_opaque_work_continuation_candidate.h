@@ -19,6 +19,53 @@
  * Exactly one successor can resume a particular stage. The stage is bounded
  * here for testing, not a claim that 32 product programs suffice. */
 #define SE_OWK_CONTINUATION_MAX 32U
+/* G019 gap 4 (review H1): stage classes for the same-bprm interpreter
+ * continuation. One bprm_execve runs at most SE_OWK_EXEC_PASSES
+ * search_binary_handler passes (exec_binprm depth 0..5; depth 6 is -ELOOP
+ * before any bprm_check), and pass p uses stages 3p+1 (prepare), 3p+2
+ * (evaluation) and 3p+3 (terminal). A class token names the residue r
+ * (stage % 3) and the highest admitted pass; it matches exactly the stages
+ * {3p + (r ? r : 3) : 0 <= p <= max_pass}. A plain stage still matches only
+ * itself. A class match never changes the monotone +1 suspension rule: the
+ * resumed ticket carries the actual stage, so every successor suspends to
+ * exactly the next one. Objects without SE_OWK_STAGE_CLASSES keep the exact
+ * single-stage comparisons (and their bytes). */
+#ifdef SE_OWK_STAGE_CLASSES
+#define SE_OWK_EXEC_PASSES 6U
+#define SE_OWK_STAGE_CLASS_FLAG 0x100U
+#define SE_OWK_STAGE_CLASS(residue, max_pass) \
+	(SE_OWK_STAGE_CLASS_FLAG | ((__u32)(max_pass) << 2) | (__u32)(residue))
+static __attribute__((always_inline)) inline __u32
+se_owk_stage_class_last(__u32 token)
+{
+	__u32 residue = token & 3U;
+	return 3U * ((token >> 2) & 0x3fU) + (residue ? residue : 3U);
+}
+/* A valid expected stage: a plain stage 1..MAX, or a class token with a
+ * residue 0..2, a pass bound below SE_OWK_EXEC_PASSES and no other bits. */
+static __attribute__((always_inline)) inline int
+se_owk_stage_expected_valid(__u32 expected)
+{
+	if (!(expected & SE_OWK_STAGE_CLASS_FLAG))
+		return expected && expected <= SE_OWK_CONTINUATION_MAX;
+	return !(expected & ~(SE_OWK_STAGE_CLASS_FLAG | 0xffU)) &&
+	       (expected & 3U) < 3U &&
+	       ((expected >> 2) & 0x3fU) < SE_OWK_EXEC_PASSES &&
+	       se_owk_stage_class_last(expected) < SE_OWK_CONTINUATION_MAX;
+}
+static __attribute__((always_inline)) inline int
+se_owk_stage_matches(__u32 stage, __u32 expected)
+{
+	if (!(expected & SE_OWK_STAGE_CLASS_FLAG))
+		return stage == expected;
+	return stage && stage <= se_owk_stage_class_last(expected) &&
+	       stage % 3U == (expected & 3U);
+}
+#else
+#define se_owk_stage_expected_valid(expected) \
+	((expected) && (expected) <= SE_OWK_CONTINUATION_MAX)
+#define se_owk_stage_matches(stage, expected) ((stage) == (expected))
+#endif
 static __attribute__((noinline)) int
 se_owk_suspend(struct se_ol_payload_handle *owner, struct se_owk_ticket *ticket,
 	       __u32 next_stage)
@@ -125,8 +172,12 @@ static SE_OWK_RESUME_ATTR int se_owk_resume(struct se_ol_payload_handle *owner,
 {
 	if (!owner || !ticket || ticket->held || ticket->cookie ||
 	    owner->locked || owner->lease.held != 1 || !owner->lease.meta ||
+#ifdef SE_OWK_STAGE_CLASSES
+	    !owner->payload || !se_owk_stage_expected_valid(expected_stage))
+#else
 	    !owner->payload || !expected_stage ||
 	    expected_stage > SE_OWK_CONTINUATION_MAX)
+#endif
 		return SE_OL_CORRUPT;
 	struct se_ol_meta *task = owner->lease.meta;
 	__u64 scope = 0, cookie = 0, invocation = 0;
@@ -228,6 +279,16 @@ static SE_OWK_RESUME_ATTR int se_owk_resume(struct se_ol_payload_handle *owner,
 		!work->continuation_reserved && payload->scope == scope &&
 		payload->cookie == cookie && payload->sequence == invocation &&
 		payload->slot == work_slot && !payload->reserved;
+#ifdef SE_OWK_STAGE_CLASSES
+	/* A class mismatch is a non-mutating STALE replay, like a stage one. */
+	__u32 stage_seen = work->continuation_stage;
+	int stage_match = se_owk_stage_matches(stage_seen, expected_stage);
+	int pending = identity && work->phase == SE_OWK_SUSPENDED &&
+		      work->active_leases == 0 && stage_match;
+	int replay = identity && (work->phase == SE_OWK_ACTIVE ||
+				  work->phase == SE_OWK_DEATH_FINALIZING ||
+				  work->phase == SE_OWK_DONE || !stage_match);
+#else
 	int pending = identity && work->phase == SE_OWK_SUSPENDED &&
 		      work->active_leases == 0 &&
 		      work->continuation_stage == expected_stage;
@@ -235,11 +296,17 @@ static SE_OWK_RESUME_ATTR int se_owk_resume(struct se_ol_payload_handle *owner,
 				  work->phase == SE_OWK_DEATH_FINALIZING ||
 				  work->phase == SE_OWK_DONE ||
 				  work->continuation_stage != expected_stage);
+#endif
 	if (pending) {
 		work->phase = SE_OWK_ACTIVE;
 		work->active_leases = 1;
 	}
 	bpf_spin_unlock(&work->lock);
+#ifdef SE_OWK_STAGE_CLASSES
+	/* The successor suspends to exactly the observed stage + 1. */
+	if (pending)
+		candidate->continuation_stage = (__u16)stage_seen;
+#endif
 	if (!pending) {
 		if (!replay)
 			se_owk_fault_ticket(candidate);
@@ -411,6 +478,10 @@ se_owk_finish_suspended_death(struct se_of_lease *dying)
 		se_owk_fault_ticket(&witness);
 		return SE_OL_CORRUPT;
 	}
+#ifdef SE_REAP_EVENT
+	/* Product reaper wakeup only (G019 M1); never authority. */
+	SE_REAP_EVENT(WORK_DONE, work_slot, cookie);
+#endif
 	return SE_OL_OK;
 }
 #endif

@@ -120,14 +120,26 @@ static int begin(const struct exec *e, __u32 check)
 {
 	return se_cap_on_begin(e->tgid, e->pid, e->task, e->bprm, check);
 }
+#ifdef SE_CAP_REPORT_LATER
+#define REPORT_LATER 1
+#else
+#define REPORT_LATER 0
+#endif
+static int last_later;
 /* Returns the verdict class seen by the policy for this admission: 1 Audit,
  * 2 Strict, 0 unselected, 3 audit-fault, 4 strict-fault, 5 invariant. */
 static int admit(const struct exec *e, __u64 cgroup)
 {
 	struct se_route_claim claim = {};
 	__u32 frozen = 0;
-	int r = se_cap_admit(e->tgid, e->task, e->bprm, cgroup, &claim,
+	int r = se_cap_admit(e->tgid, e->pid, e->task, e->bprm, cgroup, &claim,
 			     &frozen);
+	/* G019 gap 4: the later-admission bit is reported only when asked
+	 * for, and the class comparison always masks it. */
+	last_later = !!(frozen & SE_CAP_LATER);
+	assert(REPORT_LATER || !last_later);
+	frozen &= ~SE_CAP_LATER;
+	assert(frozen <= 2);
 	assert(!held);
 	if (r == SE_ROUTE_OWNED) {
 		assert(claim.owned && frozen == claim.execution_class);
@@ -355,9 +367,11 @@ static void check_only(void)
 
 /* Late attach: the call entered bprm_execve before the terminal was armed,
  * so no marker; begin refuses. First selected admission still freezes the
- * ORIGINAL class (uncovered, no pin). A migrated admission gets a fault of
- * the ORIGINAL class, never the current route's class. The next covered exec
- * of the TGID retires the stale uncovered capsule. */
+ * ORIGINAL class (uncovered, no pin) and records the original route's
+ * identity: a re-check (#!) or migrated admission re-claims exactly that
+ * route and payload (review M2), never the current route's class; a
+ * republish in between faults with the ORIGINAL class. The next covered
+ * exec of the TGID retires the stale uncovered capsule. */
 static void late_attach(void)
 {
 	assert(begin(&A, 0) == SE_CAP_FOREIGN);
@@ -365,8 +379,20 @@ static void late_attach(void)
 	assert(admit(&A, CG_AUDIT) == (int)original);
 	assert(stats[SE_CAP_STAT_FROZEN_UNCOVERED] == 1);
 	assert(!routes[0].source_pins);
-	assert(admit(&A, CG_STRICT) == fault_of(original));
+	assert(capsules[A.tgid].flags & SE_CAP_F_IDENT);
+	assert(admit(&A, CG_AUDIT) == (int)original); /* #! re-check */
+	assert(admit(&A, CG_STRICT) == (int)original); /* migrated */
+	assert(stats[SE_CAP_STAT_ORIGINAL_CLAIM] == 2 &&
+	       !routes[0].source_pins);
+	routes[0].payload_generation++; /* republished in between */
 	assert(admit(&A, CG_AUDIT) == fault_of(original));
+	assert(admit(&A, CG_STRICT) == fault_of(original));
+	routes[0].payload_generation--;
+	/* Review L2: the anchor's class changed behind an unchanged payload
+	 * generation: the ident claim faults with the ORIGINAL class. */
+	routes[0].execution_class = other;
+	assert(admit(&A, CG_AUDIT) == fault_of(original));
+	routes[0].execution_class = original;
 	/* No fexit for this call. Next exec of the new image is covered. */
 	const struct exec next = {
 		.tgid = 20, .pid = 20, .task = 0xa000, .bprm = 0xb400
@@ -589,6 +615,25 @@ static void terminal_and_entry_skipped(void)
 	quiescent();
 }
 
+/* Review follow-up (defense in depth): X1 froze and pinned, its terminal was
+ * missed, then X2 (same task, same bprm address) entered and its retiring
+ * begin was skipped too. X2's pending entry marker proves X2 opened nothing:
+ * the matching capsule is X1's, stale, never X2's frozen class. */
+static void stale_frozen_reused_bprm(void)
+{
+	entry(&A);
+	assert(begin(&A, 0) == SE_CAP_OK);
+	assert(admit(&A, CG_AUDIT) == (int)original);
+	assert(routes[0].source_pins == 1);
+	entry(&A); /* X2 at the same addresses; no begin */
+	assert(admit(&A, CG_STRICT) == (int)other);
+	assert(stats[SE_CAP_STAT_STALE_RETIRED] == 1 &&
+	       !routes[0].source_pins && !markers[A.pid].task);
+	assert(admit(&A, CG_STRICT) == (int)other); /* #! re-check: mine */
+	assert(terminal(&A, 0) == 1);
+	quiescent();
+}
+
 /* Documents the counterexample this capsule replaces: the plain current-route
  * path, without capsule authority, returns the wrong class after migration. */
 static void legacy_fallback_is_unsafe(void)
@@ -597,6 +642,35 @@ static void legacy_fallback_is_unsafe(void)
 	assert(se_route_admit(CG_STRICT, &claim) == SE_ROUTE_OWNED);
 	assert(claim.execution_class == other && other != original);
 	se_cap_drop_claim(&claim);
+	quiescent();
+}
+
+/* G019 gap 4 (review H1): SE_CAP_LATER marks exactly the later admissions
+ * of the SAME physical exec (a #! interpreter pass, also after migration);
+ * a first admission, including one at a reused bprm address after a missed
+ * terminal (stale capsule retired), never carries it. */
+static void later_bit(void)
+{
+	entry(&A);
+	assert(begin(&A, 0) == SE_CAP_OK);
+	assert(admit(&A, CG_AUDIT) == (int)original && !last_later);
+	assert(admit(&A, CG_AUDIT) == (int)original &&
+	       last_later == REPORT_LATER);
+	assert(admit(&A, CG_STRICT) == (int)original &&
+	       last_later == REPORT_LATER); /* migrated between passes */
+	assert(terminal(&A, 0) == 1);
+	entry(&A); /* a new exec at the same addresses */
+	assert(begin(&A, 0) == SE_CAP_OK);
+	assert(admit(&A, CG_STRICT) == (int)other && !last_later);
+	assert(admit(&A, CG_STRICT) == (int)other &&
+	       last_later == REPORT_LATER);
+	entry(&A); /* its terminal was missed: stale at the next begin */
+	assert(begin(&A, 0) == SE_CAP_OK);
+	assert(stats[SE_CAP_STAT_STALE_RETIRED] == 1);
+	assert(admit(&A, CG_AUDIT) == (int)original && !last_later);
+	assert(admit(&A, CG_AUDIT) == (int)original &&
+	       last_later == REPORT_LATER);
+	assert(terminal(&A, 0) == 1);
 	quiescent();
 }
 
@@ -629,7 +703,9 @@ int main(int argc, char **argv)
 		{ "pin-failed", pin_failed },
 		{ "terminal-and-entry-skipped", terminal_and_entry_skipped },
 		{ "stale-then-exhausted", stale_then_exhausted },
+		{ "stale-frozen-reused-bprm", stale_frozen_reused_bprm },
 		{ "legacy-fallback-is-unsafe", legacy_fallback_is_unsafe },
+		{ "later-bit", later_bit },
 	};
 	for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
 		if (strcmp(argv[1], "all") &&

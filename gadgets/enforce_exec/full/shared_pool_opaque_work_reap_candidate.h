@@ -16,6 +16,11 @@ enum se_owk_reap_result {
 	SE_OWK_CORRUPT,
 };
 enum { SE_OWK_OWNER_RELEASED = 1, SE_OWK_PAYLOAD_ZEROED = 2 };
+#ifndef SE_OWK_FAULT_SITE
+#define SE_OWK_FAULT_SITE(site) \
+	do {                    \
+	} while (0)
+#endif
 static inline int se_owk_fault_exact(struct se_owk_account *account,
 				     struct se_owk_charge *charge, __u64 bit,
 				     __u64 cookie)
@@ -24,6 +29,7 @@ static inline int se_owk_fault_exact(struct se_owk_account *account,
 	if (charge->cookie == cookie && charge->state != SE_OWK_FREE &&
 	    (account->bits & bit)) {
 		account->fault = 1;
+		SE_OWK_FAULT_SITE(9);
 		charge->state = SE_OWK_FAULT_HELD;
 	}
 	bpf_spin_unlock(&account->lock);
@@ -190,7 +196,23 @@ static __attribute__((noinline)) int se_owk_reap_step(__u32 slot,
 			work->cleanup_done == 3 && !work->continuation_stage &&
 			!work->continuation_reserved;
 		bpf_spin_unlock(&work->lock);
-		return free_shape ? SE_OWK_ALREADY_RETURNED : SE_OWK_CORRUPT;
+		if (free_shape)
+			return SE_OWK_ALREADY_RETURNED;
+		/* Reuse-aware returns (any returner): a visit of a
+		 * cookie another visitor already returned can race the slot's
+		 * next charge, which re-initializes the metadata after the charge
+		 * snapshot above found it FREE. If the slot now carries a NEWER
+		 * charge, or is free again after a NEWER return, that is a
+		 * reuse: STALE, never a fault. Anything else (this exact
+		 * return with a non-free metadata, an older or equal cookie or
+		 * return, a free slot still holding a cookie) is CORRUPT. */
+		bpf_spin_lock(&account->lock);
+		int reused = (charge->cookie > expected_cookie &&
+			      charge->state != SE_OWK_FREE) ||
+			     (charge->state == SE_OWK_FREE && !charge->cookie &&
+			      charge->last_returned > expected_cookie);
+		bpf_spin_unlock(&account->lock);
+		return reused ? SE_OWK_STALE : SE_OWK_CORRUPT;
 	}
 	if (cookie != expected_cookie)
 		return SE_OWK_STALE;

@@ -3,8 +3,9 @@
 #ifndef ENFORCE_EXEC_SHARED_POOL_OPAQUE_REAPER_VISIT_CANDIDATE_H
 #define ENFORCE_EXEC_SHARED_POOL_OPAQUE_REAPER_VISIT_CANDIDATE_H
 #if !defined(ENFORCE_EXEC_POOL_OPAQUE_LOCATOR_CANDIDATE) || \
-	!defined(ENFORCE_EXEC_SHARED_RECOVERY)
-#error "opaque reaper visitors require the recovered candidate"
+	(!defined(ENFORCE_EXEC_SHARED_RECOVERY) &&          \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_REAP_EVENTS_CANDIDATE))
+#error "opaque reaper visitors require the recovered or reap-events candidate"
 #endif
 
 /* These are outcomes of actual fixed-slot visits, not cleanup authority.
@@ -130,7 +131,14 @@ static __attribute__((noinline)) int se_or_work_visit(__u32 slot)
 
 /* Select the exact cookie under its original account lock. The metadata
  * snapshot only chooses a stage; each stage rechecks the charged identity
- * before mutation, and the final account-locked refund owns the credit. */
+ * before mutation, and the final account-locked refund owns the credit.
+ * The snapshot is not held across the stage: a concurrent visit of the same
+ * charge may complete the stage first, and this stage's exact recheck then
+ * reports CORRUPT against a state that already moved on. So a CORRUPT stage
+ * is a fault only when directory_state, re-read under the lock, still equals
+ * the snapshot that selected it; a moved state is PENDING (the next visit
+ * selects its stage from a fresh snapshot). A real fault leaves the state
+ * where it was and is still reported. */
 static __attribute__((noinline)) int
 se_or_task_directory_step(struct se_ol_meta *meta, __u32 slot, __u64 cookie,
 			  __u32 directory)
@@ -153,10 +161,14 @@ se_or_task_directory_step(struct se_ol_meta *meta, __u32 slot, __u64 cookie,
 		result = se_ow_zero_archive(meta, cookie);
 	else
 		return SE_OR_FAULT;
-	return result == SE_OL_OK ? SE_OR_PROGRESS :
-	       result == SE_OL_CONTENDED || result == SE_OL_STALE ?
-				    SE_OR_PENDING :
-				    SE_OR_FAULT;
+	if (result == SE_OL_OK)
+		return SE_OR_PROGRESS;
+	if (result == SE_OL_CONTENDED || result == SE_OL_STALE)
+		return SE_OR_PENDING;
+	bpf_spin_lock(&meta->lock);
+	int moved = meta->directory_state != directory;
+	bpf_spin_unlock(&meta->lock);
+	return moved ? SE_OR_PENDING : SE_OR_FAULT;
 }
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
@@ -268,6 +280,7 @@ static __attribute__((noinline)) int se_or_task_visit(__u32 slot)
 	__u32 phase = meta->phase;
 	__u32 directory = meta->directory_state;
 	__u32 done = meta->cleanup_done;
+	__u32 leases = meta->active_leases;
 	int same = meta->cookie == cookie && meta->locator == locator &&
 		   meta->account_scope == scope &&
 		   meta->account_slot == account_slot &&
@@ -275,6 +288,31 @@ static __attribute__((noinline)) int se_or_task_visit(__u32 slot)
 	bpf_spin_unlock(&meta->lock);
 	if (!same && !(phase == SE_OL_FREE && state == SE_OC_RETURN_READY))
 		return SE_OR_FAULT;
+	/* A DEAD charge whose death lease is held (read in the same lock
+	 * section as the stage snapshot) is not the reaper's yet: the exit or
+	 * task_free holding it is between its own withdrawal stages
+	 * (se_of_withdraw_directory) or keeps it for a later resume, and every
+	 * reaper directory stage requires !active_leases. No lease is taken on
+	 * a DEAD charge (se_of_record_death's own sets DEAD), so DEAD with no
+	 * lease stays lease-free for this cookie. SE_OR_TASK_HELD may witness
+	 * a lease that stays held without an accounted holder; the candidate
+	 * defines it with credit at exit, which its product reap command
+	 * requires (a build without it has no such witness and is
+	 * qualification-only). */
+	if (phase == SE_OL_DEAD && leases) {
+#ifdef SE_OR_TASK_HELD
+		SE_OR_TASK_HELD(slot, cookie, locator, leases);
+#endif
+		return SE_OR_PENDING;
+	}
+#ifdef SE_OR_TASK_PRE_VISIT
+	/* Caller-owned exact-charge step before any directory/archive step
+	 * (the G019 credit-at-exit tombstone retirement). Never reached while
+	 * a DEAD charge's lease is held (above). */
+	int pre = SE_OR_TASK_PRE_VISIT(slot, cookie, locator);
+	if (pre != SE_OR_EMPTY)
+		return pre;
+#endif
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_READER_LIFECYCLE_PROBE
 	int terminal = se_or_task_terminal_guard(slot, cookie, locator);
 	if (terminal != SE_OR_EMPTY)

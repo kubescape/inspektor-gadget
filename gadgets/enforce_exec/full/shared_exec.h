@@ -238,9 +238,23 @@ se_exec_reader_release_locked(struct se_binding_snapshots *binding,
 }
 /* Called under the original route/binding lock with a source-owned physical
  * TASK, never with a copied token as the sole authority. A live reader claim
- * prevents same-route commit and withdrawal. Under the node's unique-scope
- * publication invariant, the accepted catalogue for this scope cannot change
- * through a successful publication while it is held.
+ * prevents withdrawal. In the product publisher (G019 gap 3) it no longer
+ * prevents a same-route commit: the reader keeps reading its own record,
+ * ACTIVE or RETIRING. The accepted catalogue it evaluates against is still
+ * stable, because within a binding's lifetime the product catalogue is
+ * write-once per (scope, UID):
+ *   - a revision keeps the policy UID, class and root epoch
+ *     (real_owner_publish_revision refuses any change up front);
+ *   - the (scope, UID) -> bank index entry is inserted BPF_NOEXIST and only
+ *     an existing entry of the same bank is accepted (real_owner_epoch_bind,
+ *     se_arm_index_decision);
+ *   - the commit preflight accepts the bank's epoch cell only empty, or of
+ *     the same scope/UID with epoch 0 or equal (real_owner_epoch_cell_ready),
+ *     so the commit's epoch store writes the identical bytes;
+ *   - the cells and index entries of a scope are cleared only by
+ *     real_owner_recycle_clean, with both records FREE (no reader left).
+ * The per-WORK epoch cache is tagged with the reader's own generation, and
+ * any scope/generation/epoch mismatch fails closed (CORRUPT, never allow).
  * The caller must keep the exact TASK/invocation owner live through its last
  * catalogue lookup; this predicate does not create another lease. */
 static __attribute__((always_inline)) inline int
@@ -250,6 +264,37 @@ se_exec_reader_authority_locked(const struct se_route_anchor *route,
 				__u64 scope, __u64 generation, __u64 cookie,
 				__u64 invocation, __u32 execution_class)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* G019 gap 3: the reader's own record, ACTIVE or RETIRING (a revision
+	 * may commit while it is held; it keeps reading its record). */
+	if (!route || !binding || !task || !scope || !generation || !cookie ||
+	    !invocation || execution_class < 1 || execution_class > 2 ||
+	    route->reserved || !route->incarnation || !route->cgroup_identity ||
+	    route->phase != SE_ROUTE_ACTIVE || route->payload_slot != slot ||
+	    route->scope != scope ||
+	    route->execution_class != execution_class ||
+	    binding->scope != scope || !(task->flags & SE_TASK_LIVE) ||
+	    task->identity_reserved || task->physical_cookie != cookie ||
+	    task->scope_cookie != scope || task->scope_slot != slot ||
+	    task->reader_invocation != invocation || !task->reader.owned ||
+	    task->reader.reserved || task->reader.token.record >= 2)
+		return 0;
+	{
+		const struct se_reader_token *token = &task->reader.token;
+		const struct se_snapshot *snapshot =
+			&binding->records[se_route_rec_index(token->record)];
+		return token->scope == scope && token->sequence &&
+		       token->task_cookie == cookie &&
+		       token->execution_class == execution_class &&
+		       snapshot->scope == scope &&
+		       snapshot->serial == token->serial &&
+		       snapshot->generation == generation &&
+		       (snapshot->phase == SE_SNAPSHOT_ACTIVE ||
+			snapshot->phase == SE_SNAPSHOT_RETIRING) &&
+		       snapshot->claims &&
+		       snapshot->execution_class == execution_class;
+	}
+#endif
 	if (!route || !binding || !task || !scope || !generation || !cookie ||
 	    !invocation || execution_class < 1 || execution_class > 2 ||
 	    route->reserved || !route->incarnation || !route->cgroup_identity ||

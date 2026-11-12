@@ -17,7 +17,11 @@ func installSharedPinTest(n *NodeEnforcer) {
 		if err := l.Check(ctx); err != nil {
 			return &sharedPhysicalPins{lease: l}, err
 		}
-		return &sharedPhysicalPins{lease: l, cgroupID: c.CgroupID, initPID: c.InitHostPID, start: "test-start", identity: [2]uint64{1, c.CgroupID}, checkTest: func(context.Context) error { return nil }}, nil
+		return &sharedPhysicalPins{
+			lease: l, cgroupID: c.CgroupID, initPID: c.InitHostPID, start: "test-start", identity: [2]uint64{1, c.CgroupID},
+			checkTest:    func(context.Context) error { return nil },
+			identityTest: &SharedInitIdentity{TGID: c.InitHostPID, StartTicks: 4242, MountNS: 4026531840 + c.CgroupID},
+		}, nil
 	}
 }
 

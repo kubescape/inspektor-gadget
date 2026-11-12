@@ -33,6 +33,25 @@ type SharedProfile struct {
 	CandidateBytes                                                 uint64
 	PossibleCPUs                                                   uint32
 	PerBinding                                                     SharedQuota
+	// ExitTombstones is the node-wide credit-at-exit tombstone table
+	// (se_exit_tombstones max_entries, SE_PROFILE_EXIT_TOMBSTONES), sized
+	// for the exit burst (exit-to-free latency x exit rate), NOT by TASK
+	// count; each binding owns an equal share. Zero selects the legacy
+	// 32 x Tasks, kept only so pre-existing qualification objects stay
+	// byte-identical; product profiles set it explicitly.
+	ExitTombstones uint64
+}
+
+// sharedMaxExitTombstones mirrors the BPF static assert on
+// SE_PROFILE_EXIT_TOMBSTONES.
+const sharedMaxExitTombstones = 1 << 20
+
+// exitTombstones is the effective tombstone table size (see ExitTombstones).
+func (p SharedProfile) exitTombstones() uint64 {
+	if p.ExitTombstones == 0 {
+		return 32 * p.Tasks
+	}
+	return p.ExitTombstones
 }
 
 // SharedAdmission describes logical capacity only. Complete map/wire/native and
@@ -100,6 +119,12 @@ func (p SharedProfile) Validate() (SharedAdmission, error) {
 	}
 	if a.Snapshots > math.MaxUint32 || a.PinTickets > math.MaxUint32 {
 		return SharedAdmission{}, fmt.Errorf("shared snapshot/ticket count exceeds u32 domain")
+	}
+	if p.Tasks > math.MaxUint64/32 {
+		return SharedAdmission{}, fmt.Errorf("shared exit tombstones overflow")
+	}
+	if t := p.exitTombstones(); t == 0 || t > sharedMaxExitTombstones || t%p.Bindings != 0 {
+		return SharedAdmission{}, fmt.Errorf("shared exit tombstones %d must be a nonzero multiple of %d bindings, at most %d", t, p.Bindings, sharedMaxExitTombstones)
 	}
 	return a, nil
 }

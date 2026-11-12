@@ -130,6 +130,9 @@ se_snapshot_prepare_locked(struct se_binding_snapshots *b, __u32 record,
 }
 /* Acquire BEFORE retaining a record/ticket pointer outside the binding lock,
  * including retries, release and receipt inspection. RETIRING excludes PIN.
+ * Product publisher: RELEASE also requires a record without holders (no
+ * reader claim), so a ticket release can never take a reader's object away
+ * (claims cannot grow on a RETIRING record: readers acquire ACTIVE only).
  */
 static __attribute__((always_inline)) inline int
 se_snapshot_command_begin_locked(struct se_binding_snapshots *b, __u32 record,
@@ -147,6 +150,10 @@ se_snapshot_command_begin_locked(struct se_binding_snapshots *b, __u32 record,
 	    (kind == SE_COMMAND_PIN && s->phase != SE_SNAPSHOT_PREPARING) ||
 	    (kind == SE_COMMAND_RELEASE && s->phase != SE_SNAPSHOT_RETIRING))
 		return -1;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	if (kind == SE_COMMAND_RELEASE && s->claims)
+		return -1;
+#endif
 	s->commands = 1;
 	s->command_sequence = ++b->next_command;
 	*c = (struct se_snapshot_command){ .scope = scope,
@@ -308,11 +315,19 @@ se_binding_commit_preflight_locked(struct se_binding_snapshots *b, __u32 record,
 		if (old_index >= 2 || old_index == record)
 			return -1;
 		const struct se_snapshot *old = &b->records[old_index & 1];
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		/* G019 gap 3: the old record keeps its readers as RETIRING. */
+		if (old->phase != SE_SNAPSHOT_ACTIVE ||
+		    old->scope != b->scope || old->serial != b->active_serial ||
+		    old->generation != b->generation || old->commands)
+			return -1;
+#else
 		if (old->phase != SE_SNAPSHOT_ACTIVE ||
 		    old->scope != b->scope || old->serial != b->active_serial ||
 		    old->generation != b->generation || old->claims ||
 		    old->commands)
 			return -1;
+#endif
 	} else if (b->records[record ^ 1].phase != SE_SNAPSHOT_FREE) {
 		return -1;
 	}
@@ -448,12 +463,55 @@ se_reader_release_locked(struct se_binding_snapshots *b,
 	bounded_record &= 1U;
 	struct se_snapshot *s = &b->records[bounded_record];
 	if (s->scope != token->scope || s->serial != token->serial ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    /* G019 gap 3: a reader of the RETIRING record releases it too. */
+	    (s->phase != SE_SNAPSHOT_ACTIVE &&
+	     s->phase != SE_SNAPSHOT_RETIRING) ||
+	    !s->claims)
+#else
 	    s->phase != SE_SNAPSHOT_ACTIVE || !s->claims)
+#endif
 		return -1;
 	owner->owned = 0;
 	s->claims--;
 	return 0;
 }
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+/* G019 gap 3: the reader of a claim already bound to the RETIRING record
+ * (the caller proved the claim valid under the same lock and consumes it):
+ * the holder moves, the record's holder set never grows. */
+static __attribute__((always_inline)) inline int
+se_reader_acquire_retiring_locked(struct se_binding_snapshots *b,
+				  __u32 record, __u64 serial, __u64 generation,
+				  __u64 scope, __u64 task_cookie,
+				  struct se_reader_owner *owner,
+				  struct se_reader_token *token)
+{
+	if (record >= 2 || !serial || !generation || !scope ||
+	    scope != b->scope || !task_cookie || owner->owned ||
+	    owner->reserved || b->next_reader >= ~0ULL - 1)
+		return -1;
+	asm volatile("" : "+r"(record));
+	record &= 1U;
+	struct se_snapshot *s = &b->records[record];
+	if (s->scope != scope || s->serial != serial ||
+	    s->phase != SE_SNAPSHOT_RETIRING || s->generation != generation ||
+	    s->claims == (__u32)~0U || s->execution_class < 1 ||
+	    s->execution_class > 2)
+		return -1;
+	struct se_reader_token next = { .scope = scope,
+					.serial = serial,
+					.sequence = ++b->next_reader,
+					.task_cookie = task_cookie,
+					.record = record,
+					.execution_class = s->execution_class };
+	s->claims++;
+	owner->token = next;
+	owner->owned = 1;
+	*token = next;
+	return 0;
+}
+#endif
 
 struct se_shared_binding {
 	struct se_binding_snapshots state;

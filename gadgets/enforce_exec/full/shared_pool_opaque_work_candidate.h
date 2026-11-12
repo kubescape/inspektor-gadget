@@ -29,6 +29,23 @@ _Static_assert(SE_OWK_ACCOUNTS == SE_OC_ACCOUNTS && SE_OWK_QUOTA > 0 &&
 #ifndef SE_OWK_AFTER_PIN
 #define SE_OWK_AFTER_PIN() ((void)0)
 #endif
+/* Diagnostic hooks of one accepted WORK charge (test builds only; a product
+ * build leaves all three empty): SE_OWK_CHARGED_DECL declares the caller's
+ * scalar, SE_OWK_CHARGED_LOCKED(used) copies the account's used count inside
+ * the account lock right after the charge, SE_OWK_CHARGED(slot) runs after
+ * the unlock. */
+/* Charge-time payload zero. The synchronous WORK return (G019 option C)
+ * zeroes once, at return (reaper stage 3, which every path to META_FREE
+ * passes), and defines this to 0; the header-is-zero check after it stays
+ * as the verifier of that invariant. */
+#ifndef SE_OWK_INIT_PAYLOAD_ZERO
+#define SE_OWK_INIT_PAYLOAD_ZERO(slot) SE_OWK_PAYLOAD_ZERO(slot)
+#endif
+#ifndef SE_OWK_CHARGED
+#define SE_OWK_CHARGED_DECL
+#define SE_OWK_CHARGED_LOCKED(used) ((void)0)
+#define SE_OWK_CHARGED(slot) ((void)0)
+#endif
 enum se_owk_charge_state {
 	SE_OWK_FREE = 0,
 	SE_OWK_BUILDING,
@@ -99,6 +116,21 @@ _Static_assert(sizeof(struct se_owk_ticket) == 64,
 static SE_OWK_FAULT_ATTR void
 se_owk_fault_ticket(const struct se_owk_ticket *ticket);
 
+/* Test-only WORK account fault-site witness (the including object's
+ * ENFORCE_EXEC_POOL_OPAQUE_WORK_FAULT_SITE_DIAGNOSTIC): each site that sets
+ * account->fault ORs its own bit (1U << site) into the fault word while it
+ * holds the account lock.
+ * Empty by default: no code. */
+#ifndef SE_OWK_FAULT_SITE
+#define SE_OWK_FAULT_SITE(site) \
+	do {                    \
+	} while (0)
+#endif
+/* A site reached only while the account was not yet faulted (its own
+ * branch requires a clean account): the witness may store the word. */
+#ifndef SE_OWK_FAULT_SITE_CLEAN
+#define SE_OWK_FAULT_SITE_CLEAN(site) SE_OWK_FAULT_SITE(site)
+#endif
 static inline __u64 se_owk_valid_mask(void)
 {
 #if SE_OWK_QUOTA == 64
@@ -214,6 +246,7 @@ se_owk_bind_owner(struct se_ol_payload_handle *owner)
 	    account->used > SE_OWK_QUOTA ||
 	    (!!account->scope != !!account->incarnation)) {
 		account->fault = 1;
+		SE_OWK_FAULT_SITE(1);
 		result = SE_OL_CORRUPT;
 	} else if (account->scope == scope &&
 		   account->incarnation == incarnation) {
@@ -252,6 +285,7 @@ se_owk_choose(struct se_ol_payload_handle *owner, __u32 *work_slot)
 	    se_owk_count(account->bits) != account->used ||
 	    account->used > SE_OWK_QUOTA) {
 		account->fault = 1;
+		SE_OWK_FAULT_SITE(2);
 		result = SE_OL_CORRUPT;
 	} else if (account->scope != scope ||
 		   account->incarnation != incarnation) {
@@ -262,6 +296,7 @@ se_owk_choose(struct se_ol_payload_handle *owner, __u32 *work_slot)
 		chosen = se_oc_first_bit(~account->bits & se_owk_valid_mask());
 		if (chosen >= SE_OWK_QUOTA) {
 			account->fault = 1;
+			SE_OWK_FAULT_SITE(3);
 			result = SE_OL_CORRUPT;
 		}
 	}
@@ -373,6 +408,7 @@ se_owk_begin(struct se_ol_payload_handle *owner, __u32 work_slot,
 		return SE_OL_STALE;
 	SE_OWK_AFTER_PIN();
 	__u64 bit = 1ULL << local;
+	SE_OWK_CHARGED_DECL;
 	bpf_spin_lock(&account->lock);
 	if (account->fault || account->reserved ||
 	    (account->bits & ~se_owk_valid_mask()) ||
@@ -380,6 +416,7 @@ se_owk_begin(struct se_ol_payload_handle *owner, __u32 work_slot,
 	    account->used > SE_OWK_QUOTA) {
 		account->fault = 1;
 		result = SE_OL_CORRUPT;
+		SE_OWK_FAULT_SITE(4);
 	} else if (account->scope != scope ||
 		   account->incarnation != incarnation) {
 		result = SE_OL_STALE;
@@ -387,6 +424,25 @@ se_owk_begin(struct se_ol_payload_handle *owner, __u32 work_slot,
 		result = SE_OL_CONTENDED;
 	} else if (account->used == SE_OWK_QUOTA) {
 		result = SE_OL_LIMIT;
+	} else if (charge->state == SE_OWK_FREE && !charge->cookie &&
+		   !charge->scope && !charge->owner_locator &&
+		   !charge->owner_cookie && !charge->incarnation &&
+		   !charge->owner_slot && !charge->reserved &&
+		   charge->last_returned > cookie &&
+		   charge->last_returned < SE_OWK_COOKIE_LIMIT) {
+		/* Reuse-aware reserve (any returner: the synchronous WORK
+		 * return or the reaper): between this caller's slot choice and
+		 * cookie allocation and this reserve, another WORK with a newer
+		 * cookie was charged, settled and returned at this very slot.
+		 * The slot is free and intact; only this cookie is older than
+		 * its last return. Not a fault: retry with a fresh cookie
+		 * (per-slot cookies stay increasing, as every reaper identity
+		 * check requires). Without this, a delayed caller faulted the
+		 * whole account (chain10 with sync return; chain15 with the
+		 * reaper, burst-nosync-s6). Strictly newer and in range only:
+		 * cookies are unique, so a return equal to this cookie, or one
+		 * beyond the cookie limit, is corruption and faults below. */
+		result = SE_OL_CONTENDED;
 	} else if (charge->state != SE_OWK_FREE || charge->cookie ||
 		   charge->scope || charge->owner_locator ||
 		   charge->owner_cookie || charge->incarnation ||
@@ -394,9 +450,11 @@ se_owk_begin(struct se_ol_payload_handle *owner, __u32 work_slot,
 		   charge->last_returned >= cookie) {
 		account->fault = 1;
 		result = SE_OL_CORRUPT;
+		SE_OWK_FAULT_SITE_CLEAN(5);
 	} else {
 		account->bits |= bit;
 		account->used++;
+		SE_OWK_CHARGED_LOCKED(account->used);
 		charge->cookie = cookie;
 		charge->scope = scope;
 		charge->incarnation = incarnation;
@@ -424,6 +482,7 @@ se_owk_begin(struct se_ol_payload_handle *owner, __u32 work_slot,
 			return SE_OL_CORRUPT;
 		return result;
 	}
+	SE_OWK_CHARGED(slot);
 	bpf_spin_lock(&work->lock);
 	int empty =
 		work->phase == SE_OWK_META_FREE && !work->active_leases &&
@@ -500,6 +559,7 @@ se_owk_fault_ticket(const struct se_owk_ticket *ticket)
 	    (charge->state == SE_OWK_BUILDING || charge->state == SE_OWK_OWNED))
 		charge->state = SE_OWK_FAULT_HELD;
 	account->fault = 1;
+	SE_OWK_FAULT_SITE(6);
 	bpf_spin_unlock(&account->lock);
 }
 #undef SE_OWK_FAULT_ATTR
@@ -703,16 +763,25 @@ se_owk_abort_building(struct se_ol_payload_handle *owner,
 			    se_owk_count(account->bits) == account->used &&
 			    (account->bits & bit);
 	exact = charge_exact && account_shape;
-	if (!exact)
+	if (!exact) {
 		account->fault = 1;
+		SE_OWK_FAULT_SITE(7);
+	}
 	if (charge_exact && charge->state == SE_OWK_BUILDING)
 		charge->state = exact && !account->fault ? SE_OWK_OWNED :
 							   SE_OWK_FAULT_HELD;
-	if (charge_exact && charge->state == SE_OWK_FAULT_HELD)
+	if (charge_exact && charge->state == SE_OWK_FAULT_HELD) {
 		account->fault = 1;
+		SE_OWK_FAULT_SITE(8);
+	}
 	bpf_spin_unlock(&account->lock);
 	ticket->held = 0;
 	ticket->stage = 4;
+#ifdef SE_REAP_EVENT
+	/* Product reaper wakeup only (G019 M1); never authority. */
+	if (exact)
+		SE_REAP_EVENT(WORK_ABORTED, ticket->work_slot, ticket->cookie);
+#endif
 	return exact ? SE_OL_OK : SE_OL_CORRUPT;
 }
 
@@ -762,7 +831,7 @@ se_owk_initialize_payload(struct se_ol_payload_handle *owner,
 			 work->invocation_sequence <= SE_OWK_COOKIE_LIMIT;
 	bpf_spin_unlock(&work->lock);
 	if (!task_exact || !work_exact ||
-	    SE_OWK_PAYLOAD_ZERO(ticket->work_slot)) {
+	    SE_OWK_INIT_PAYLOAD_ZERO(ticket->work_slot)) {
 		se_owk_fault_ticket(ticket);
 		return SE_OL_CORRUPT;
 	}
@@ -968,6 +1037,17 @@ se_owk_finish(struct se_ol_payload_handle *owner, struct se_owk_ticket *ticket,
 		se_owk_fault_ticket(ticket);
 	ticket->held = 0;
 	ticket->stage = aborting ? 4 : 5;
+#ifdef SE_REAP_EVENT
+	/* Product reaper wakeup only (G019 M1); never authority. */
+	if (semantic_exact) {
+		if (aborting)
+			SE_REAP_EVENT(WORK_ABORTED, ticket->work_slot,
+				      ticket->cookie);
+		else
+			SE_REAP_EVENT(WORK_DONE, ticket->work_slot,
+				      ticket->cookie);
+	}
+#endif
 	return semantic_exact ? SE_OL_OK : SE_OL_CORRUPT;
 }
 

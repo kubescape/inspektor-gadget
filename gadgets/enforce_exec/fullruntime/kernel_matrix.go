@@ -34,7 +34,29 @@ func supportedKernelBTF(digest string) bool {
 	}
 }
 
+// sharedCandidateKernelBTF is the exact kernel matrix of the shared-node
+// candidate (G019 qualification builds only): the BTF of the two AL2023
+// guest kernels the candidate objects are compiled against (compile.sh
+// vmlinux.h) and qualified on (G005/G009/G019 isolated VM runs). It is not
+// the persistent-owner matrix above and admits nothing to that path.
+var sharedCandidateKernelBTF = map[string]string{
+	"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": "6.12.113-138.209.amzn2023.x86_64",
+	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": "6.18.56-125.164.amzn2023.x86_64",
+}
+
 func verifySupportedKernel() error {
+	return verifyKernelBTF(supportedKernelBTF, "persistent-owner")
+}
+
+// verifySharedCandidateKernel admits only sharedCandidateKernelBTF.
+func verifySharedCandidateKernel() error {
+	return verifyKernelBTF(func(digest string) bool {
+		_, ok := sharedCandidateKernelBTF[digest]
+		return ok
+	}, "shared candidate")
+}
+
+func verifyKernelBTF(supported func(string) bool, matrix string) error {
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("persistent owner requires proved x86_64 kernel matrix")
 	}
@@ -55,8 +77,8 @@ func verifySupportedKernel() error {
 	if err != nil {
 		return err
 	}
-	if n > 128<<20 || !supportedKernelBTF(hex.EncodeToString(h.Sum(nil))) {
-		return fmt.Errorf("kernel BTF is outside proved persistent-owner matrix")
+	if digest := hex.EncodeToString(h.Sum(nil)); n > 128<<20 || !supported(digest) {
+		return fmt.Errorf("kernel BTF is outside proved %s matrix (sha256 %s)", matrix, digest)
 	}
 	return checkKernelControls()
 }

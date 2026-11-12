@@ -89,9 +89,12 @@ Live mode first checks three things, as the exec-capsule fixture does:
 
 ## Transaction and readiness modes (G009 steps 3 and 4)
 
-`-mode txn` and `-mode ready` (with `-candidate g25final128-<k>.bpf.o` and
-`-run-isolated`) load the exec candidate's steady-state attach set (7
-programs; see `candidateAttachSet` in `runner/txn.go`) and attach it through
+`-mode txn` and `-mode ready` (with `-candidate g19pkg128-<k>.bpf.o` or
+another object carrying `real_owner_capsule_free`, and `-run-isolated`) load
+the exec candidate's steady-state attach set (the 8-link product shape,
+`task_free` 2; see `candidateAttachSet` in `runner/txn.go`; the G009
+`g25final128` objects lack the capsule death retire and are refused) and
+attach it through
 `pkg/operators/ebpf/nativeattach`, the transaction of the eBPF operator's
 native path.
 

@@ -206,8 +206,8 @@ int BPF_PROG(capsule_admit, struct linux_binprm *bprm, int prior)
 	__u64 cgroup = bpf_get_current_cgroup_id();
 	struct se_route_claim claim = {};
 	__u32 frozen = 0;
-	int result =
-		se_cap_admit(tgid, task, (__u64)bprm, cgroup, &claim, &frozen);
+	int result = se_cap_admit(tgid, (__u32)id, task, (__u64)bprm, cgroup,
+				  &claim, &frozen);
 	if (claim.owned)
 		se_cap_drop_claim(&claim);
 	if (result != SE_ROUTE_UNSELECTED || frozen) {

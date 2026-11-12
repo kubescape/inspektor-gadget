@@ -90,14 +90,21 @@ func TrampolineTarget(p *ebpf.ProgramSpec) string {
 	return ""
 }
 
-// Attach phases, lowest first. Lifecycle hooks come first so that every task
-// a later hook can see is already tracked: task_free before task_alloc, so no
-// allocation is recorded without its release. Movement, cgroup and other
-// observer hooks come next. Decision hooks come last, outermost first: the
-// bprm_execve fexit terminal before its fentry, then creds_for_exec, then
-// bprm_check_security, so a decision never runs without its exit path.
+// Attach phases, lowest first. Stop and a failed transaction both detach in
+// exact reverse, so every "attached before" below is also "detached after".
+// Lifecycle hooks come first so that every task a later hook can see is
+// already tracked: task_free first (the release and every death retire, such
+// as the exec capsule's, exist before anything they release can be created
+// and outlive it); then the credit-at-exit sched_process_exit tp_btf, whose
+// settlement task_free consumes (G019 design section 1), so exit credit never
+// runs without task_free; then task_alloc, so no allocation is recorded
+// without its release. Movement, cgroup and other observer hooks come next.
+// Decision hooks come last, outermost first: the bprm_execve fexit terminal
+// before its fentry, then creds_for_exec, then bprm_check_security, so a
+// decision never runs without its exit path.
 const (
 	rankTaskFree = iota
+	rankTaskExit
 	rankTaskAlloc
 	rankMovement
 	rankExecExit
@@ -108,6 +115,9 @@ const (
 
 // Rank returns p's attach phase; see the rank constants.
 func Rank(p *ebpf.ProgramSpec) int {
+	if p.Type == ebpf.Tracing && p.AttachType == ebpf.AttachTraceRawTp && p.AttachTo == "sched_process_exit" {
+		return rankTaskExit
+	}
 	switch TrampolineTarget(p) {
 	case "bpf_lsm_task_free":
 		return rankTaskFree
@@ -127,7 +137,7 @@ func Rank(p *ebpf.ProgramSpec) int {
 }
 
 // Order returns the program names in deterministic attach order: by Rank,
-// then by name.
+// then by name. Detach order is its exact reverse.
 func Order(programs map[string]*ebpf.ProgramSpec) []string {
 	names := slices.Collect(maps.Keys(programs))
 	sort.Slice(names, func(a, b int) bool {

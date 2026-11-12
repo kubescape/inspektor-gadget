@@ -4,6 +4,7 @@
 package ebpfoperator
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -69,7 +70,19 @@ func (i *ebpfInstance) attachNativePrograms(gc operators.GadgetContext) error {
 	}
 	links, err := nativeattach.Attach(steps, func(k int) (link.Link, error) {
 		name := names[k]
-		return nativeAttachProgram(i, gc, i.collectionSpec.Programs[name], i.collection.Programs[name])
+		p := i.collectionSpec.Programs[name]
+		l, err := nativeAttachProgram(i, gc, p, i.collection.Programs[name])
+		if err != nil || l == nil || !nativeNeedsLinkInfo(p) {
+			return l, err
+		}
+		// A kprobe falls back to a linkless perf-fd ioctl attach on kernels
+		// without BPF perf links; refuse it at this step (closing the perf fd
+		// detaches it) instead of admitting a link the receipts cannot name.
+		if info, infoErr := l.Info(); infoErr != nil || info == nil || info.ID == 0 {
+			gadgets.CloseLink(l)
+			return nil, fmt.Errorf("native program %q attached without a bpf link: %w", name, errors.Join(infoErr, errors.ErrUnsupported))
+		}
+		return l, nil
 	}, func(l link.Link) { gadgets.CloseLink(l) })
 	if err != nil {
 		// Attachments without a bpf_link (sk_skb/sk_msg) are undone too.
@@ -132,10 +145,14 @@ func (i *ebpfInstance) attachNativeProgramsRetrying(gc operators.GadgetContext) 
 
 // checkNativeLinkBased refuses, fail-closed and without retry, any enabled
 // program whose attach would leave a side effect that rollback cannot undo:
-// perf fds, uprobe/socket-filter/TC/sockmap attachments or iterator
-// registration. Admitted are LSM and fentry/fexit/tp_btf tracing links, which
-// the exec candidate and owner families use, syscall commands (never
-// attached) and admitted recovery TEST_RUN programs (never attached).
+// uprobe/socket-filter/TC/sockmap/perf_event attachments, tracefs
+// tracepoints or iterator registration. Admitted are LSM and
+// fentry/fexit/tp_btf tracing links, kprobe/kretprobe perf-event links and
+// raw_tp links, which the exec candidate and owner families use, syscall
+// commands (never attached) and admitted recovery TEST_RUN programs (never
+// attached). Only fentry/fexit/fmod_ret/LSM count against trampoline capacity
+// (nativeattach.TrampolineTarget); kprobes, raw_tp and tp_btf take no
+// trampoline slot.
 func (i *ebpfInstance) checkNativeLinkBased(gc operators.GadgetContext, p *ebpf.ProgramSpec) error {
 	if i.programAttachTarget(p) == disabledProgram {
 		return nil
@@ -152,6 +169,16 @@ func (i *ebpfInstance) checkNativeLinkBased(gc operators.GadgetContext, p *ebpf.
 			strings.HasPrefix(p.SectionName, tpBtfPrefix) {
 			return nil
 		}
+	case ebpf.Kprobe:
+		// kprobe/kretprobe attach through a BPF perf-event link; the linkless
+		// ioctl fallback is refused after attach (nativeNeedsLinkInfo).
+		// uprobe/usdt go through the uprobe tracer and stay refused.
+		if strings.HasPrefix(p.SectionName, kprobePrefix) || strings.HasPrefix(p.SectionName, kretprobePrefix) {
+			return nil
+		}
+	case ebpf.RawTracepoint:
+		// link.AttachRawTracepoint creates a BPF_LINK_TYPE_RAW_TRACEPOINT link.
+		return nil
 	case ebpf.SchedCLS:
 		recovery, err := i.nativeRecoveryTestRunProgram(gc, p)
 		if err != nil {
@@ -161,7 +188,14 @@ func (i *ebpfInstance) checkNativeLinkBased(gc operators.GadgetContext, p *ebpf.
 			return nil
 		}
 	}
-	return fmt.Errorf("native program %q (%s, section %q) does not attach through a bpf link; native families admit only LSM and fentry/fexit/tp_btf links", p.Name, p.Type, p.SectionName)
+	return fmt.Errorf("native program %q (%s, section %q) does not attach through a bpf link; native families admit only LSM, fentry/fexit/tp_btf, kprobe/kretprobe and raw_tp links", p.Name, p.Type, p.SectionName)
+}
+
+// nativeNeedsLinkInfo reports the admitted program types whose attach path
+// can fall back to a linkless attachment, so the step itself must see a bpf
+// link ID. LSM/tracing links are always links; their receipt requires it too.
+func nativeNeedsLinkInfo(p *ebpf.ProgramSpec) bool {
+	return p.Type == ebpf.Kprobe || p.Type == ebpf.RawTracepoint
 }
 
 func nativeAttachReserve(gc operators.GadgetContext) (int, error) {

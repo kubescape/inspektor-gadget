@@ -392,6 +392,11 @@ se_op_abort_semantic_birth(struct se_oc_reservation *reservation)
 #ifdef SE_OP_ABORTED_WITNESS
 		SE_OP_ABORTED_WITNESS(); /* test-only exact-abort count */
 #endif
+#ifdef SE_REAP_EVENT
+		/* Product reaper wakeup only (G019 M1); never authority. */
+		SE_REAP_EVENT(TASK_ABORTED, reservation->task_slot,
+			      reservation->cookie);
+#endif
 		return SE_OL_OK;
 	}
 	__u32 local = reservation->task_slot -

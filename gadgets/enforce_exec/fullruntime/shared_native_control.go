@@ -364,29 +364,48 @@ func newSharedControl(ctx context.Context, profile SharedProfile, r sharedContro
 	for i, count := range profile.PolicySlots {
 		c.config.Slots[i] = uint32(count)
 	}
-	c.thread, err = startControlThread(func() error {
-		fd, err := unix.PidfdOpen(unix.Gettid(), pidfdThread)
-		if err != nil {
-			return fmt.Errorf("shared admin PIDFD_THREAD: %w", err)
-		}
-		defer unix.Close(fd)
-		if err = r.maps["se_admin"].Put(uint32(fd), nonce); err != nil {
-			return err
-		}
-		if err = r.maps["se_admin"].Freeze(); err != nil {
-			return err
-		}
-		if err = r.maps["se_configuration"].Put(uint32(0), c.config); err != nil {
-			return err
-		}
-		return r.maps["se_configuration"].Freeze()
-	})
+	c.thread, err = installSharedAdmin(r.maps["se_admin"], r.maps["se_configuration"], c.config)
 	// Retain partial setup ownership until host collection teardown. Frozen maps
 	// and dead-thread task storage are NOT proof of physical reclamation.
 	if err != nil {
 		return c, err
 	}
 	return c, ctx.Err()
+}
+
+// sharedAdminMap is the part of *ebpf.Map the admin install uses.
+type sharedAdminMap interface {
+	Put(key, value interface{}) error
+	Freeze() error
+}
+
+// installSharedAdmin starts the node's single admin thread. On that locked OS
+// thread it writes the thread's se_admin task-storage nonce (keyed by its own
+// PIDFD_THREAD) and the node configuration, then freezes both, so exactly
+// this physical thread holds command authority for the collection's
+// lifetime. Shared by the protocol control (newSharedControl) and the
+// product control (newSharedProductControl, G019 M4 section 2).
+func installSharedAdmin(admin, configuration sharedAdminMap, config sharedNodeWire) (*controlThread, error) {
+	if admin == nil || configuration == nil {
+		return nil, fmt.Errorf("shared admin maps unavailable")
+	}
+	return startControlThread(func() error {
+		fd, err := unix.PidfdOpen(unix.Gettid(), pidfdThread)
+		if err != nil {
+			return fmt.Errorf("shared admin PIDFD_THREAD: %w", err)
+		}
+		defer unix.Close(fd)
+		if err = admin.Put(uint32(fd), config.Nonce); err != nil {
+			return err
+		}
+		if err = admin.Freeze(); err != nil {
+			return err
+		}
+		if err = configuration.Put(uint32(0), config); err != nil {
+			return err
+		}
+		return configuration.Freeze()
+	})
 }
 
 // sharedCommandTransport is the existing map/syscall exchange, isolated only

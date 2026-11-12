@@ -114,6 +114,19 @@ func TestSharedOpaqueLocatorReaderCatalogueHostCandidate(t *testing.T) {
 		"-DENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE=1")
 }
 
+// G019 gap 3 (product publisher, per-record route holders): a reader and a
+// parked birth claim of a RETIRING record evaluate against the identical
+// write-once catalogue after the next commit; an epoch change (E+1 or 0)
+// fails closed. This variant runs only those scenarios.
+func TestSharedOpaqueLocatorRetiringCatalogueHostCandidate(t *testing.T) {
+	runSharedPoolCoreHostCandidate(t, "opaque_locator_candidate.c", "opaque locator candidate host regressions: PASS",
+		"-DENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE=1",
+		"-DENFORCE_EXEC_POOL_OPAQUE_WORK_SEMANTIC_CANDIDATE=1",
+		"-DENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE=1",
+		"-DENFORCE_EXEC_SOURCE_MODE_PIN_CANDIDATE=1",
+		"-DENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE=1")
+}
+
 func TestSharedOpaqueLocatorReaderCatalogueB2T128HostCandidate(t *testing.T) {
 	runSharedPoolCoreHostCandidate(t, "opaque_locator_candidate.c", "opaque locator candidate host regressions: PASS",
 		"-DENFORCE_EXEC_POOL_OPAQUE_TASK_SEMANTIC_CANDIDATE=1",

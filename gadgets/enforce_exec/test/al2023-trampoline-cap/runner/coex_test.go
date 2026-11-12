@@ -22,3 +22,22 @@ func TestCoexFillersAtReserveBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestCandidateAttachSetProductShape pins the runner's attach set to the
+// product's 8-link shape (fullruntime sharedCandidateAttachSet), including
+// the exec capsule's death retire on task_free.
+func TestCandidateAttachSetProductShape(t *testing.T) {
+	want := []string{
+		"opaque_real_owner_child_final_free_candidate",
+		"opaque_real_owner_child_source_candidate",
+		"opaque_real_owner_failure_fexit_probe",
+		"opaque_real_owner_reader_begin_probe",
+		"real_owner_capsule_begin",
+		"real_owner_capsule_entry",
+		"real_owner_capsule_free",
+		"real_owner_capsule_terminal",
+	}
+	if got := slices.Sorted(slices.Values(candidateAttachSet)); !slices.Equal(got, want) {
+		t.Fatalf("candidateAttachSet %v, want %v", got, want)
+	}
+}

@@ -99,6 +99,14 @@ static __attribute__((always_inline)) inline __u32
 se_oc_bitmap_count(const struct se_oc_account *account)
 {
 	__u32 count = 0;
+	/* Above 4 words (a TASK quota above 256) the loop stays a loop: unrolled,
+	 * each word's popcount keeps its own registers and spills, which grows
+	 * every caller's frame by about 16 bytes per word and pushes the fork
+	 * source and the task_alloc target past 512 bytes. 4 words or fewer
+	 * keep the unrolled form (token-identical objects). */
+#if SE_OC_WORDS > 4
+#pragma clang loop unroll(disable)
+#endif
 	for (__u32 i = 0; i < SE_OC_WORDS; i++) {
 		__u64 bits = account->bits[i];
 #if SE_OC_QUOTA % 64U

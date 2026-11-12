@@ -7,6 +7,8 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -215,6 +217,16 @@ func TestSharedOpaqueOwnerGeometryRequiresTaskAndWorkTogether(t *testing.T) {
 	p.PerBinding.Scratch = 63
 	if _, _, err := sharedOpaqueOwnerGeometry(p); err == nil {
 		t.Fatal("unpartitioned WORK credit accepted")
+	}
+	// WORK quota: a power of two of 1..64 credits per binding (the verdict
+	// source's static assert refuses any other quota; it bounds its own to 32).
+	for quota := uint64(1); quota <= 65; quota++ {
+		q := good
+		q.PerBinding.Scratch, q.Scratch = quota, q.Bindings*quota
+		_, _, err := sharedOpaqueOwnerGeometry(q)
+		if want := quota <= 64 && quota&(quota-1) == 0; (err == nil) != want {
+			t.Fatalf("WORK quota %d per binding: accepted=%v, want %v (%v)", quota, err == nil, want, err)
+		}
 	}
 	node, err := NewNodeEnforcer(SharedNodeConfig{Profile: good, ABI3Development: true, Image: "test:opaque-owner"})
 	if err != nil {
@@ -502,4 +514,62 @@ func TestSharedImageCompiledInventory(t *testing.T) {
 		t.Fatalf("unexpected actual manifest: maps%d programs%d usage%+v", len(r.Maps), len(r.Programs), u)
 	}
 	t.Logf("actual ELF: %d maps, %d programs, %d encoded instruction words; fixed inode pools remain unqualified/unadmitted", len(r.Maps), len(r.Programs), u.ProgramInstructions)
+}
+
+// TestSharedProductAdmissionRefusesTwinMaps (security review M-2): the
+// publication fault injector and the fail-closed injector maps are refused
+// by name on the product path, before any allowlist; the tagged
+// qualification path still admits the twin.
+func TestSharedProductAdmissionRefusesTwinMaps(t *testing.T) {
+	twin := sharedProductManifest(sharedCandidateQualificationProfile())
+	twin.Maps["opaque_real_publish_fault"] = operators.NativeMapResource{Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 4, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG}
+	n, err := NewNodeEnforcer(sharedQualifiedConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.admitSharedResources(twin); err == nil || !strings.Contains(err.Error(), "opaque_real_publish_fault") {
+		t.Fatalf("product admission of the twin: %v, want a refusal naming the injector", err)
+	}
+	if _, err := validateSharedOpaqueOwnerResources(sharedCandidateQualificationProfile(), twin); err == nil || !strings.Contains(err.Error(), "diagnostic-twin map opaque_real_publish_fault") {
+		t.Fatalf("owner validator: %v, want the named refusal first", err)
+	}
+	// The twin's fail-closed (and stale-resume) injector maps are refused by name too, each
+	// alone on an otherwise clean product manifest.
+	injectors := map[string]operators.NativeMapResource{
+		"opaque_real_fc_inject_selector":   {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 24, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
+		"opaque_real_fc_inject_counts":     {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 6, Flags: unix.BPF_F_RDONLY},
+		"opaque_real_fc_pending_marked":    {Type: uint32(ebpf.LRUHash), KeySize: 16, ValueSize: 4, MaxEntries: 4096, Flags: unix.BPF_F_RDONLY},
+		"opaque_real_fc_inject_ext":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 16, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
+		"opaque_real_fc_inject_ext_counts": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 6, Flags: unix.BPF_F_RDONLY},
+		"opaque_real_interp_stale_resume":  {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 1},
+	}
+	if len(injectors) != len(sharedProductForbiddenMaps)-1 {
+		t.Fatalf("forbidden maps %v, injector cases %d", sharedProductForbiddenMaps, len(injectors))
+	}
+	for name, m := range injectors {
+		if !slices.Contains(sharedProductForbiddenMaps, name) {
+			t.Errorf("%s is not in sharedProductForbiddenMaps", name)
+		}
+		r := sharedProductManifest(sharedCandidateQualificationProfile())
+		r.Maps[name] = m
+		if err := n.admitSharedResources(r); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("product admission with %s: %v, want a refusal naming it", name, err)
+		}
+		if _, err := validateSharedOpaqueOwnerResources(sharedCandidateQualificationProfile(), r); err == nil || !strings.Contains(err.Error(), "diagnostic-twin map "+name) {
+			t.Errorf("owner validator with %s: %v, want the named refusal first", name, err)
+		}
+	}
+	sharedEnableQualification(t)
+	host := &sharedFakeNativeHost{manifest: twin}
+	qual := host.qualification(nil)
+	qual.newProductPublisher = func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error) {
+		return newSharedFakePublisher(), nil // admission is under test, not the borrow
+	}
+	q, err := StartNode(WithSharedNodeQualification(t.Context(), qual), sharedQualifiedConfig())
+	if err != nil {
+		t.Fatalf("qualified path refused the twin: %v", err)
+	}
+	if err := q.StopNode(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 }

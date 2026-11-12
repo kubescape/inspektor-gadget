@@ -16,7 +16,17 @@
  * claim stable through final publication, and abort/fault the WORK on any
  * non-OK result. The lookup must return ER_UNKNOWN on unavailable evidence;
  * zero means COMPLETE history proves the UID was never accepted. No helper is
- * called under a spinlock. Scope/generation publish only after all rows. */
+ * called under a spinlock. Scope/generation publish only after all rows: the
+ * cache is tagged with the reader's (or the parked birth claim's) own
+ * generation, which may be a RETIRING record's (G019 gap 3), and every
+ * consumer (se_pool_catalogue_classify_after_authority,
+ * se_pool_catalogue_projection_matches) refuses another scope or generation.
+ * The rows stay valid across a later commit of the same binding: the product
+ * catalogue is write-once per (scope, UID) for the binding's lifetime (the
+ * revision refuses a UID, class or root epoch change; real_owner_epoch_bind
+ * inserts BPF_NOEXIST into the index; real_owner_epoch_cell_ready accepts
+ * only an equal epoch; real_owner_recycle_clean clears a scope with both
+ * records FREE); a mismatch fails closed (CORRUPT). */
 static __attribute__((always_inline)) inline int
 se_owk_catalogue_fill_after_authority(struct se_owk_semantic_handle *handle,
 				      __u64 scope, __u64 generation)

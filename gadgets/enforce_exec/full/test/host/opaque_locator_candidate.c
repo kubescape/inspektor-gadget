@@ -1727,6 +1727,49 @@ static void opaque_work_credit_requires_held_exact_task(void)
 	assert(se_owk_begin(&owner, 1, &duplicate) == SE_OL_CORRUPT);
 	assert(!held && !lock_errors);
 }
+/* chain15 burst-nosync-s6: between a caller's slot choice/cookie and its
+ * reserve, a newer WORK was charged, settled and returned at the same slot
+ * (by the reaper or the synchronous return). The slot is free and intact;
+ * only the caller's cookie is older than the slot's last return. CONTENDED
+ * (retry with a fresh cookie), never an account fault; a retry with a
+ * newer cookie charges the slot. */
+static void opaque_work_reserve_older_cookie_is_contended(void)
+{
+	__u64 key = seed_live_opaque_task_for_open();
+	struct se_ol_payload_handle owner = {};
+	struct se_owk_ticket ticket = {};
+	assert(se_ol_task_open(&key, &owner) == SE_OL_OK);
+	assert(se_owk_bind_owner(&owner) == SE_OL_OK);
+	/* The next cookie this caller allocates is 1; slot 0 already saw 5,
+	 * returned completely (its metadata FREE under cookie 5). */
+	work_charges[0].last_returned = 5;
+	work_metas[0].cookie = 5;
+	work_metas[0].cleanup_done = 3;
+	assert(se_owk_begin(&owner, 0, &ticket) == SE_OL_CONTENDED &&
+	       !ticket.held && !work_accounts[0].used &&
+	       !work_accounts[0].fault && !work_charges[0].cookie);
+	work_sequence.next_cookie = 9; /* the retry's cookie is newer */
+	assert(se_owk_begin(&owner, 0, &ticket) == SE_OL_OK && ticket.held &&
+	       work_accounts[0].used == 1 && !work_accounts[0].fault &&
+	       work_charges[0].cookie == 10);
+	assert(!held && !lock_errors);
+}
+/* Review M1: a FREE slot whose last return EQUALS the caller's cookie is not
+ * a reuse (cookies are unique): it stays an account fault. */
+static void opaque_work_reserve_equal_cookie_faults(void)
+{
+	__u64 key = seed_live_opaque_task_for_open();
+	struct se_ol_payload_handle owner = {};
+	struct se_owk_ticket ticket = {};
+	assert(se_ol_task_open(&key, &owner) == SE_OL_OK);
+	assert(se_owk_bind_owner(&owner) == SE_OL_OK);
+	work_charges[0].last_returned = 1; /* the caller's next cookie is 1 */
+	work_metas[0].cookie = 1;
+	work_metas[0].cleanup_done = 3;
+	assert(se_owk_begin(&owner, 0, &ticket) == SE_OL_CORRUPT &&
+	       !ticket.held && work_accounts[0].fault);
+	assert(!held && !lock_errors);
+}
 static void opaque_work_credit_fails_closed_on_owner_or_account_fault(void)
 {
 	__u64 key = seed_live_opaque_task_for_open();
@@ -4401,8 +4444,221 @@ static void opaque_reserve_retries_interleaved_winners(void)
 	       accounts[0].bits[0] == 0x1ff && !held && !lock_errors);
 #endif
 }
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE)
+/* G019 gap 3: a reader (or a parked birth claim) of generation 1 keeps its
+ * record after generation 2 commits (record 0 RETIRING). Its catalogue is
+ * the binding's write-once (scope, UID) cell: the cache it fills after the
+ * commit is identical, and any epoch change fails closed. */
+struct opaque_retiring_fixture {
+	struct se_ol_payload_handle owner;
+	struct se_owk_ticket ticket;
+	struct se_owk_semantic_handle handle;
+	struct se_invocation *work;
+	struct se_task_state *task;
+};
+static void opaque_retiring_open(struct opaque_retiring_fixture *f)
+{
+	__u64 key = seed_live_opaque_task_for_open();
+	__u32 slot = 0;
+	*f = (struct opaque_retiring_fixture){};
+	assert(se_ol_task_open(&key, &f->owner) == SE_OL_OK);
+	assert(se_owk_bind_owner(&f->owner) == SE_OL_OK);
+	assert(se_owk_choose(&f->owner, &slot) == SE_OL_OK && slot == 0);
+	assert(se_owk_begin(&f->owner, slot, &f->ticket) == SE_OL_OK);
+	assert(se_owk_attach_owner(&f->owner, &f->ticket) == SE_OL_OK);
+	assert(se_owk_initialize_payload(&f->owner, &f->ticket) == SE_OL_OK);
+	assert(se_owk_commit(&f->owner, &f->ticket) == SE_OL_OK);
+	assert(se_owk_semantic_open(&f->owner, &f->ticket, &f->handle,
+				    &f->work) == SE_OL_OK);
+	f->task = &payloads[0].semantic;
+	f->task->exec = (struct se_exec_transaction){
+		.owned = 1,
+		.bprm = 0x1234,
+		.sequence = 9,
+		.generation = 1,
+		.execution_class = 1,
+		.policy_count = 1,
+	};
+	routes[0] = (struct se_route_anchor){
+		.incarnation = 1,
+		.cgroup_identity = 7,
+		.scope = 10,
+		.payload_slot = 0,
+		.payload_generation = 1,
+		.active_serial = 1,
+		.execution_class = 1,
+		.phase = SE_ROUTE_ACTIVE,
+		.rec = { { .serial = 1,
+			   .generation = 1,
+			   .phase = SE_SNAPSHOT_ACTIVE } },
+	};
+	bindings[0] = (struct se_binding_snapshots){
+		.scope = 10,
+		.generation = 1,
+		.active_serial = 1,
+		.records = { { .scope = 10,
+			       .serial = 1,
+			       .generation = 1,
+			       .phase = SE_SNAPSHOT_ACTIVE,
+			       .execution_class = 1 } },
+	};
+	f->task->committed.version = 7;
+	f->task->committed.rows[0] = er_known_row(1, 13, 3);
+	se_exec_snapshot_locked(f->task, 1, &f->work->history);
+}
+/* Generation 2 commits into record 1; record 0 keeps its holders. */
+static void opaque_retiring_commit(void)
+{
+	bindings[0].generation = 2;
+	bindings[0].active_record = 1;
+	bindings[0].active_serial = 2;
+	bindings[0].records[0].phase = SE_SNAPSHOT_RETIRING;
+	bindings[0].records[1] = (struct se_snapshot){
+		.scope = 10,
+		.serial = 2,
+		.generation = 2,
+		.phase = SE_SNAPSHOT_ACTIVE,
+		.execution_class = 1,
+	};
+	routes[0].payload_generation = 2;
+	routes[0].active_serial = 2;
+	routes[0].active_record = 1;
+	routes[0].rec[0].phase = SE_SNAPSHOT_RETIRING;
+	routes[0].rec[1] = (struct se_route_rec){ .serial = 2,
+						  .generation = 2,
+						  .phase = SE_SNAPSHOT_ACTIVE };
+}
+static void opaque_retiring_close(struct opaque_retiring_fixture *f)
+{
+	assert(se_owk_semantic_done(&f->handle, &f->work) == SE_OL_OK);
+	assert(se_ol_payload_close(&f->owner) == SE_OL_OK);
+	assert(!held && !lock_errors);
+	opaque_catalogue_epoch = 13;
+}
+static void opaque_retiring_reader(struct opaque_retiring_fixture *f)
+{
+	struct se_route_claim claim = {};
+	bpf_spin_lock(&routes[0].lock);
+	assert(se_route_claim_locked(&routes[0], se_route_locator(0, 1), 7,
+				     &claim) == SE_ROUTE_OWNED);
+	assert(!se_exec_reader_attach_locked(&routes[0], &bindings[0], f->task,
+					     &claim, f->owner.lease.cookie,
+					     f->task->exec.sequence));
+	bpf_spin_unlock(&routes[0].lock);
+	assert(bindings[0].records[0].claims == 1 && !routes[0].early_claims);
+}
+
+/* (a) The reader's catalogue after the commit is the identical one. */
+static void retiring_reader_catalogue_after_commit_is_identical(void)
+{
+	struct opaque_retiring_fixture f;
+	opaque_retiring_open(&f);
+	opaque_retiring_reader(&f);
+	assert(se_owk_catalogue_fill_reader(&f.handle) == SE_OL_OK);
+	struct se_pool_epoch_cache before = f.handle.payload->catalogue;
+	opaque_retiring_commit();
+	f.handle.payload->catalogue = (struct se_pool_epoch_cache){};
+	assert(se_owk_catalogue_fill_reader(&f.handle) == SE_OL_OK);
+	assert(!memcmp(&before, &f.handle.payload->catalogue, sizeof(before)));
+	assert(se_owk_catalogue_classify_reader(&f.handle) == SE_OL_OK &&
+	       f.work->history.view.accepted_mask == 1);
+	/* The reader releases on its RETIRING record. */
+	bpf_spin_lock(&routes[0].lock);
+	assert(!se_exec_reader_release_locked(&bindings[0], f.task,
+					      f.owner.lease.cookie,
+					      f.task->exec.sequence));
+	bpf_spin_unlock(&routes[0].lock);
+	assert(!bindings[0].records[0].claims);
+	opaque_retiring_close(&f);
+}
+
+/* (b) An epoch changed behind the reader (E+1) fails closed: CORRUPT, no
+ * accepted role. */
+static void retiring_reader_epoch_mismatch_fails_closed(void)
+{
+	struct opaque_retiring_fixture f;
+	opaque_retiring_open(&f);
+	opaque_retiring_reader(&f);
+	opaque_retiring_commit();
+	opaque_catalogue_epoch = 14;
+	assert(se_owk_catalogue_fill_reader(&f.handle) == SE_OL_OK);
+	assert(se_owk_catalogue_classify_reader(&f.handle) == SE_OL_CORRUPT &&
+	       !f.work->history.view.accepted_mask);
+	bindings[0].records[0].claims = 0;
+	opaque_retiring_close(&f);
+}
+
+/* (c) An epoch 0 cell (never activated) fails the role fill closed. */
+static void retiring_reader_epoch_zero_fails_closed(void)
+{
+	struct opaque_retiring_fixture f;
+	opaque_retiring_open(&f);
+	opaque_retiring_reader(&f);
+	opaque_retiring_commit();
+	opaque_catalogue_epoch = 0;
+	/* The present index's cell reads ER_UNKNOWN (se_catalogue_read). */
+	assert(se_owk_catalogue_fill_reader(&f.handle) == SE_OL_CORRUPT);
+	assert(!f.handle.payload->catalogue.scope &&
+	       !f.handle.payload->catalogue.generation);
+	bindings[0].records[0].claims = 0;
+	opaque_retiring_close(&f);
+}
+
+/* (d) A parked birth claim of generation 1 (record 0) projects against the
+ * identical catalogue after generation 2 commits, and fails closed when the
+ * epoch changed. */
+static void retiring_parked_claim_projects_exactly(void)
+{
+	struct opaque_retiring_fixture f;
+	opaque_retiring_open(&f);
+	struct se_route_claim parked = {};
+	bpf_spin_lock(&routes[0].lock);
+	assert(se_route_claim_locked(&routes[0], se_route_locator(0, 1), 7,
+				     &parked) == SE_ROUTE_OWNED &&
+	       parked.record == 0);
+	bpf_spin_unlock(&routes[0].lock);
+	opaque_retiring_commit();
+	bpf_spin_lock(&routes[0].lock);
+	assert(se_route_claim_valid(&routes[0], &parked));
+	bpf_spin_unlock(&routes[0].lock);
+	assert(se_owk_catalogue_fill(&f.handle, &parked) == SE_OL_OK);
+	assert(!se_pool_catalogue_classify_after_authority(
+		       &f.work->history.view, &f.handle.payload->catalogue, 10,
+		       1) &&
+	       f.work->history.view.accepted_mask == 1);
+	opaque_catalogue_epoch = 14;
+	f.handle.payload->catalogue = (struct se_pool_epoch_cache){};
+	assert(se_owk_catalogue_fill(&f.handle, &parked) == SE_OL_OK);
+	assert(se_pool_catalogue_classify_after_authority(
+		       &f.work->history.view, &f.handle.payload->catalogue, 10,
+		       1) &&
+	       !f.work->history.view.accepted_mask);
+	bpf_spin_lock(&routes[0].lock);
+	assert(!se_route_release_locked(&routes[0], &parked));
+	bpf_spin_unlock(&routes[0].lock);
+	assert(!routes[0].early_claims && !routes[0].rec[0].early_claims);
+	opaque_retiring_close(&f);
+}
+#endif
+
 int main(void)
 {
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE)
+	/* The product variant (per-record route holders, G019 gap 3) runs only
+	 * its own scenarios: every other one seeds pre-gap-3 routes. */
+	reset();
+	retiring_reader_catalogue_after_commit_is_identical();
+	reset();
+	retiring_reader_epoch_mismatch_fails_closed();
+	reset();
+	retiring_reader_epoch_zero_fails_closed();
+	reset();
+	retiring_parked_claim_projects_exactly();
+	puts("opaque locator candidate host regressions: PASS");
+	return 0;
+#endif
 	normal_lease();
 	recycled_backing_wrong_key();
 	same_key_successor_before_hold();
@@ -4442,6 +4698,11 @@ int main(void)
 	opaque_task_open_is_one_exact_lexical_lease();
 	opaque_work_credit_requires_held_exact_task();
 	opaque_work_credit_fails_closed_on_owner_or_account_fault();
+	reset();
+	opaque_work_reserve_older_cookie_is_contended();
+	reset();
+	opaque_work_reserve_equal_cookie_faults();
+	reset();
 	opaque_work_precharge_pin_rolls_back_after_death();
 	opaque_work_abort_building_quarantines_faulted_account();
 	opaque_work_credit_partition_and_limit();

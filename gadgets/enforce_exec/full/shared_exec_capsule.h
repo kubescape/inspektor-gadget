@@ -10,15 +10,32 @@
  * WRONG class. This capsule freezes the ORIGINAL class at first selected
  * policy admission in infallible storage.
  *
- * Storage and identity:
- *  - Capsules live in a preallocated ARRAY indexed by the INITIAL-namespace
- *    TGID. The index is a lookup key only. An admission identifies its exec
- *    by the exact task pointer + bprm pointer (the LSM hook cannot know its
- *    sequence); FRESHNESS against task/bprm address reuse comes from every
- *    covered begin unconditionally retiring the previous capsule, and the
- *    nonwrapping sequence binds retire and the route pin to one exec.
+ * Storage and identity (two adapters, same state machine):
+ *  - ARRAY adapter (host contract, early spikes): capsules live in a
+ *    preallocated ARRAY indexed by the INITIAL-namespace TGID; the index is a
+ *    lookup key only, and every lookup "creates" (the slot always exists).
+ *  - Task-storage adapter (SE_CAP_ABSENT_OK; the verdict object, G019 M4
+ *    user decision (ii)): capsule and marker live in BPF task local storage
+ *    on the EXECUTING task. SE_CAP_LOOKUP never creates; SE_CAP_CREATE (and
+ *    SE_CAP_MARKER_CREATE) create, and only for an exec that can matter
+ *    (SE_CAP_MATTERS: the current cgroup has a route-index entry or the task
+ *    holds a TASK key) or at the first selected admission. Absent storage is
+ *    then "no capsule" (an exec that never mattered), not a fault; a failed
+ *    create where one is needed is a capsule fault (degrade: the caller
+ *    counts ADMISSION, Strict denies, Audit stays nonblocking but counted).
+ *    The storage dies with the task: a missed terminal's FROZEN+PINNED
+ *    capsule is retired at lsm/task_free (se_cap_on_free, its own program,
+ *    which runs before the kernel frees the task's storage), so no route pin
+ *    outlives its task, and a reused task_struct address starts with no
+ *    capsule at all.
+ *  An admission identifies its exec by the exact task pointer + bprm pointer
+ *  (the LSM hook cannot know its sequence); FRESHNESS against task/bprm
+ *  address reuse comes from every covered begin unconditionally retiring the
+ *  previous capsule, and the nonwrapping sequence binds retire and the route
+ *  pin to one exec.
  *
  * HARD loader invariant (part of the coverage proof, not a suggestion):
+ * (task-storage adapter: first the lsm/task_free death retire, then)
  * attach fexit/bprm_execve, then fentry/bprm_execve, then
  * fentry/security_bprm_creds_for_exec, then the LSM admission; detach in the
  * exact reverse order. Any other order can leave uncovered frozen capsules
@@ -54,6 +71,21 @@
  * admission. de_thread()/exchange_tids() does not change the TGID or the
  * executing task pointer.
  *
+ * Per-task terminal proof (task-storage adapter): a task runs at most one
+ * bprm_execve at a time, and entry, begin, every admission and the terminal
+ * of that exec all run in the executing task (de_thread keeps its pointer),
+ * so they all reach the same storage. Another thread of the same TGID has
+ * its own storage and can never touch this capsule; the cred_guard_mutex
+ * premise above is no longer needed for capsule exclusivity (it still
+ * orders begin against other threads' execs). A non-FREE capsule found at
+ * this task's next begin is a finished exec of THIS task whose terminal was
+ * missed, and is retired (as before). A task that dies with a non-FREE
+ * capsule had its terminal missed: se_cap_on_free retires it (pin released
+ * under the original route lock) before the storage is freed. The only
+ * remaining leak window is a skipped task_free program, which leaves the
+ * pin and the route's unresolved latch exactly as a failed release does
+ * today (publication refused, counted RELEASE_FAULT on any later retire).
+ *
  * Locks: the capsule lock guards phase/task/bprm/sequence/flags/class. The
  * embedded owner is guarded ONLY by the original route lock named by its
  * token. Never hold both: BPF forbids nested spin locks.
@@ -79,6 +111,11 @@
 	4U /* frozen without a covered begin: no terminal
 			       * guarantee, so no pin is ever taken */
 #define SE_CAP_F_PIN_FAILED 8U /* pin intent abandoned: acquire failed */
+#define SE_CAP_F_IDENT \
+	16U /* uncovered OWNED freeze: owner.token holds the
+			       * original route's identity (no pin, owner.owned
+			       * stays 0); later admissions of this exec
+			       * re-claim exactly that route and payload */
 
 struct se_exec_capsule {
 	struct bpf_spin_lock lock;
@@ -106,6 +143,15 @@ struct se_cap_view {
 #define SE_CAP_UNCOVERED 3 /* FREE: no covered begin observed */
 #define SE_CAP_STALE 4 /* another finished exec's capsule; retire first */
 #define SE_CAP_BUSY 5 /* RETIRING: violates serialization premise */
+
+/* G019 gap 4 (review H1): admission-order bit ORed into *frozen_class by
+ * se_cap_admit when SE_CAP_REPORT_LATER is defined. It is set only for a
+ * MINE_FROZEN admission with a valid frozen class: a later bprm_check of
+ * the SAME physical exec whose first selected admission already froze the
+ * class (a script's interpreter pass). A first admission (MINE_OPEN,
+ * UNCOVERED, or a STALE capsule retired at a reused bprm address) never
+ * carries it. Callers that compare classes must mask it first. */
+#define SE_CAP_LATER (1U << 8)
 
 /* Begin/terminal results. */
 #define SE_CAP_OK 0
@@ -185,10 +231,17 @@ se_cap_begin_locked(struct se_exec_capsule *c, __u64 task, __u64 bprm,
 /* Admission classification under the capsule lock. */
 static __attribute__((always_inline)) inline int
 se_cap_classify_locked(struct se_exec_capsule *c, __u64 task, __u64 bprm,
-		       struct se_cap_view *v)
+		       int entry_pending, struct se_cap_view *v)
 {
 	se_cap_view_locked(c, v);
-	if (se_cap_mine(c, task, bprm))
+	/* Defense in depth (review follow-up): a capsule is this exec's only
+	 * if THIS exec opened it. Every capsule open consumes the opening
+	 * exec's entry marker (covered begin, or the uncovered first selected
+	 * admission), so an entry marker still pending for this task/bprm
+	 * means the current exec has opened nothing yet: a capsule matching
+	 * task/bprm is then an earlier exec at a reused bprm address whose
+	 * terminal and retiring begin were both missed. Stale, never mine. */
+	if (!entry_pending && se_cap_mine(c, task, bprm))
 		return c->phase == SE_CAP_FROZEN ? SE_CAP_MINE_FROZEN :
 						   SE_CAP_MINE_OPEN;
 	if (c->phase == SE_CAP_FREE)
@@ -234,10 +287,9 @@ se_cap_pin_failed_locked(struct se_exec_capsule *c, __u64 sequence)
 /* First selected admission of an exec whose begin was not covered (late
  * attach). The class is still the original class at first policy admission,
  * but no pin is taken: no terminal is guaranteed to release it. */
-static __attribute__((always_inline)) inline int
-se_cap_freeze_uncovered_locked(struct se_exec_capsule *c, __u64 task,
-			       __u64 bprm, __u64 sequence,
-			       __u32 execution_class)
+static __attribute__((always_inline)) inline int se_cap_freeze_uncovered_locked(
+	struct se_exec_capsule *c, __u64 task, __u64 bprm, __u64 sequence,
+	__u32 execution_class, const struct se_route_claim *ident)
 {
 	if (execution_class < 1 || execution_class > 2 ||
 	    c->phase != SE_CAP_FREE || !task || !bprm || !sequence ||
@@ -247,6 +299,23 @@ se_cap_freeze_uncovered_locked(struct se_exec_capsule *c, __u64 task,
 	c->bprm = bprm;
 	c->sequence = sequence;
 	c->flags = SE_CAP_F_UNCOVERED;
+	/* Unpinned, so owner.owned is 0 and no route lock reader consults the
+	 * owner: the token only records the original route's identity, read
+	 * back by later admissions of this same exec (one task, serialized). */
+	c->owner.owned = 0;
+	c->owner.token = (struct se_source_mode_token){ 0 };
+	if (ident && ident->owned &&
+	    ident->execution_class == execution_class) {
+		c->owner.token.slot = ident->slot;
+		c->owner.token.incarnation = ident->incarnation;
+		c->owner.token.scope = ident->scope;
+		c->owner.token.generation = ident->generation;
+		c->owner.token.execution_class = execution_class;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+		c->owner.token.record = ident->record & 1;
+#endif
+		c->flags |= SE_CAP_F_IDENT;
+	}
 	c->execution_class = execution_class;
 	c->phase = SE_CAP_FROZEN;
 	return SE_CAP_OK;
@@ -331,20 +400,55 @@ se_cap_release_pin_locked(struct se_route_anchor *a, struct se_exec_capsule *c,
 #define SE_CAP_STAT_CHECK_ONLY 11
 #define SE_CAP_STAT_RELEASE_FAULT 12
 #define SE_CAP_STAT_FAULT 13
-#define SE_CAP_STATS 14
+#define SE_CAP_STAT_DEATH_RETIRED 14 /* non-FREE capsule retired at task_free */
+#define SE_CAP_STATS 15
 #ifndef SE_CAP_STAT
 #define SE_CAP_STAT(index) \
 	do {               \
 	} while (0)
 #endif
+/* ARRAY adapter defaults: every lookup is a creation and every exec
+ * matters, so a missing slot is a fault (the original contract). */
+#ifndef SE_CAP_CREATE
+#define SE_CAP_CREATE(tgid) SE_CAP_LOOKUP(tgid)
+#endif
+#ifndef SE_CAP_MARKER_CREATE
+#define SE_CAP_MARKER_CREATE(pid) SE_CAP_MARKER_LOOKUP(pid)
+#endif
+#ifndef SE_CAP_MATTERS
+#define SE_CAP_MATTERS() 1
+#endif
+#ifdef SE_CAP_ABSENT_OK
+#define SE_CAP_ABSENT_IS_FAULT(needed) (needed)
+#else
+#define SE_CAP_ABSENT_IS_FAULT(needed) 1
+#endif
 
+#if defined(SE_CAP_ENTRY_MARKS_LIVE_CAPSULE) && !defined(SE_CAP_ABSENT_OK)
+#error "SE_CAP_ENTRY_MARKS_LIVE_CAPSULE requires the task-storage adapter"
+#endif
 static __attribute__((always_inline)) inline void
 se_cap_on_entry(__u32 pid, __u64 task, __u64 bprm)
 {
-	struct se_exec_marker *m = SE_CAP_MARKER_LOOKUP(pid);
+	int cap_matters = SE_CAP_MATTERS();
+#ifdef SE_CAP_ENTRY_MARKS_LIVE_CAPSULE
+	/* Review OQ (task-storage adapter, keyed by the current task: the
+	 * argument is unused): a capsule still OPEN, FROZEN or RETIRING at an
+	 * exec's entry belongs to an earlier exec whose terminal was missed.
+	 * Mark this exec even if it does not matter yet, so that if its begin
+	 * also misses, its first admission sees the pending marker and retires
+	 * that capsule as stale (se_cap_classify_locked), never re-claiming the
+	 * earlier exec's route at a reused bprm address. */
+	if (!cap_matters) {
+		struct se_exec_capsule *live = SE_CAP_LOOKUP(pid);
+		cap_matters = live && live->phase != SE_CAP_FREE;
+	}
+#endif
+	struct se_exec_marker *m = cap_matters ? SE_CAP_MARKER_CREATE(pid) :
+						 SE_CAP_MARKER_LOOKUP(pid);
 	if (m)
 		se_cap_mark_entry(m, task, bprm);
-	else
+	else if (SE_CAP_ABSENT_IS_FAULT(cap_matters))
 		SE_CAP_STAT(SE_CAP_STAT_FAULT);
 }
 
@@ -388,11 +492,27 @@ se_cap_on_begin(__u32 tgid, __u32 pid, __u64 task, __u64 bprm, __u32 is_check)
 {
 	struct se_exec_marker *m = SE_CAP_MARKER_LOOKUP(pid);
 	struct se_exec_capsule *c = SE_CAP_LOOKUP(tgid);
+	int cap_matters = SE_CAP_MATTERS();
+	if (!c && cap_matters)
+		c = SE_CAP_CREATE(tgid);
+#ifdef SE_CAP_ABSENT_OK
+	/* No storage: this task never mattered (nothing to retire) and this
+	 * exec does not either; or the create failed (a fault). */
+	if (!c) {
+		if (cap_matters) {
+			SE_CAP_STAT(SE_CAP_STAT_FAULT);
+			return SE_CAP_FAULT;
+		}
+		return SE_CAP_FOREIGN;
+	}
+	int covered = m && se_cap_take_marker(m, task, bprm);
+#else
 	if (!m || !c) {
 		SE_CAP_STAT(SE_CAP_STAT_FAULT);
 		return SE_CAP_FAULT;
 	}
 	int covered = se_cap_take_marker(m, task, bprm);
+#endif
 	__u64 sequence = covered ? SE_CAP_NEXT_SEQUENCE() : 0;
 	struct se_cap_view stale = {};
 	bpf_spin_lock(&c->lock);
@@ -464,22 +584,35 @@ se_cap_degrade(__u64 cgroup, struct se_route_claim *claim, __u32 *frozen_class)
 /* LSM bprm_check admission. Returns an SE_ROUTE_* result. When the exec's
  * class is frozen, the claim is on the ORIGINAL route and *frozen_class is the
  * original class; the current cgroup is not consulted. *frozen_class is 0 when
- * the result is unselected. Every OWNED claim must be released by the caller. */
+ * the result is unselected. With SE_CAP_REPORT_LATER a frozen re-admission of
+ * the same exec also carries SE_CAP_LATER. Every OWNED claim must be released
+ * by the caller. */
 static __attribute__((always_inline)) inline int
-se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
+se_cap_admit(__u32 tgid, __u32 pid, __u64 task, __u64 bprm, __u64 cgroup,
 	     struct se_route_claim *claim, __u32 *frozen_class)
 {
+	/* Written and taken only by this thread (no lock). */
+	struct se_exec_marker *m = SE_CAP_MARKER_LOOKUP(pid);
+	int entry_pending = m && task && bprm && m->task == task &&
+			    m->bprm == bprm;
 	*frozen_class = 0;
 	struct se_exec_capsule *c = SE_CAP_LOOKUP(tgid);
-	if (!c)
-		return se_cap_degrade(cgroup, claim, frozen_class);
 	struct se_cap_view v = {};
-	bpf_spin_lock(&c->lock);
-	int kind = se_cap_classify_locked(c, task, bprm, &v);
-	bpf_spin_unlock(&c->lock);
-	if (kind == SE_CAP_BUSY)
+	int kind = SE_CAP_UNCOVERED;
+	if (!c) {
+#ifndef SE_CAP_ABSENT_OK
 		return se_cap_degrade(cgroup, claim, frozen_class);
-	if (kind == SE_CAP_STALE) {
+#endif
+		/* No storage yet: uncovered. It is created below only if the
+		 * current route selects this exec (first selected admission). */
+	} else {
+		bpf_spin_lock(&c->lock);
+		kind = se_cap_classify_locked(c, task, bprm, entry_pending, &v);
+		bpf_spin_unlock(&c->lock);
+	}
+	if (kind == SE_CAP_BUSY || (kind != SE_CAP_UNCOVERED && !c))
+		return se_cap_degrade(cgroup, claim, frozen_class);
+	if (kind == SE_CAP_STALE && c) {
 		SE_CAP_STAT(SE_CAP_STAT_STALE_RETIRED);
 		if (se_cap_retire(c, &v))
 			return se_cap_degrade(cgroup, claim, frozen_class);
@@ -490,10 +623,33 @@ se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
 		*frozen_class = cls;
 		if (cls < 1 || cls > 2)
 			return se_cap_degrade(cgroup, claim, frozen_class);
+#ifdef SE_CAP_REPORT_LATER
+		*frozen_class = cls | SE_CAP_LATER;
+#endif
 		int fault = cls == 1 ? SE_ROUTE_AUDIT_FAULT :
 				       SE_ROUTE_STRICT_FAULT;
-		if (!(v.flags & SE_CAP_F_PINNED))
-			return fault;
+		if (!(v.flags & SE_CAP_F_PINNED)) {
+			/* Uncovered OWNED freeze (review M2): re-claim the
+			 * ORIGINAL route by its recorded identity, never the
+			 * current route by class (that could mix two
+			 * policies of one class). No identity: fault. */
+			if (!(v.flags & SE_CAP_F_IDENT))
+				return fault;
+			__u32 islot = v.slot;
+			struct se_route_anchor *ia =
+				islot < SE_ROUTE_CAPACITY ?
+					SE_ROUTE_ANCHOR_LOOKUP(&islot) :
+					0;
+			if (!ia)
+				return fault;
+			bpf_spin_lock(&ia->lock);
+			int ir = se_route_claim_ident_locked(
+				ia, &c->owner.token, cls, claim);
+			bpf_spin_unlock(&ia->lock);
+			if (ir == SE_ROUTE_OWNED)
+				SE_CAP_STAT(SE_CAP_STAT_ORIGINAL_CLAIM);
+			return ir;
+		}
 		__u32 slot = v.slot;
 		struct se_route_anchor *a =
 			slot < SE_ROUTE_CAPACITY ?
@@ -549,13 +705,27 @@ se_cap_admit(__u32 tgid, __u64 task, __u64 bprm, __u64 cgroup,
 				SE_CAP_STAT(SE_CAP_STAT_PINNED);
 		}
 	} else {
+		/* First selected admission without a covered begin: the only
+		 * place storage is created at admission (task-storage adapter). */
+		if (!c)
+			c = SE_CAP_CREATE(tgid);
 		__u64 sequence = SE_CAP_NEXT_SEQUENCE();
-		bpf_spin_lock(&c->lock);
-		freeze_err = se_cap_freeze_uncovered_locked(c, task, bprm,
-							    sequence, cls);
-		bpf_spin_unlock(&c->lock);
-		if (!freeze_err)
+		if (!c) {
+			freeze_err = SE_CAP_FAULT;
+		} else {
+			bpf_spin_lock(&c->lock);
+			freeze_err = se_cap_freeze_uncovered_locked(
+				c, task, bprm, sequence, cls,
+				r == SE_ROUTE_OWNED ? claim : 0);
+			bpf_spin_unlock(&c->lock);
+		}
+		if (!freeze_err) {
 			SE_CAP_STAT(SE_CAP_STAT_FROZEN_UNCOVERED);
+			/* This exec opened the capsule: consume its entry
+			 * marker, so its later admissions see it as mine. */
+			if (entry_pending)
+				(void)se_cap_take_marker(m, task, bprm);
+		}
 	}
 	if (freeze_err) {
 		/* Capsule-internal failure after a valid current-route admission
@@ -581,7 +751,16 @@ se_cap_on_terminal(__u32 tgid, __u32 pid, __u64 task, __u64 bprm, long retval)
 		(void)se_cap_take_marker(m, task, bprm);
 	struct se_exec_capsule *c = SE_CAP_LOOKUP(tgid);
 	if (!c) {
+#ifndef SE_CAP_ABSENT_OK
 		SE_CAP_STAT(SE_CAP_STAT_FAULT);
+#endif
+		/* Task-storage adapter: absent means this task never had a
+		 * capsule (lookups do not create). A marked entry is NOT
+		 * evidence of a lost capsule: a losing same-TGID waiter is
+		 * marked and never begins, and an exec that stopped mattering
+		 * before begin creates none. A begin-time create miss is
+		 * already counted at begin; a missed lookup here leaves a
+		 * stale capsule for the next begin, admission or task_free. */
 		return 0;
 	}
 	struct se_cap_view v = {};
@@ -600,6 +779,33 @@ se_cap_on_terminal(__u32 tgid, __u32 pid, __u64 task, __u64 bprm, long retval)
 	if (success)
 		SE_CAP_STAT(SE_CAP_STAT_SUCCESS);
 	return success ? 1 : 0;
+}
+
+/* lsm/task_free of the task-storage adapter: the dying task's capsule, found
+ * by the adapter BEFORE the kernel frees the task's storage. A capsule still
+ * OPEN or FROZEN belongs to an exec whose terminal was missed (a finished
+ * task has no exec in flight): retire it, releasing any original-route pin
+ * under that route's lock. RETIRING is left as is (a retire already faulted
+ * and was counted). Returns 1 if a capsule was retired, -1 on a release
+ * fault, 0 otherwise. */
+static __attribute__((always_inline)) inline int
+se_cap_on_free(struct se_exec_capsule *c)
+{
+	if (!c)
+		return 0;
+	struct se_cap_view v = {};
+	int live = 0;
+	bpf_spin_lock(&c->lock);
+	if (c->phase == SE_CAP_OPEN || c->phase == SE_CAP_FROZEN) {
+		se_cap_view_locked(c, &v);
+		c->phase = SE_CAP_RETIRING;
+		live = 1;
+	}
+	bpf_spin_unlock(&c->lock);
+	if (!live)
+		return 0;
+	SE_CAP_STAT(SE_CAP_STAT_DEATH_RETIRED);
+	return se_cap_retire(c, &v) ? -1 : 1;
 }
 #endif
 #endif

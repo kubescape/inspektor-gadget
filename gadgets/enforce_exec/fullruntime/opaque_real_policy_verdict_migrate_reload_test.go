@@ -78,7 +78,7 @@ const (
 	opaqueCapSuccess        = 10
 	opaqueCapReleaseFault   = 12
 	opaqueCapFault          = 13
-	opaqueCapStats          = 14
+	opaqueCapStats          = 15
 	opaqueRouteClassOffset  = 56
 	opaqueRoutePhaseOffset  = 60
 	opaqueRouteEarlyOffset  = 64
@@ -90,8 +90,8 @@ const (
 func (v *opaqueVerdictRun) capsuleStats() [opaqueCapStats]uint64 {
 	v.t.Helper()
 	raw, err := v.c.Maps["se_exec_capsule_stats"].LookupBytes(uint32(0))
-	if err != nil || len(raw) < 8*opaqueCapStats {
-		v.t.Fatalf("capsule stats: %v", err)
+	if err != nil || len(raw) != 8*opaqueCapStats {
+		v.t.Fatalf("capsule stats: len=%d err=%v", len(raw), err)
 	}
 	var out [opaqueCapStats]uint64
 	for i := range out {
@@ -533,6 +533,9 @@ func (v *opaqueVerdictRun) reload(rounds int, fault bool, fallbacks [2]int) {
 	}
 	fallbackOf := func(generation uint64) int { return fallbacks[(generation-1)%2] }
 	var published, busy, faults, unqualified, crossBirths int
+	// park: the object carries the birth park and the cross-generation
+	// qualification (G019 gaps 1 and 2; product-publisher objects).
+	park := v.c.Maps[BirthParkStatsMap] != nil
 	generations := map[uint64]int{}
 	savedFallback := v.fallback
 	defer func() { v.fallback = savedFallback }()
@@ -650,6 +653,13 @@ func (v *opaqueVerdictRun) reload(rounds int, fault bool, fallbacks [2]int) {
 			}
 		}
 		crossGeneration := int(births[5])
+		// G019 gap 1: with the birth park (product-publisher objects) the
+		// target constructs under the source's own claim, whose early
+		// claim blocks the commit: no birth straddles a publication.
+		if park && crossGeneration != 0 {
+			v.reloadDump(label, beforeBirths, before, r.published, r.busy)
+			v.t.Fatalf("%s: %d births straddled a publication with the birth park", label, crossGeneration)
+		}
 		if births[1]+births[5] != 2 || births[0]|births[2]|births[3]|births[4]|births[6]|births[7] != 0 ||
 			(crossGeneration > 0 && r.published == 0) ||
 			(strict && refusedForks != crossGeneration) || (!strict && refusedForks != 0) {
@@ -702,12 +712,15 @@ func (v *opaqueVerdictRun) reload(rounds int, fault bool, fallbacks [2]int) {
 			unmatched = e
 		}
 		// A child born under generation g whose first exec is admitted
-		// under g+1 is not qualified (real_owner_birth_qualify requires
-		// the birth receipt's generation/serial/record to equal the exec
-		// claim): it is never evaluated, Strict denies it and Audit runs
-		// it. This is the fail-closed current behaviour, not a product
-		// rule (no design exists for qualification across publication);
-		// it may only occur in a round that published.
+		// under g+1: on an object without the birth park (no gap 2) it is
+		// not qualified (real_owner_birth_qualify required the birth
+		// receipt's generation/serial/record to equal the exec claim): it
+		// is never evaluated, Strict denies it and Audit runs it
+		// (fail-closed; only in a round that published). With the birth
+		// park (product-publisher objects, G019 gap 2) the same route's
+		// later generation admits it (se_birth_receipt_admits, counted in
+		// opaque_real_birth_park[7]): it is evaluated under g+1 like any
+		// other exec, so no child is left unevaluated.
 		// An Audit unconstructed (cross-generation) child also runs
 		// unevaluated; it is counted above, not as unqualified.
 		unconstructedAudit := 0
@@ -736,6 +749,9 @@ func (v *opaqueVerdictRun) reload(rounds int, fault bool, fallbacks [2]int) {
 			}
 		} else if !forkRefused[1] {
 			unevaluated(exits[1])
+		}
+		if park && unevaluatedN != 0 {
+			v.t.Fatalf("%s: %d unevaluated children with cross-generation qualification", label, unevaluatedN)
 		}
 		if unevaluatedN < unconstructedAudit {
 			v.t.Fatalf("%s: %d unevaluated children but %d unconstructed Audit births", label, unevaluatedN, unconstructedAudit)

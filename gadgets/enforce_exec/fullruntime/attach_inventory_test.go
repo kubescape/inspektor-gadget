@@ -214,9 +214,12 @@ func TestLegacyOwnerTrampolineSource(t *testing.T) {
 // G009 packaging: the candidate's attach set is the ELF minus the programs its
 // packaged metadata disables (programs.<name>.attach_to:
 // gadget_program_disabled, read by the eBPF operator exactly like this).
+// Diagnostic twins (live bootstrap) merge candidateDiagnosticPackaging after
+// candidatePackaging; the product object takes candidatePackaging alone.
 const (
-	candidatePackaging = "bpf/opaque_real_owner_child_candidate.programs.yaml"
-	disabledProgram    = "gadget_program_disabled"
+	candidatePackaging           = "bpf/opaque_real_owner_child_candidate.programs.yaml"
+	candidateDiagnosticPackaging = "bpf/opaque_real_owner_child_candidate.programs.diagnostic.yaml"
+	disabledProgram              = "gadget_program_disabled"
 )
 
 // candidateAttachSet is the qualified loader's steady-state trampoline attach
@@ -225,6 +228,7 @@ var (
 	candidateAttachSet = map[string]string{
 		"opaque_real_owner_child_final_free_candidate": "bpf_lsm_task_free",
 		"opaque_real_owner_child_source_candidate":     "bpf_lsm_task_alloc",
+		"real_owner_capsule_free":                      "bpf_lsm_task_free",
 		"opaque_real_owner_failure_fexit_probe":        "bprm_execve",
 		"real_owner_capsule_terminal":                  "bprm_execve",
 		"real_owner_capsule_entry":                     "bprm_execve",
@@ -232,22 +236,34 @@ var (
 		"opaque_real_owner_reader_begin_probe":         "bpf_lsm_bprm_check_security",
 	}
 	candidateAttachPerHook = map[string]int{
-		"bpf_lsm_task_free": 1, "bpf_lsm_task_alloc": 1, "bprm_execve": 3,
+		"bpf_lsm_task_free": 2, "bpf_lsm_task_alloc": 1, "bprm_execve": 3,
 		"security_bprm_creds_for_exec": 1, "bpf_lsm_bprm_check_security": 1,
 	}
 )
 
 func loadCandidatePackaging(t *testing.T) *viper.Viper {
 	t.Helper()
-	data, err := os.ReadFile(candidatePackaging)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// As the OCI handler reads gadget.yaml into the operator config.
+	return loadCandidateMetadata(t, candidatePackaging)
+}
+
+// loadCandidateMetadata reads and merges the metadata files in order, as the
+// OCI handler reads gadget.yaml into the operator config.
+func loadCandidateMetadata(t *testing.T, paths ...string) *viper.Viper {
+	t.Helper()
 	config := viper.New()
 	config.SetConfigType("yaml")
-	if err := config.ReadConfig(strings.NewReader(string(data))); err != nil {
-		t.Fatal(err)
+	for k, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := config.MergeConfig
+		if k == 0 {
+			read = config.ReadConfig
+		}
+		if err := read(strings.NewReader(string(data))); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
 	}
 	return config
 }
@@ -268,10 +284,19 @@ func candidateDisabled(config *viper.Viper) map[string]bool {
 func TestCandidateAttachSetDeclaration(t *testing.T) {
 	config := loadCandidatePackaging(t)
 	disabled := candidateDisabled(config)
-	for name, entry := range config.GetStringMap("programs") {
-		fields, ok := entry.(map[string]any)
-		if !ok || len(fields) != 1 || !disabled[name] {
-			t.Errorf("%s: packaging entry %v must be exactly attach_to: %s", name, entry, disabledProgram)
+	diagnostic := loadCandidateMetadata(t, candidateDiagnosticPackaging)
+	for _, c := range []*viper.Viper{config, diagnostic} {
+		only := candidateDisabled(c)
+		for name, entry := range c.GetStringMap("programs") {
+			fields, ok := entry.(map[string]any)
+			if !ok || len(fields) != 1 || !only[name] {
+				t.Errorf("%s: packaging entry %v must be exactly attach_to: %s", name, entry, disabledProgram)
+			}
+		}
+	}
+	for name := range candidateDisabled(diagnostic) {
+		if disabled[name] {
+			t.Errorf("%s is in both the product and the diagnostic packaging", name)
 		}
 	}
 	tailCallTargets := []string{"opaque_real_owner_child_target_candidate", "opaque_real_owner_terminal_retain_target"}
@@ -298,44 +323,83 @@ func TestCandidateAttachSetDeclaration(t *testing.T) {
 }
 
 // TestCandidateAttachSetObjects derives the attach set from the packaging plus
-// each object in IG_ENFORCE_EXEC_CANDIDATE_OBJECTS (comma-separated
-// g25final128 objects) and pins it: a new trampoline program fails until it is
-// disabled in the packaging or added to the pinned set.
+// each object and pins it: a new trampoline program fails until it is
+// disabled in the packaging or added to the pinned set. Objects in
+// IG_ENFORCE_EXEC_PRODUCT_OBJECTS take the product packaging alone; objects
+// in IG_ENFORCE_EXEC_CANDIDATE_OBJECTS (diagnostic twins with live
+// bootstrap) take it merged with the diagnostic packaging. Both are
+// comma-separated object paths.
 func TestCandidateAttachSetObjects(t *testing.T) {
-	env := os.Getenv("IG_ENFORCE_EXEC_CANDIDATE_OBJECTS")
-	if env == "" {
-		t.Skip("set IG_ENFORCE_EXEC_CANDIDATE_OBJECTS=/path/g25final128-<k>.bpf.o[,...] for the packaged attach set")
+	product, diagnostic := os.Getenv("IG_ENFORCE_EXEC_PRODUCT_OBJECTS"), os.Getenv("IG_ENFORCE_EXEC_CANDIDATE_OBJECTS")
+	if product == "" && diagnostic == "" {
+		t.Skip("set IG_ENFORCE_EXEC_PRODUCT_OBJECTS and/or IG_ENFORCE_EXEC_CANDIDATE_OBJECTS=/path/<object>.bpf.o[,...] for the packaged attach set")
 	}
-	disabled := candidateDisabled(loadCandidatePackaging(t))
-	for _, path := range strings.Split(env, ",") {
-		spec, err := ebpf.LoadCollectionSpec(path)
+	for _, path := range candidateObjectPaths(product, diagnostic) {
+		packaging := loadCandidatePackaging(t)
+		if path.diagnostic {
+			packaging = loadCandidateMetadata(t, candidatePackaging, candidateDiagnosticPackaging)
+		}
+		spec, err := ebpf.LoadCollectionSpec(path.path)
 		if err != nil {
-			t.Fatalf("%s: %v", path, err)
+			t.Fatalf("%s: %v", path.path, err)
 		}
-		for name := range disabled {
-			if p := spec.Programs[name]; p == nil || nativeattach.TrampolineTarget(p) == "" {
-				t.Errorf("%s: disabled %s is not a trampoline program of the object (stale packaging)", path, name)
-			}
-		}
-		attached := map[string]string{}
-		need := map[string]int{}
-		for name, p := range spec.Programs {
-			target := nativeattach.TrampolineTarget(p)
-			if target == "" || disabled[name] {
-				continue
-			}
-			attached[name] = target
-			need[target]++
-		}
-		if fmt.Sprint(attached) != fmt.Sprint(candidateAttachSet) {
-			t.Errorf("%s: attach set %v, pinned %v", path, attached, candidateAttachSet)
-		}
-		if fmt.Sprint(need) != fmt.Sprint(candidateAttachPerHook) {
-			t.Errorf("%s: per-hook need %v, pinned %v", path, need, candidateAttachPerHook)
-		}
-		if err := nativeattach.CheckCapacity(need, nil, nativeattach.DefaultReservePerHook); err != nil {
-			t.Errorf("%s: packaged need refused on empty trampolines: %v", path, err)
-		}
-		t.Logf("%s: packaged attach set per hook %v (%d programs disabled)", path, need, len(disabled))
+		// G019 gap 4: a frozen non-product object without the interpreter
+		// continuation is checked without exactly its two disables.
+		checkCandidateAttachSetObject(t, path.path, candidateDisabled(packagingForObject(t, packaging, spec, path.path)))
 	}
+}
+
+type candidateObjectPath struct {
+	path       string
+	diagnostic bool
+}
+
+// candidateObjectPaths splits the product and diagnostic object lists.
+func candidateObjectPaths(product, diagnostic string) []candidateObjectPath {
+	var out []candidateObjectPath
+	for _, list := range []struct {
+		env        string
+		diagnostic bool
+	}{{product, false}, {diagnostic, true}} {
+		if list.env == "" {
+			continue
+		}
+		for _, path := range strings.Split(list.env, ",") {
+			out = append(out, candidateObjectPath{path, list.diagnostic})
+		}
+	}
+	return out
+}
+
+func checkCandidateAttachSetObject(t *testing.T, path string, disabled map[string]bool) {
+	t.Helper()
+	spec, err := ebpf.LoadCollectionSpec(path)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	for name := range disabled {
+		if p := spec.Programs[name]; p == nil || nativeattach.TrampolineTarget(p) == "" {
+			t.Errorf("%s: disabled %s is not a trampoline program of the object (stale packaging)", path, name)
+		}
+	}
+	attached := map[string]string{}
+	need := map[string]int{}
+	for name, p := range spec.Programs {
+		target := nativeattach.TrampolineTarget(p)
+		if target == "" || disabled[name] {
+			continue
+		}
+		attached[name] = target
+		need[target]++
+	}
+	if fmt.Sprint(attached) != fmt.Sprint(candidateAttachSet) {
+		t.Errorf("%s: attach set %v, pinned %v", path, attached, candidateAttachSet)
+	}
+	if fmt.Sprint(need) != fmt.Sprint(candidateAttachPerHook) {
+		t.Errorf("%s: per-hook need %v, pinned %v", path, need, candidateAttachPerHook)
+	}
+	if err := nativeattach.CheckCapacity(need, nil, nativeattach.DefaultReservePerHook); err != nil {
+		t.Errorf("%s: packaged need refused on empty trampolines: %v", path, err)
+	}
+	t.Logf("%s: packaged attach set per hook %v (%d programs disabled)", path, need, len(disabled))
 }

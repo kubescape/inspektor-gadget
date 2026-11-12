@@ -97,6 +97,15 @@ static __always_inline void se_arm_store_slot(struct se_epoch_cell *cell,
 					      const struct se_arm_request *req,
 					      __u32 i)
 {
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* se_arm_epochs_ready proved every slot below count non-NULL, but the
+	 * product's larger commit preflight (G019 gap 3) makes clang reload
+	 * req->count here, so the verifier no longer correlates the two and
+	 * walks a count > i path with cells[i] NULL. Re-proving it is free and
+	 * changes nothing (never NULL on a path that reaches here). */
+	if (!cell)
+		return;
+#endif
 	cell->scope = a->scope;
 	cell->uid = s->metadata.policy_uids[i];
 	cell->epoch = req->epochs[i];
