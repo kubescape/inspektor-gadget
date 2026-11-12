@@ -97,11 +97,12 @@ static void stage_arithmetic(void)
 			__u32 stage = 3 * p + (r ? r : 3);
 			for (__u32 q = 0; q < 3; q++)
 				assert(se_owk_stage_matches(
-					       stage, SE_OWK_STAGE_CLASS(q, 5)) ==
+					       stage,
+					       SE_OWK_STAGE_CLASS(q, 5)) ==
 				       (q == r));
 			/* A lower pass bound excludes the later passes only. */
-			assert(se_owk_stage_matches(
-				       stage, SE_OWK_STAGE_CLASS(r, p)));
+			assert(se_owk_stage_matches(stage,
+						    SE_OWK_STAGE_CLASS(r, p)));
 			if (p)
 				assert(!se_owk_stage_matches(
 					stage, SE_OWK_STAGE_CLASS(r, p - 1)));
@@ -276,9 +277,10 @@ static void suspended_evaluation_claim_every_pass(void)
 		memcpy(&opaque_policy_blobs[1], &policy, sizeof(policy));
 		const struct fe_string container = { .length = 1,
 						     .bytes = { '/' } };
-		const struct se_policy_ref ref = {
-			.slot = 0, .generation = 1, .root_epoch = 1, .entries = 10
-		};
+		const struct se_policy_ref ref = { .slot = 0,
+						   .generation = 1,
+						   .root_epoch = 1,
+						   .entries = 10 };
 		assert(!se_policy_prepare(&work->view, 0, ticket.scope, 1,
 					  &container, &ref, 1));
 		assert(se_owk_semantic_suspend(&semantic, &work, stage) ==
@@ -379,8 +381,8 @@ static void classify_continue_relaxation(void)
 	/* Never NEW in continuation mode. */
 	assert(se_op_exec_reader_classify(&owner, &bindings[0], 0, key,
 					  0x1234) == SE_EXEC_READER_NEW);
-	assert(se_op_exec_reader_classify_continue(&owner, &bindings[0], 0,
-						   key, 0x1234) ==
+	assert(se_op_exec_reader_classify_continue(&owner, &bindings[0], 0, key,
+						   0x1234) ==
 	       SE_EXEC_READER_RETAIN);
 	close_owner();
 	classify_fixture(&receipt);
@@ -457,8 +459,8 @@ static void classify_continue_relaxation(void)
 	assert(se_op_exec_reader_classify(&owner, &bindings[0], &receipt, key,
 					  0) == SE_EXEC_READER_TERMINAL);
 	assert(se_op_exec_reader_classify_continue(&owner, &bindings[0],
-						   &receipt, key, 0) ==
-	       SE_EXEC_READER_RETAIN);
+						   &receipt, key,
+						   0) == SE_EXEC_READER_RETAIN);
 	assert(!memcmp(&before, &payloads[0].semantic, sizeof(before)));
 	close_owner();
 }
@@ -486,8 +488,7 @@ static void pending_receipt_classes(void)
 	       SE_EXEC_PENDING_CONTINUE);
 	assert(se_exec_receipt_pending_class(&good, 0xa1, 0x1234, 0) ==
 	       SE_EXEC_PENDING_RECEIPT);
-	assert(se_exec_receipt_pending_class(&good, 0xa1, 0x1234,
-					     0x100U) ==
+	assert(se_exec_receipt_pending_class(&good, 0xa1, 0x1234, 0x100U) ==
 	       SE_EXEC_PENDING_CONTINUE);
 	for (unsigned field = 0; field < 14; field++) {
 		struct se_exec_terminal_receipt r = good;
@@ -668,8 +669,8 @@ static void pass_zero(struct proposal_fixture *f)
 	payloads[0].semantic.committed.version = 7;
 	payloads[0].semantic.committed.rows[0] = er_known_row(1, 13, 3);
 	start_work(&f->ticket);
-	assert(se_owk_semantic_open(&owner, &f->ticket, &f->handle,
-				    &f->work) == SE_OL_OK);
+	assert(se_owk_semantic_open(&owner, &f->ticket, &f->handle, &f->work) ==
+	       SE_OL_OK);
 	f->view = (struct se_policy_view){
 		.scope_cookie = 10,
 		.ready = 1,
@@ -703,24 +704,22 @@ static void continue_pass(struct proposal_fixture *f, __u32 pass)
 {
 	assert(metas[0].current_work_owned == 1);
 	assert(se_op_exec_reader_classify(&owner, &bindings[0], &f->receipt,
-					  key, 0x1234) ==
-	       SE_EXEC_READER_RETAIN);
+					  key,
+					  0x1234) == SE_EXEC_READER_RETAIN);
 	assert(se_op_exec_reader_classify_continue(&owner, &bindings[0],
-						   &f->receipt, key,
-						   0x1234) ==
+						   &f->receipt, key, 0x1234) ==
 	       SE_EXEC_READER_CONTINUE);
 	f->ticket = (struct se_owk_ticket){};
 	assert(se_owk_resume(&owner, TERMINAL, &f->ticket) == SE_OL_OK);
 	assert(se_exec_continue_pass(f->ticket.continuation_stage,
 				     SE_OWK_EXEC_PASSES) == pass);
-	assert(se_owk_semantic_open(&owner, &f->ticket, &f->handle,
-				    &f->work) == SE_OL_OK);
+	assert(se_owk_semantic_open(&owner, &f->ticket, &f->handle, &f->work) ==
+	       SE_OL_OK);
 	assert(se_exec_continue_work_exact(f->work, &f->receipt, 1));
 	struct se_owk_payload *payload = f->handle.payload;
 	memset(&payload->semantic.history, 0,
-	       sizeof(*payload) -
-		       __builtin_offsetof(struct se_owk_payload,
-					  semantic.history));
+	       sizeof(*payload) - __builtin_offsetof(struct se_owk_payload,
+						     semantic.history));
 	assert(!se_exec_continue_work_exact(f->work, &f->receipt, 1));
 }
 
@@ -813,8 +812,8 @@ static void accumulated_proposals_and_work_identity(void)
 			f.handle = (struct se_owk_semantic_handle){};
 			if (stage == 3 * pass + 3)
 				break;
-			assert(se_owk_resume(&owner, stage % 3 == 1 ? PREPARE :
-								       EVAL,
+			assert(se_owk_resume(&owner,
+					     stage % 3 == 1 ? PREPARE : EVAL,
 					     &f.ticket) == SE_OL_OK);
 			assert(se_owk_semantic_open(&owner, &f.ticket,
 						    &f.handle,
@@ -865,9 +864,11 @@ static void stale_resume_refusal_is_non_mutating(void)
 		for (__u32 q = 1; q < p; q++) {
 			continue_pass(&f, q);
 			assert(evaluate_and_propose(&f, 9, 0) == SE_OL_OK);
-			for (__u32 stage = 3 * q + 1; stage <= 3 * q + 3; stage++) {
-				assert(se_owk_semantic_suspend(&f.handle, &f.work,
-							       stage) == SE_OL_OK);
+			for (__u32 stage = 3 * q + 1; stage <= 3 * q + 3;
+			     stage++) {
+				assert(se_owk_semantic_suspend(
+					       &f.handle, &f.work, stage) ==
+				       SE_OL_OK);
 				close_owner();
 				open_owner();
 				f.ticket = (struct se_owk_ticket){};
@@ -875,11 +876,12 @@ static void stale_resume_refusal_is_non_mutating(void)
 				if (stage == 3 * q + 3)
 					break;
 				assert(se_owk_resume(&owner,
-						     stage % 3 == 1 ? PREPARE : EVAL,
+						     stage % 3 == 1 ? PREPARE :
+								      EVAL,
 						     &f.ticket) == SE_OL_OK);
-				assert(se_owk_semantic_open(&owner, &f.ticket,
-							    &f.handle,
-							    &f.work) == SE_OL_OK);
+				assert(se_owk_semantic_open(
+					       &owner, &f.ticket, &f.handle,
+					       &f.work) == SE_OL_OK);
 			}
 		}
 		struct se_task_state before = payloads[0].semantic;
@@ -888,15 +890,15 @@ static void stale_resume_refusal_is_non_mutating(void)
 		       !stale.held && !stale.cookie);
 		assert_untouched(3 * p);
 		assert(!memcmp(&before, &payloads[0].semantic, sizeof(before)));
-		assert(se_op_exec_reader_classify_continue(&owner, &bindings[0],
-							   &f.receipt, key,
-							   0x1234) ==
+		assert(se_op_exec_reader_classify_continue(
+			       &owner, &bindings[0], &f.receipt, key, 0x1234) ==
 		       SE_EXEC_READER_CONTINUE);
 		const __u32 cascade[3] = { EVAL, PREPARE, TERMINAL };
 		int consumed = 0;
 		for (__u32 i = 0; i < 3; i++) {
 			struct se_owk_ticket t = {};
-			int ok = se_owk_resume(&owner, cascade[i], &t) == SE_OL_OK;
+			int ok = se_owk_resume(&owner, cascade[i], &t) ==
+				 SE_OL_OK;
 			assert(ok == (i == 2));
 			if (ok) {
 				assert(t.continuation_stage == 3 * p);

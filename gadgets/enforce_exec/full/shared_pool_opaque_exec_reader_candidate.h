@@ -439,7 +439,8 @@ se_op_exec_reader_classify(struct se_ol_payload_handle *owner,
 /* CONTINUE or RETAIN only; see suspended_work above. */
 static __attribute__((always_inline)) inline int
 se_op_exec_reader_classify_continue(
-	struct se_ol_payload_handle *owner, struct se_binding_snapshots *binding,
+	struct se_ol_payload_handle *owner,
+	struct se_binding_snapshots *binding,
 	const struct se_exec_terminal_receipt *receipt, __u64 physical,
 	__u64 incoming_bprm)
 {

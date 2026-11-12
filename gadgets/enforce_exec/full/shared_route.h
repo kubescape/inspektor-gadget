@@ -114,7 +114,8 @@ static __attribute__((always_inline)) inline __u32 se_route_rec_index(__u32 r)
 	return r & 1;
 }
 #define SE_ROUTE_REC(a, r) (&(a)->rec[se_route_rec_index(r)])
-#define SE_ROUTE_REC_ADD(a, r, field, delta) (SE_ROUTE_REC(a, r)->field += (delta))
+#define SE_ROUTE_REC_ADD(a, r, field, delta) \
+	(SE_ROUTE_REC(a, r)->field += (delta))
 /* A record that is the claimable identity serial/generation: the ACTIVE
  * record, or the RETIRING one its existing holders still read. */
 static __attribute__((always_inline)) inline int
@@ -134,7 +135,7 @@ se_route_rec_held(const struct se_route_anchor *a, __u32 r)
 #define SE_SOURCE_TOKEN_RECORD_BAD(t) ((t)->record >= 2)
 #else
 #define SE_ROUTE_REC_ADD(a, r, field, delta) \
-	do {                                  \
+	do {                                 \
 	} while (0)
 #define SE_SOURCE_TOKEN_RECORD_BAD(t) ((t)->reserved)
 #endif
@@ -421,8 +422,7 @@ se_route_claim_source_locked(struct se_route_anchor *a,
 	    a->phase != SE_ROUTE_ACTIVE || a->reserved || !a->incarnation ||
 	    t->slot != a->payload_slot || t->incarnation != a->incarnation ||
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
-	    t->scope != a->scope ||
-	    !SE_ROUTE_REC(a, t->record)->source_pins ||
+	    t->scope != a->scope || !SE_ROUTE_REC(a, t->record)->source_pins ||
 	    SE_ROUTE_REC(a, t->record)->generation != t->generation ||
 	    (SE_ROUTE_REC(a, t->record)->phase != SE_SNAPSHOT_ACTIVE &&
 	     SE_ROUTE_REC(a, t->record)->phase != SE_SNAPSHOT_RETIRING) ||
@@ -542,7 +542,7 @@ static __attribute__((always_inline)) inline int se_route_transfer_locked(
 	if (!se_route_claim_valid(a, c) || b->scope != c->scope)
 		return -1;
 	if (b->generation == c->generation && b->active_record == c->record &&
-	    b->active_serial == c->serial ?
+			    b->active_serial == c->serial ?
 		    se_reader_acquire_record_locked(b, c->record, c->serial,
 						    c->scope, task_cookie,
 						    owner, token) :

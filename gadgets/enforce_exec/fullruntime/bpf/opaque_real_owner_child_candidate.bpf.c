@@ -221,7 +221,7 @@ real_owner_reader_quarantine_pending(__u64 physical);
  * capsule admission re-claims the original route and reports the later
  * admission, SE_CAP_LATER), and its receipt authentication needs the final
  * failed-exec frames. It replaces the disposable same-bprm diagnostic. */
-#if defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE) &&        \
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE) &&       \
 	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
 	 !defined(ENFORCE_EXEC_POOL_OPAQUE_SOURCE_CAPSULE_CANDIDATE) ||      \
 	 !defined(ENFORCE_EXEC_POOL_OPAQUE_FAILURE_FINAL_RETURN_PROBE) ||    \
@@ -237,8 +237,8 @@ real_owner_reader_quarantine_pending(__u64 physical);
  * in a product object; admitted in the product diagnostic twin (the GAP
  * class of the live-node fail-closed injection test). */
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC) && \
-	((defined(SE_PRODUCT_NO_TEST_RUN) &&                             \
-	  !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                       \
+	((defined(SE_PRODUCT_NO_TEST_RUN) &&                            \
+	  !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                      \
 	 !defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE))
 #error "the stale-resume injector is test only and needs the interpreter continuation"
 #endif
@@ -314,8 +314,7 @@ real_owner_stage_blob(unsigned int, unsigned long long, unsigned int);
 #define SE_OWK_STAGE_CLASSES 1
 #define REAL_OWNER_PREPARE_RESUME SE_OWK_STAGE_CLASS(1, SE_OWK_EXEC_PASSES - 1)
 #define REAL_OWNER_EVAL_RESUME SE_OWK_STAGE_CLASS(2, SE_OWK_EXEC_PASSES - 1)
-#define REAL_OWNER_TERMINAL_RESUME \
-	SE_OWK_STAGE_CLASS(0, SE_OWK_EXEC_PASSES - 1)
+#define REAL_OWNER_TERMINAL_RESUME SE_OWK_STAGE_CLASS(0, SE_OWK_EXEC_PASSES - 1)
 #define REAL_OWNER_NEXT_STAGE(ticket, fixed) ((ticket).continuation_stage + 1U)
 #define SE_OWK_EVAL_VIEW_STAGE REAL_OWNER_EVAL_RESUME
 #else
@@ -3410,7 +3409,8 @@ real_owner_child_prepare_claimed(struct task_struct *child,
 	/* G019 gap 1: the claim goes to the target through the birth park. A
 	 * failed put releases it here and finishes the suspended WORK through
 	 * the missing-target path (-2, counted there: one class). */
-	if (!result && !se_birth_park_put(&claim, (__u64)child, parent_cookie)) {
+	if (!result &&
+	    !se_birth_park_put(&claim, (__u64)child, parent_cookie)) {
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_BIRTH_PARK_SPIN_DIAGNOSTIC
 		real_owner_birth_park_spin();
 #endif
@@ -3522,8 +3522,7 @@ real_owner_child_claimed_construct(struct se_owk_semantic_handle *semantic,
 				 * RETIRING (a revision committed after the
 				 * source parked its claim). */
 				if ((snapshot->phase == SE_SNAPSHOT_ACTIVE ||
-				     snapshot->phase ==
-					     SE_SNAPSHOT_RETIRING) &&
+				     snapshot->phase == SE_SNAPSHOT_RETIRING) &&
 				    snapshot->serial == claim.serial &&
 				    snapshot->generation == claim.generation) {
 #else
@@ -3567,12 +3566,12 @@ counted:
 		/* G019 13.20: a target admission fault is ADMISSION (its birth
 		 * attempt was counted by the source), anything else CONSTRUCT:
 		 * exactly one class per attempt. */
-		SE_FAIL_CLOSED_RATE(admission == SE_ROUTE_STRICT_FAULT ||
-						    admission == SE_ROUTE_AUDIT_FAULT ||
-						    admission ==
-							    SE_ROUTE_INVARIANT_FAULT ?
-					    REAL_OWNER_RATE_ADMISSION :
-					    REAL_OWNER_RATE_CONSTRUCT);
+		SE_FAIL_CLOSED_RATE(
+			admission == SE_ROUTE_STRICT_FAULT ||
+					admission == SE_ROUTE_AUDIT_FAULT ||
+					admission == SE_ROUTE_INVARIANT_FAULT ?
+				REAL_OWNER_RATE_ADMISSION :
+				REAL_OWNER_RATE_CONSTRUCT);
 #else
 		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_CONSTRUCT);
 #endif
@@ -5512,10 +5511,9 @@ real_owner_interp_reader(struct se_ol_payload_handle *owner,
 	__u64 key = (__u64)bpf_get_current_task_btf();
 	struct se_shared_binding *binding =
 		bpf_map_lookup_elem(&se_bindings, &auth->slot);
-	if (!binding ||
-	    se_op_exec_reader_classify_continue(owner, &binding->state, receipt,
-						key, bprm) !=
-		    SE_EXEC_READER_CONTINUE)
+	if (!binding || se_op_exec_reader_classify_continue(
+				owner, &binding->state, receipt, key, bprm) !=
+				SE_EXEC_READER_CONTINUE)
 		return SE_INTERP_STAT_CLASSIFY;
 	__u64 recovered = 0;
 	if (se_op_exec_reader_recover(owner, &binding->state, bprm,
@@ -5577,13 +5575,12 @@ real_owner_interp_rebind(struct se_ol_payload_handle *owner,
 	__u32 zero = 0;
 	const struct se_owk_payload *empty =
 		bpf_map_lookup_elem(&se_opaque_work_zero, &zero);
-	if (!empty ||
-	    bpf_probe_read_kernel(
-		    &semantic.payload->semantic.history,
-		    sizeof(struct se_owk_payload) -
-			    __builtin_offsetof(struct se_owk_payload,
-					       semantic.history),
-		    &empty->semantic.history))
+	if (!empty || bpf_probe_read_kernel(
+			      &semantic.payload->semantic.history,
+			      sizeof(struct se_owk_payload) -
+				      __builtin_offsetof(struct se_owk_payload,
+							 semantic.history),
+			      &empty->semantic.history))
 		goto done_semantic;
 	if (real_owner_policy_prepare(work, receipt->scope, receipt->generation,
 				      snapshot))
@@ -5595,8 +5592,7 @@ real_owner_interp_rebind(struct se_ol_payload_handle *owner,
 		    &work->view)
 		goto done_semantic;
 	if (se_owk_semantic_suspend(&semantic, &work,
-				    ticket.continuation_stage + 1U) !=
-	    SE_OL_OK)
+				    ticket.continuation_stage + 1U) != SE_OL_OK)
 		goto done_semantic;
 	real_owner_interp_stat(SE_INTERP_STAT_CONTINUED_FIRST + pass - 1);
 	return 0;
@@ -5632,8 +5628,9 @@ real_owner_interp_continue_core(struct linux_binprm *bprm, __u32 mode)
 				bpf_map_lookup_elem(&se_bindings, &auth.slot) :
 				0;
 		const struct se_snapshot *snapshot =
-			binding ? &binding->state.records[bounded_record & 1ULL] :
-				  0;
+			binding ?
+				&binding->state.records[bounded_record & 1ULL] :
+				0;
 		if (!snapshot || snapshot->serial != auth.serial ||
 		    snapshot->scope != receipt->scope ||
 		    snapshot->generation != receipt->generation)
@@ -6161,8 +6158,7 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 	 * the receipt, the failure frames and the original reader. Result 16
 	 * (with 1 for a Strict frozen class) dispatches the static-class
 	 * continuation; 32 is a failed claim release (refused). */
-	int pending_class =
-		real_owner_pending_class(key, (__u64)bprm, later);
+	int pending_class = real_owner_pending_class(key, (__u64)bprm, later);
 	if (pending_class == SE_EXEC_PENDING_CONTINUE) {
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
 		SE_RATE_ATTEMPT(1); /* every pass is one exec attempt */

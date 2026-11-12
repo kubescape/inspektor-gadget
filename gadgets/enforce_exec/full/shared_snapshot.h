@@ -481,9 +481,9 @@ se_reader_release_locked(struct se_binding_snapshots *b,
  * (the caller proved the claim valid under the same lock and consumes it):
  * the holder moves, the record's holder set never grows. */
 static __attribute__((always_inline)) inline int
-se_reader_acquire_retiring_locked(struct se_binding_snapshots *b,
-				  __u32 record, __u64 serial, __u64 generation,
-				  __u64 scope, __u64 task_cookie,
+se_reader_acquire_retiring_locked(struct se_binding_snapshots *b, __u32 record,
+				  __u64 serial, __u64 generation, __u64 scope,
+				  __u64 task_cookie,
 				  struct se_reader_owner *owner,
 				  struct se_reader_token *token)
 {

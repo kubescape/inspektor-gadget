@@ -62,7 +62,8 @@ int main(int argc, char **argv)
 			if (pid == 0)
 				_exit(0);
 			if (pid > 0) {
-				while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+				while (waitpid(pid, NULL, 0) < 0 &&
+				       errno == EINTR)
 					;
 			}
 			printf("fork %d\n", err);

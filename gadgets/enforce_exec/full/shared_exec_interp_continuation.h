@@ -85,18 +85,18 @@ se_exec_continue_pass(__u32 stage, __u32 passes)
  * to exactly this receipt by pass 0; the handler frame is this pass's own
  * search_binary_handler entry (or the one exec_binprm entry) for the same
  * bprm. */
-#define SE_EXEC_CONTINUE_FRAMES_EXACT(rcpt, outer_, handler_, key_, bprm_)  \
-	((rcpt) && (outer_) && (handler_) && (key_) && (bprm_) &&             \
-	 (outer_)->physical == (key_) && (outer_)->depth == 1 &&               \
-	 !(outer_)->uncertain && (outer_)->bprm == (bprm_) &&                  \
-	 (rcpt)->physical == (key_) && (rcpt)->bprm == (bprm_) &&              \
-	 (outer_)->cookie == (rcpt)->cookie &&                                 \
-	 (outer_)->locator == (rcpt)->locator &&                               \
-	 (outer_)->invocation == (rcpt)->invocation &&                         \
-	 (outer_)->scope == (rcpt)->scope &&                                   \
-	 (outer_)->generation == (rcpt)->generation && (outer_)->cookie &&     \
-	 (outer_)->locator && (outer_)->invocation && (outer_)->scope &&       \
-	 (outer_)->generation && (handler_)->bprm == (bprm_) &&                \
+#define SE_EXEC_CONTINUE_FRAMES_EXACT(rcpt, outer_, handler_, key_, bprm_) \
+	((rcpt) && (outer_) && (handler_) && (key_) && (bprm_) &&          \
+	 (outer_)->physical == (key_) && (outer_)->depth == 1 &&           \
+	 !(outer_)->uncertain && (outer_)->bprm == (bprm_) &&              \
+	 (rcpt)->physical == (key_) && (rcpt)->bprm == (bprm_) &&          \
+	 (outer_)->cookie == (rcpt)->cookie &&                             \
+	 (outer_)->locator == (rcpt)->locator &&                           \
+	 (outer_)->invocation == (rcpt)->invocation &&                     \
+	 (outer_)->scope == (rcpt)->scope &&                               \
+	 (outer_)->generation == (rcpt)->generation && (outer_)->cookie && \
+	 (outer_)->locator && (outer_)->invocation && (outer_)->scope &&   \
+	 (outer_)->generation && (handler_)->bprm == (bprm_) &&            \
 	 (handler_)->depth == 1 && !(handler_)->uncertain)
 
 #ifdef ENFORCE_EXEC_SHARED_POOL_OPAQUE_EXEC_PROPOSE_CANDIDATE_H

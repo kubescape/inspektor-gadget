@@ -108,8 +108,7 @@ static int drop(__u32 record)
 	if (holders)
 		return 1;
 	__u32 receipt;
-	if (se_ticket_command(&object_authority, &b, &objects[o], &r,
-			      &receipt))
+	if (se_ticket_command(&object_authority, &b, &objects[o], &r, &receipt))
 		return -1;
 	bpf_spin_lock(&a.lock);
 	int result = se_snapshot_reclaim_locked(s);
@@ -225,9 +224,8 @@ static void reader_holds_retiring(void)
 	struct se_reader_owner fresh = {};
 	struct se_reader_token fresh_token = {};
 	bpf_spin_lock(&a.lock);
-	assert(se_reader_acquire_retiring_locked(&b.state, 0, 1, 2, SCOPE,
-						 0xc1, &fresh,
-						 &fresh_token) < 0);
+	assert(se_reader_acquire_retiring_locked(&b.state, 0, 1, 2, SCOPE, 0xc1,
+						 &fresh, &fresh_token) < 0);
 	assert(!se_reader_release_locked(&b.state, &owner, &token));
 	bpf_spin_unlock(&a.lock);
 	assert(!drop(0));
@@ -323,7 +321,8 @@ int main(int argc, char **argv)
 		{ "saturation", saturation },
 	};
 	for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
-		if (strcmp(argv[1], "all") && strcmp(argv[1], scenarios[i].name))
+		if (strcmp(argv[1], "all") &&
+		    strcmp(argv[1], scenarios[i].name))
 			continue;
 		reset();
 		scenarios[i].run();

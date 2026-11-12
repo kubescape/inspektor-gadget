@@ -313,32 +313,31 @@ _Static_assert(sizeof(struct opaque_real_route_publish_request) == 512,
  * ctx+offsetof(metadata) into a base register (pub-load refused
  * opaque_real_route_publish exactly so). The empty asm hands each access a
  * fresh copy of the ctx register, so no base is shared between accesses. */
-static __always_inline __u64
-real_owner_request_u64(const struct opaque_real_route_publish_request *r,
-		       __u32 offset)
+static __always_inline __u64 real_owner_request_u64(
+	const struct opaque_real_route_publish_request *r, __u32 offset)
 {
 	const struct opaque_real_route_publish_request *c = r;
 	asm volatile("" : "+r"(c));
 	return *(const __u64 *)((const char *)c + offset);
 }
-#define REAL_OWNER_REQUEST_UID(r)                                \
-	real_owner_request_u64(                                  \
-		(r), __builtin_offsetof(                         \
-			     struct opaque_real_route_publish_request, \
-			     metadata.policy_uids[0]))
-#define REAL_OWNER_REQUEST_EPOCH(r)                              \
-	real_owner_request_u64(                                  \
-		(r), __builtin_offsetof(                         \
-			     struct opaque_real_route_publish_request, \
-			     metadata.root_epochs[0]))
+#define REAL_OWNER_REQUEST_UID(r)                                            \
+	real_owner_request_u64(                                              \
+		(r),                                                         \
+		__builtin_offsetof(struct opaque_real_route_publish_request, \
+				   metadata.policy_uids[0]))
+#define REAL_OWNER_REQUEST_EPOCH(r)                                          \
+	real_owner_request_u64(                                              \
+		(r),                                                         \
+		__builtin_offsetof(struct opaque_real_route_publish_request, \
+				   metadata.root_epochs[0]))
 /* The request's metadata into a snapshot record, word by word, each word a
  * fixed-offset ctx load (see real_owner_request_u64). No helper call: safe
  * under the route lock. */
 _Static_assert(sizeof(struct se_snapshot_metadata) % 8 == 0,
 	       "metadata copied in words");
-static __always_inline void
-real_owner_metadata_copy_locked(struct se_snapshot_metadata *dst,
-			 const struct opaque_real_route_publish_request *r)
+static __always_inline void real_owner_metadata_copy_locked(
+	struct se_snapshot_metadata *dst,
+	const struct opaque_real_route_publish_request *r)
 {
 	__u64 *d = (__u64 *)dst;
 #ifdef __clang__
@@ -649,7 +648,8 @@ real_owner_publish_first(const struct opaque_real_route_publish_request *r)
 			route->payload_slot = 0;
 			route->phase = SE_ROUTE_FREE;
 		} else {
-			real_owner_metadata_copy_locked(&b->records[0].metadata, r);
+			real_owner_metadata_copy_locked(&b->records[0].metadata,
+							r);
 			serial = b->records[0].serial;
 			incarnation = route->incarnation;
 			code = OPAQUE_REAL_CMD_OK;
@@ -786,8 +786,8 @@ real_owner_publish_revision(const struct opaque_real_route_publish_request *r)
 		 * write-once per (scope, UID): the commit's epoch-cell check
 		 * would refuse it there, retryably; refuse it here,
 		 * terminally, before anything is staged or pinned). */
-		__u64 active_epoch = b->records[b->active_record & 1]
-					     .metadata.root_epochs[0];
+		__u64 active_epoch =
+			b->records[b->active_record & 1].metadata.root_epochs[0];
 		if (active_uid != request_uid ||
 		    active_epoch != request_epoch ||
 		    route->execution_class != r->execution_class) {

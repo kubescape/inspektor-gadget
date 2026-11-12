@@ -432,7 +432,8 @@ static int interp_hold(const char *path, char action, FILE *in)
 			continue;
 		struct fanotify_event_metadata m;
 		ssize_t n = read(fan, &m, sizeof(m));
-		if (n < (ssize_t)sizeof(m) || m.vers != FANOTIFY_METADATA_VERSION)
+		if (n < (ssize_t)sizeof(m) ||
+		    m.vers != FANOTIFY_METADATA_VERSION)
 			return 80;
 		if (m.fd < 0)
 			continue;
@@ -449,7 +450,8 @@ static int interp_hold(const char *path, char action, FILE *in)
 				int status = 0, dead = 0;
 				kill(child, SIGKILL);
 				for (int w = 0; w < 500 && !dead; w++) {
-					pid_t got = waitpid(child, &status, WNOHANG);
+					pid_t got = waitpid(child, &status,
+							    WNOHANG);
 					if (got == child)
 						dead = 1;
 					else if (got < 0)
@@ -511,7 +513,7 @@ static int interp_hold(const char *path, char action, FILE *in)
 static int interp_burst(const char *path, int n, int streams)
 {
 	int ok = 0, bad = 0, forkerr = 0, alive = 0;
-	for (int i = 0; i < n || alive; ) {
+	for (int i = 0; i < n || alive;) {
 		if (i < n && alive < streams) {
 			pid_t child = fork();
 			if (child < 0) {

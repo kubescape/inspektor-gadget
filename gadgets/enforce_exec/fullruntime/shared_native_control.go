@@ -379,6 +379,15 @@ type sharedAdminMap interface {
 	Freeze() error
 }
 
+// sharedAdminPidfdOpener is the unit-test seam for the admin thread's
+// pidfd: a fake admin map supplies the fd its se_admin entry is keyed by, so
+// commander and control tests do not depend on the host kernel providing
+// PIDFD_THREAD (Linux 6.9). *ebpf.Map does not implement it, so the product
+// always keys se_admin by a real PIDFD_THREAD of the admin thread.
+type sharedAdminPidfdOpener interface {
+	openAdminPidfd(tid int) (int, error)
+}
+
 // installSharedAdmin starts the node's single admin thread. On that locked OS
 // thread it writes the thread's se_admin task-storage nonce (keyed by its own
 // PIDFD_THREAD) and the node configuration, then freezes both, so exactly
@@ -390,7 +399,11 @@ func installSharedAdmin(admin, configuration sharedAdminMap, config sharedNodeWi
 		return nil, fmt.Errorf("shared admin maps unavailable")
 	}
 	return startControlThread(func() error {
-		fd, err := unix.PidfdOpen(unix.Gettid(), pidfdThread)
+		open := func(tid int) (int, error) { return unix.PidfdOpen(tid, pidfdThread) }
+		if opener, ok := admin.(sharedAdminPidfdOpener); ok {
+			open = opener.openAdminPidfd
+		}
+		fd, err := open(unix.Gettid())
 		if err != nil {
 			return fmt.Errorf("shared admin PIDFD_THREAD: %w", err)
 		}

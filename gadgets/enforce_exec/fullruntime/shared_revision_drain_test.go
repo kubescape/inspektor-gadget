@@ -17,7 +17,10 @@ import (
 // sharedSnapshotBytes, sharedSnapshotClaimsOffset) to the BTF of struct
 // se_shared_binding from an object compiled here from the same headers
 // (full/shared_snapshot.h; the se_bindings map value of every verdict
-// object), so a layout change on the BPF side fails here.
+// object), so a layout change on the BPF side fails here. The source
+// declares the two helpers shared_snapshot.h calls instead of including
+// libbpf's bpf/bpf_helpers.h, so it needs only clang (the unprivileged CI
+// job has no libbpf headers); neither declaration affects the layout.
 func TestSharedRevisionDrainLayoutMatchesBTF(t *testing.T) {
 	clang, err := exec.LookPath("clang")
 	if err != nil {
@@ -26,7 +29,9 @@ func TestSharedRevisionDrainLayoutMatchesBTF(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "binding_layout.bpf.c")
 	if err := os.WriteFile(source, []byte(`#include "vmlinux.h"
-#include <bpf/bpf_helpers.h>
+#define SEC(name) __attribute__((section(name), used))
+static long (*bpf_spin_lock)(struct bpf_spin_lock *lock) = (void *)BPF_FUNC_spin_lock;
+static long (*bpf_spin_unlock)(struct bpf_spin_lock *lock) = (void *)BPF_FUNC_spin_unlock;
 #include "shared_snapshot.h"
 struct se_shared_binding se_layout_binding SEC(".data.layout");
 char LICENSE[] SEC("license") = "GPL";

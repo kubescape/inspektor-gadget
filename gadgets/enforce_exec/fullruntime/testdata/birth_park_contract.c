@@ -237,7 +237,8 @@ static void abandon(__u32 cls)
 	struct se_route_claim c = admit();
 	assert(!se_birth_park_put(&c, 0xc1, 0xcc));
 	se_birth_park_abandon(&mode);
-	assert(mode == (cls == 2 ? 2 : 1) && stats[SE_BIRTH_PARK_ABANDONED] == 1);
+	assert(mode == (cls == 2 ? 2 : 1) &&
+	       stats[SE_BIRTH_PARK_ABANDONED] == 1);
 	se_birth_park_abandon(&mode); /* already released */
 	assert(stats[SE_BIRTH_PARK_ABANDONED] == 1);
 	quiescent();
@@ -256,7 +257,7 @@ static void stale(__u32 cls)
 	assert(stats[SE_BIRTH_PARK_STALE] == 1 && routes[0].early_claims == 1);
 	assert(park.child == 0xc2 && park.owned);
 	se_birth_park_drop(&park, SE_BIRTH_PARK_STALE); /* task_free */
-	se_birth_park_drop(NULL, SE_BIRTH_PARK_STALE);  /* no storage */
+	se_birth_park_drop(NULL, SE_BIRTH_PARK_STALE); /* no storage */
 	assert(stats[SE_BIRTH_PARK_STALE] == 2);
 	quiescent();
 }
@@ -308,7 +309,8 @@ int main(int argc, char **argv)
 		{ "put-fails", put_fails },
 	};
 	for (size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++) {
-		if (strcmp(argv[1], "all") && strcmp(argv[1], scenarios[i].name))
+		if (strcmp(argv[1], "all") &&
+		    strcmp(argv[1], scenarios[i].name))
 			continue;
 		reset(cls);
 		scenarios[i].run(cls);

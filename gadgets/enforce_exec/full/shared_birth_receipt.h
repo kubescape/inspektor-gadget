@@ -22,11 +22,12 @@
  *   - anything else: 0, not admitted (the child stays unqualified).
  * The execution class is 1 (Audit) or 2 (Strict); any other value in the
  * receipt is never admitted. */
-static __attribute__((always_inline)) inline int se_birth_receipt_admits(
-	__u64 r_scope, __u64 r_generation, __u64 r_serial, __u32 r_slot,
-	__u32 r_incarnation, __u32 r_record, __u32 r_class, __u64 c_scope,
-	__u64 c_generation, __u64 c_serial, __u32 c_slot, __u32 c_incarnation,
-	__u32 c_record, __u32 c_class)
+static __attribute__((always_inline)) inline int
+se_birth_receipt_admits(__u64 r_scope, __u64 r_generation, __u64 r_serial,
+			__u32 r_slot, __u32 r_incarnation, __u32 r_record,
+			__u32 r_class, __u64 c_scope, __u64 c_generation,
+			__u64 c_serial, __u32 c_slot, __u32 c_incarnation,
+			__u32 c_record, __u32 c_class)
 {
 	if (r_class < 1 || r_class > 2 || !r_scope || !r_generation ||
 	    r_scope != c_scope || r_slot != c_slot ||
@@ -107,8 +108,9 @@ se_birth_park_drop(struct se_birth_park *park, __u32 counted)
 /* Source: park the claim for child (0), or refuse (-1: the caller still
  * owns the claim). A park still owned is a stale birth whose target never
  * ran: it is released first. The early claim moves with the claim. */
-static __attribute__((noinline)) int se_birth_park_put(
-	struct se_route_claim *claim, __u64 child, __u64 parent_cookie)
+static __attribute__((noinline)) int
+se_birth_park_put(struct se_route_claim *claim, __u64 child,
+		  __u64 parent_cookie)
 {
 	struct se_birth_park *park = SE_BIRTH_PARK_LOOKUP(1);
 	if (!park) {

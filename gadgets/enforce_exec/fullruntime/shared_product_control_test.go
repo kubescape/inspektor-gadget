@@ -19,13 +19,24 @@ import (
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
 )
 
-// sharedFakeAdminMap records the admin install's writes and freezes.
+// sharedFakeAdminMap records the admin install's writes and freezes. As the
+// se_admin map it also stands in for the admin thread's PIDFD_THREAD
+// (sharedAdminPidfdOpener): it records the thread that asked and returns a
+// plain eventfd, so these tests run on host kernels without PIDFD_THREAD.
 type sharedFakeAdminMap struct {
-	mu      sync.Mutex
-	puts    map[uint32]any
-	frozen  bool
-	initial sharedNodeWire
-	putErr  error
+	mu        sync.Mutex
+	puts      map[uint32]any
+	frozen    bool
+	initial   sharedNodeWire
+	putErr    error
+	pidfdTIDs []int
+}
+
+func (m *sharedFakeAdminMap) openAdminPidfd(tid int) (int, error) {
+	m.mu.Lock()
+	m.pidfdTIDs = append(m.pidfdTIDs, tid)
+	m.mu.Unlock()
+	return unix.Eventfd(0, unix.EFD_CLOEXEC)
 }
 
 func (m *sharedFakeAdminMap) Put(key, value interface{}) error {
@@ -63,6 +74,7 @@ type sharedFakeCommand struct {
 	respond  func(request []byte) uint32 // overrides code when set
 	runErr   error                       // returned with the code: an unknown outcome (lost reply)
 	requests [][]byte
+	tids     []int
 }
 
 func (c *sharedFakeCommand) Run(o *ebpf.RunOptions) (uint32, error) {
@@ -70,6 +82,7 @@ func (c *sharedFakeCommand) Run(o *ebpf.RunOptions) (uint32, error) {
 	defer c.mu.Unlock()
 	request := o.Context.([]byte)
 	c.requests = append(c.requests, request)
+	c.tids = append(c.tids, unix.Gettid())
 	if c.respond != nil {
 		return c.respond(request), c.runErr
 	}
@@ -298,6 +311,15 @@ func TestSharedProductControlInstallsAdminOnItsThread(t *testing.T) {
 	if !admin.frozen || !configuration.frozen || len(admin.puts) != 1 || len(configuration.puts) != 1 {
 		t.Fatalf("admin install: admin %+v configuration %+v", admin, configuration)
 	}
+	// The se_admin key is the admin thread's own pidfd: asked for once, by
+	// the thread that later runs every command. Only the fake admin map
+	// supplies it; the product map (*ebpf.Map) has no seam.
+	if len(admin.pidfdTIDs) != 1 || len(configuration.pidfdTIDs) != 0 {
+		t.Fatalf("admin pidfd requested by %v (configuration %v), want one admin-thread request", admin.pidfdTIDs, configuration.pidfdTIDs)
+	}
+	if _, ok := any((*ebpf.Map)(nil)).(sharedAdminPidfdOpener); ok {
+		t.Fatal("*ebpf.Map implements the admin pidfd test seam")
+	}
 	for _, nonce := range admin.puts {
 		if nonce != c.config.Nonce || c.config.Nonce == 0 || c.config.NodeCookie == 0 {
 			t.Fatalf("se_admin holds %v, config %+v", nonce, c.config)
@@ -310,6 +332,11 @@ func TestSharedProductControlInstallsAdminOnItsThread(t *testing.T) {
 	for range 2 {
 		if code, err := c.run(t.Context(), "opaque_real_adopt_task", []byte{1, 2, 3}); err != nil || code != 2 {
 			t.Fatalf("run: code %d err %v", code, err)
+		}
+	}
+	for _, tid := range fakes["opaque_real_adopt_task"].tids {
+		if tid != admin.pidfdTIDs[0] {
+			t.Fatalf("command ran on thread %d, admin pidfd opened on %d", tid, admin.pidfdTIDs[0])
 		}
 	}
 	// Each request is the 24-byte authenticated header (node cookie, nonce,
