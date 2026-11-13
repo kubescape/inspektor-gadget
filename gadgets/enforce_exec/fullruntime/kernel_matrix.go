@@ -186,7 +186,7 @@ func resolveSharedImageOverlayLayout() (uint32, error) {
 		return layout, err
 	}
 	if lerr := overlayModuleLoader(); lerr != nil {
-		return sharedImageOverlayLayoutUnset, fmt.Errorf("%w; module autoload: %v", err, lerr)
+		return sharedImageOverlayLayoutUnset, fmt.Errorf("%w; module autoload: %w", err, lerr)
 	}
 	return overlayLayoutReader()
 }
