@@ -46,11 +46,13 @@ func sharedCandidateQualificationProfile() SharedProfile {
 }
 
 // sharedProductPolicySlots are the policy objects of every product object
-// (-DSE_PROFILE_SLOTS_256=3 in build-g19pkg/compile-pkg.sh): one more than
-// the two bindings, because revision is make-before-break (it stages into a
-// FREE object before the old one is released). The diagnostic twins
-// (compile.sh) keep two (sharedCandidateProfileFor).
-var sharedProductPolicySlots = [4]uint64{3, 0, 0, 0}
+// (-DSE_PROFILE_SLOTS_256=4 in compile-pkg.sh, G020 carryover D3): 2 x
+// Bindings, the PoC default. Revision is make-before-break (it stages into a
+// FREE object before the old one is released), so the admission floor stays
+// Bindings + 1 (objects > bindings); 2 x Bindings also keeps one binding's
+// long-held RETIRING record from starving the other binding's revision. The
+// diagnostic twins (compile.sh) keep two (sharedCandidateProfileFor).
+var sharedProductPolicySlots = [4]uint64{4, 0, 0, 0}
 
 // sharedProductProfileFor is the profile of a product q(task, work) object:
 // the twin geometry of sharedCandidateProfileFor with the product policy
@@ -58,6 +60,10 @@ var sharedProductPolicySlots = [4]uint64{3, 0, 0, 0}
 func sharedProductProfileFor(task, work uint64) SharedProfile {
 	p := sharedCandidateProfileFor(task, work)
 	p.PolicySlots = sharedProductPolicySlots
+	// G020: the image index holds 128 lower-layer roots per binding
+	// (-DSE_PROFILE_IMAGES=256 -DSE_PROFILE_IMAGE_QUOTA=128 in the product
+	// builds; the twins keep 2/1).
+	p.Images, p.PerBinding.Images = p.Bindings*sharedImageLayersMax, sharedImageLayersMax
 	return p
 }
 
@@ -121,28 +127,6 @@ func mergedSharedCandidateMetadataFor(t *testing.T, diagnostic bool) *viper.Vipe
 		paths = append(paths, sharedCandidateDiagnosticGadgetYAML, candidateDiagnosticPackaging)
 	}
 	return loadCandidateMetadata(t, paths...)
-}
-
-// sharedObjectShapeOf is the packaging decision's view of an object
-// (sharedPackagingForObject): a product object carries se_admin or the
-// product publisher commands.
-func sharedObjectShapeOf(spec *ebpf.CollectionSpec) sharedObjectShape {
-	shape := sharedObjectShape{Programs: map[string]bool{}, Maps: map[string]bool{}}
-	for name := range spec.Programs {
-		shape.Programs[name] = true
-	}
-	for name := range spec.Maps {
-		shape.Maps[name] = true
-	}
-	_, admin := spec.Maps["se_admin"]
-	commands := 0
-	for _, name := range sharedProductCommands {
-		if shape.Programs[name] {
-			commands++
-		}
-	}
-	shape.Product = admin || commands == len(sharedProductCommands)
-	return shape
 }
 
 // packagingForObject applies sharedPackagingForObject to merged metadata
@@ -475,6 +459,10 @@ type sharedFakeNativeHost struct {
 	// birthPark is the fake birth-park witness (read under exitMu).
 	birthPark    [BirthParkStats]uint64
 	birthParkErr error
+	facts        [FactStats]uint64
+	factsErr     error
+	// verdict is the fake verdict counters (G020 emitter, read under exitMu).
+	verdict KernelEventCounters
 	// failClosed* is the fake fail-closed rate witness (read under exitMu).
 	failClosedRates    [FailClosedRateCounters]uint64
 	failClosedAttempts [FailClosedRateAttempts]uint64
@@ -524,6 +512,31 @@ func (h *sharedFakeNativeHost) birthParkStats(operators.GadgetContext) (sharedBi
 		defer h.exitMu.Unlock()
 		return h.birthPark, h.birthParkErr
 	}, nil
+}
+
+// factStats stands in for borrowSharedFactStats (under exitMu).
+func (h *sharedFakeNativeHost) factStats(operators.GadgetContext) (sharedFactStatsRead, error) {
+	return func() ([FactStats]uint64, error) {
+		h.exitMu.Lock()
+		defer h.exitMu.Unlock()
+		return h.facts, h.factsErr
+	}, nil
+}
+
+// verdictCounters stands in for borrowSharedVerdictCounters (under exitMu).
+func (h *sharedFakeNativeHost) verdictCounters(operators.GadgetContext) (sharedVerdictCountersRead, func() error, error) {
+	return func() (KernelEventCounters, error) {
+		h.exitMu.Lock()
+		defer h.exitMu.Unlock()
+		return h.verdict, nil
+	}, func() error { return nil }, nil
+}
+
+// setFacts changes the fake fact witness under its lock.
+func (h *sharedFakeNativeHost) setFacts(f func(*[FactStats]uint64, *error)) {
+	h.exitMu.Lock()
+	defer h.exitMu.Unlock()
+	f(&h.facts, &h.factsErr)
 }
 
 // setBirthPark changes the fake birth-park witness under its lock.
@@ -577,7 +590,7 @@ func (h *sharedFakeNativeHost) newReaper(_ operators.GadgetContext, config Reape
 
 // qualification is the test seam over this host.
 func (h *sharedFakeNativeHost) qualification(publisher func(operators.GadgetContext) (SharedRoutePublisher, error)) SharedNodeQualification {
-	return SharedNodeQualification{Run: h.run, Publisher: publisher, newReaper: h.newReaper, exitCredit: h.exitCredit, capsuleStats: h.capsuleStats, birthParkStats: h.birthParkStats, failClosed: h.failClosed}
+	return SharedNodeQualification{Run: h.run, Publisher: publisher, newReaper: h.newReaper, exitCredit: h.exitCredit, capsuleStats: h.capsuleStats, birthParkStats: h.birthParkStats, factStats: h.factStats, failClosed: h.failClosed, verdictCounters: h.verdictCounters}
 }
 
 func (h *sharedFakeNativeHost) run(ctx context.Context, opt gadgetcontext.Option) (func(context.Context) error, <-chan error, error) {
@@ -1158,6 +1171,34 @@ func TestSharedBindRefusalReasons(t *testing.T) {
 				t.Fatalf("refused Bind left scopes %v", n.scopes)
 			}
 		})
+	}
+}
+
+// TestSharedQualifiedStartupOverlayUnavailable: an unavailable overlay layout
+// (G020 ruling: Degraded, FromImage refused) never fails qualified startup;
+// the node's Ready reports it.
+func TestSharedQualifiedStartupOverlayUnavailable(t *testing.T) {
+	sharedEnableQualification(t)
+	oldRead, oldLoad := overlayLayoutReader, overlayModuleLoader
+	t.Cleanup(func() {
+		overlayLayoutReader, overlayModuleLoader = oldRead, oldLoad
+		sharedOverlayLayoutFailure.Store(nil)
+	})
+	overlayLayoutReader = func() (uint32, error) { return 0, fmt.Errorf("overlay module BTF: %w", os.ErrNotExist) }
+	overlayModuleLoader = func() error { return fmt.Errorf("autoload refused") }
+	host := &sharedFakeNativeHost{manifest: sharedCandidateFakeManifest()}
+	n, err := StartNode(WithSharedNodeQualification(t.Context(), host.qualification(nil)), sharedQualifiedConfig())
+	if err != nil {
+		t.Fatalf("StartNode with the overlay layout unavailable: %v", err)
+	}
+	if err := (sharedQualifiedOperator{n}).Ready(host.gc); err != nil {
+		t.Fatalf("startup readiness with the overlay layout unavailable: %v", err)
+	}
+	if err := n.Ready(host.gc); !errors.Is(err, ErrSharedNativeUnavailable) || !strings.Contains(fmt.Sprint(err), "FromImage policies refused") {
+		t.Fatalf("Ready: %v, want the overlay Degraded reason", err)
+	}
+	if err := n.StopNode(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }
 

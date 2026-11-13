@@ -8,13 +8,11 @@ package fullruntime
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,16 +21,11 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	specs "github.com/opencontainers/image-spec/specs-go"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/sys/unix"
-	"gopkg.in/yaml.v3"
-	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/content/memory"
 
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
 	apihelpers "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-service/api-helpers"
-	"github.com/inspektor-gadget/inspektor-gadget/pkg/oci"
 	_ "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators/ebpf/nativeattach"
 	ocihandler "github.com/inspektor-gadget/inspektor-gadget/pkg/operators/oci-handler"
@@ -176,39 +169,16 @@ func TestSharedNodeM2Attached(t *testing.T) {
 		}
 		profile.ExitTombstones = n
 	}
-	merged := packagingForObject(t, mergedSharedCandidateMetadataFor(t, os.Getenv("IG_SHARED_M2_DIAGNOSTIC") == "1"), spec, object)
-	for key, value := range sharedGeometryAnnotations(profile) {
-		merged.Set(key, value)
-	}
-	for name, symbol := range map[string]string{
-		"opaque_real_owner_failure_outer_enter": outer, "opaque_real_owner_failure_outer_exit": outer,
-		"opaque_real_owner_failure_handler_enter": handlerSymbol, "opaque_real_owner_failure_handler_exit": handlerSymbol,
-	} {
-		merged.Set("programs."+name+".attach_to", symbol)
-	}
-	metadata, err := yaml.Marshal(merged.AllSettings())
+	digest, err := kernelBTFDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	const image = "local/shared-candidate:abi3-development"
 	store := memory.New()
-	push := func(media string, data []byte) ocispec.Descriptor {
-		desc := content.NewDescriptorFromBytes(media, data)
-		if err := store.Push(t.Context(), desc, bytes.NewReader(data)); err != nil {
-			t.Fatal(err)
-		}
-		return desc
-	}
-	config := push("application/vnd.gadget.config.v1+yaml", metadata)
-	layer := push("application/vnd.gadget.ebpf.program.v1+binary", elf)
-	manifest, _ := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: []ocispec.Descriptor{layer}})
-	desc := push(ocispec.MediaTypeImageManifest, manifest)
-	desc.Platform = &ocispec.Platform{Architecture: runtime.GOARCH, OS: "linux"}
-	index, _ := json.Marshal(ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []ocispec.Descriptor{desc}})
-	// The oci handler resolves the normalized reference (default domain
-	// ghcr.io); gadgetcontext keeps the short name that StartNode pins.
-	domain, remainder := oci.SplitIGDomain(image)
-	if err := store.Tag(t.Context(), push(ocispec.MediaTypeImageIndex, index), domain+"/"+remainder); err != nil {
+	image, err := BuildSharedCandidateImage(t.Context(), store, elf, KernelMatrixEntry{
+		Release: sharedCandidateKernelBTF[digest], OuterSymbol: outer, HandlerSymbol: handlerSymbol,
+		Profile: profile, Diagnostic: os.Getenv("IG_SHARED_M2_DIAGNOSTIC") == "1",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	handler := ocihandler.New()

@@ -76,7 +76,8 @@ func TestSharedRecoveryLoadedProgramViewIsExact(t *testing.T) {
 
 func TestSharedRecoveryImageExactInventory(t *testing.T) {
 	p, resources := sharedRecoveryFixture(t)
-	if len(resources.Maps) != 32 || len(resources.Programs) != 11 {
+	// G020: 30 maps (the legacy image_origins/image_ready maps are gone).
+	if len(resources.Maps) != 30 || len(resources.Programs) != 11 {
 		t.Fatalf("recovery inventory drift: maps=%d programs=%d", len(resources.Maps), len(resources.Programs))
 	}
 	// Independent fixed names, not derived from sharedRecoveryGeometry.
@@ -85,13 +86,19 @@ func TestSharedRecoveryImageExactInventory(t *testing.T) {
 		"se_bindings", "se_routes", "se_route_index", "se_arena",
 		"se_tasks", "se_zero_tasks", "se_invocations", "se_zero_invocations",
 		"se_accepted_epochs", "se_task_sequences", "se_inode_facts", "se_inode_accounts",
-		"image_origins", "image_ready", "events", "counters", ".bss",
+		"events", "counters", ".bss",
 		"se_arm_requests", "se_arm_receipts", "se_epoch_bank", "se_epoch_index", "se_arm_frame",
 		"se_rm_configuration", "se_rm_guardian_request", "se_rm_admin_request",
 		"se_rm_control", "se_rm_guardian_receipt", "se_rm_admin_receipt",
 	} {
 		if _, ok := resources.Maps[name]; !ok {
 			t.Fatalf("expected recovered map %s missing", name)
+		}
+	}
+	// G020: the shared node never declares the legacy image-origin maps.
+	for _, name := range []string{"image_origins", "image_ready"} {
+		if _, ok := resources.Maps[name]; ok {
+			t.Fatalf("recovered image declares the legacy map %s", name)
 		}
 	}
 	for _, name := range []string{

@@ -51,8 +51,9 @@ func validateSharedRecoveryImageGeometry(p SharedProfile, r *operators.NativeRes
 	if r == nil || len(r.Maps) != len(wantMaps) || len(r.Programs) != len(wantPrograms) {
 		return fmt.Errorf("recovered image inventory mismatch")
 	}
-	if p.Images != 65536 || p.TelemetryBytes < 262144 {
-		return fmt.Errorf("recovered image/telemetry profile mismatch")
+	// G020: no legacy 65536-cell image_origins map pins Images any more.
+	if p.TelemetryBytes < 262144 {
+		return fmt.Errorf("recovered telemetry profile mismatch")
 	}
 	for name, want := range wantMaps {
 		if got, ok := r.Maps[name]; !ok || got != want {

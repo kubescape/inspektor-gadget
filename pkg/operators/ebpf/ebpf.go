@@ -231,6 +231,8 @@ type ebpfInstance struct {
 	// collection. Only then is attach transactional (nativeattach); ordinary
 	// gadgets keep the original attach loop.
 	nativeTxn bool
+	// nativeConstants are the NativeConstantsKey constants set (name -> size).
+	nativeConstants map[string]uint32
 
 	// rawDetachers undo BPF_PROG_ATTACH attachments that don't return a Link
 	// (sk_skb stream_parser/verdict). Run on Stop().
@@ -993,6 +995,9 @@ func (i *ebpfInstance) Start(gadgetCtx operators.GadgetContext) error {
 	// Recheck transformed instructions before kernel map or program loading.
 	if err := verifyCollectionSpec(i.collectionSpec, i.policy); err != nil {
 		return fmt.Errorf("verifying BPF policy before loading: %w", err)
+	}
+	if err := i.applyNativeConstants(gadgetCtx); err != nil {
+		return fmt.Errorf("setting native constants: %w", err)
 	}
 	// Parameters, context variables and enrichers can change map dimensions
 	// after native preflight. Validate the exact final spec before allocating.

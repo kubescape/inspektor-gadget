@@ -36,6 +36,15 @@ const (
 	// recovered collection for H's pin/FD ledger. It is not an invocation
 	// permission and is absent for ordinary or protocol-only images.
 	NativeLoadedProgramPrefix = "ebpf/native-loaded-program/"
+	// NativeConstantsKey optionally holds a map[string]uint32,
+	// map[string]uint64 or map[string]any (uint32 or uint64 values) the
+	// native owner installs before Start: each name is a read-only constant
+	// (`const volatile __u32` for a uint32, `__u64` for a uint64) of the
+	// collection, set before admission and loading. A name absent from the
+	// collection is skipped; a present one that is not a read-only constant
+	// of the value's size refuses the load. The constants set are reported
+	// in NativeResources.Constants. Ordinary gadgets ignore it.
+	NativeConstantsKey = "ebpf/native-constants"
 )
 
 type NativeMapResource struct {
@@ -55,6 +64,9 @@ type NativeResources struct {
 	// TailCalls are the PROG_ARRAY slots the eBPF operator installs at load,
 	// before any hook attaches (metadata `tail_calls`), as admitted here.
 	TailCalls []NativeTailCall
+	// Constants are the NativeConstantsKey constants set in the
+	// collection (name -> byte size); absent names are not listed.
+	Constants map[string]uint32
 }
 
 // NativeTailCall is one declared PROG_ARRAY slot: Map[Index] = Program.

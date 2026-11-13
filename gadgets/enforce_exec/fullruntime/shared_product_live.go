@@ -27,6 +27,7 @@ var (
 	_ SharedRoutePublisher   = (*sharedLiveProductPublisher)(nil)
 	_ sharedRouteRecycler    = (*sharedLiveProductPublisher)(nil)
 	_ sharedAdoptionReporter = (*sharedLiveProductPublisher)(nil)
+	_ sharedImageReporter    = (*sharedLiveProductPublisher)(nil)
 )
 
 func (p *sharedLiveProductPublisher) Close() error {
@@ -82,7 +83,7 @@ func (n *NodeEnforcer) borrowSharedProductPublisher(gc operators.GadgetContext, 
 		programs[name] = program
 	}
 	maps := map[string]*ebpf.Map{}
-	for _, name := range []string{"se_admin", "se_configuration", "se_routes", "se_objects", "opaque_real_adopt_state", "se_bindings"} {
+	for _, name := range []string{"se_admin", "se_configuration", "se_routes", "se_objects", "opaque_real_adopt_state", "se_bindings", sharedImageBindingsMap} {
 		value, _ := gc.GetVar(operators.MapPrefix + name)
 		m, _ := value.(*ebpf.Map)
 		if m == nil {
@@ -95,7 +96,47 @@ func (n *NodeEnforcer) borrowSharedProductPublisher(gc operators.GadgetContext, 
 	if err != nil {
 		return nil, err // never a typed nil in the interface
 	}
+	if err := n.withImageIndex(p, maps[sharedImageBindingsMap]); err != nil {
+		return nil, errors.Join(err, p.Close())
+	}
 	return p.withBindings(maps["se_bindings"]), nil
+}
+
+// withImageIndex gives the commander the G020 image index over the
+// se_image_bindings map, with a containerd resolver when the node config
+// names a containerd socket (none otherwise: no image sets are built).
+func (n *NodeEnforcer) withImageIndex(p *sharedLiveProductPublisher, bindings sharedBytesMap) error {
+	cmd, ok := p.cmd.(*productCommander)
+	if !ok {
+		return nil
+	}
+	var resolver sharedImageResolving
+	if n.host != nil && n.host.imageSource != nil {
+		r, err := newSharedImageLayerResolver(n.host.imageSource, sharedImageProcHost{ProcRoot: n.config.ImageProcRoot, HostRoot: n.config.ImageHostRoot}, n.config.Profile.PerBinding.Images)
+		if err != nil {
+			return err
+		}
+		resolver = r
+	} else if n.config.ContainerdAddress != "" {
+		source, err := newSharedImageContainerdSource(n.config.ContainerdAddress, "")
+		if err != nil {
+			return err
+		}
+		r, err := newSharedImageLayerResolver(source, sharedImageProcHost{ProcRoot: n.config.ImageProcRoot, HostRoot: n.config.ImageHostRoot}, n.config.Profile.PerBinding.Images)
+		if err != nil {
+			return errors.Join(err, source.Close())
+		}
+		resolver = r
+		closeControl := p.closeControl
+		p.closeControl = func() error { return errors.Join(closeControl(), source.Close()) }
+	}
+	index, err := newProductImageIndex(cmd.control.run, bindings, resolver, n.config.Profile)
+	if err != nil {
+		return err
+	}
+	index.overlayUnavailable = n.host.overlayUnavailable
+	cmd.image = index
+	return nil
 }
 
 // withBindings gives the commander the bindings map, to report a RETIRING

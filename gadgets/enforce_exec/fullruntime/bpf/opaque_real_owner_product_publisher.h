@@ -108,6 +108,9 @@ real_owner_cmd_authenticate(const struct opaque_real_cmd_header *h)
 	return 1;
 }
 
+/* G020: the image index commands and the PREPARE/FREE image lifetime. */
+#include "opaque_real_owner_product_image.h"
+
 /* B3: opaque_real_policy_stage (design section 3.1). One authenticated run
  * per object step, through the exact object state machine of the protocol
  * (full/shared_arena.h, shared_control.h se_command): BEGIN a FREE slot with
@@ -390,7 +393,9 @@ static __attribute__((noinline)) int real_owner_snapshot_drop(__u32 slot,
 {
 	struct se_shared_binding *binding = SE_BINDING_LOOKUP(&slot);
 	struct se_route_anchor *route = SE_ROUTE_LOOKUP(&slot);
-	if (!binding || !route || record >= 2)
+	struct se_binding_images *images =
+		bpf_map_lookup_elem(&se_image_bindings, &slot);
+	if (!binding || !route || !images || record >= 2)
 		return -1;
 	record &= 1;
 	struct se_ticket_request request = { .record = record,
@@ -425,8 +430,12 @@ static __attribute__((noinline)) int real_owner_snapshot_drop(__u32 slot,
 	bpf_spin_lock(&route->lock);
 	struct se_snapshot *reclaim =
 		&binding->state.records[real_owner_record(record)];
+	/* G020: FREE releases the record's image reference, exactly once, in
+	 * this same locked transition (full/shared_image_snapshot.h). */
 	int result = reclaim->serial == request.serial ?
-			     se_snapshot_reclaim_locked(reclaim) :
+			     se_image_snapshot_reclaim_locked(
+				     images, &binding->state,
+				     real_owner_record(record)) :
 			     -1;
 	if (!result && !se_route_rec_held(route, record))
 		*SE_ROUTE_REC(route, record) = (struct se_route_rec){};
@@ -612,9 +621,11 @@ real_owner_publish_first(const struct opaque_real_route_publish_request *r)
 	struct se_route_anchor *route = SE_ROUTE_LOOKUP(&slot);
 	struct opaque_real_adopt_state *state =
 		bpf_map_lookup_elem(&opaque_real_adopt_state, &slot);
+	struct se_binding_images *images =
+		bpf_map_lookup_elem(&se_image_bindings, &slot);
 	__u32 bank = r->bank;
 	struct se_epoch_cell *cell = SE_EPOCH_BANK_LOOKUP(&bank);
-	if (!binding || !route || !state || !cell)
+	if (!binding || !route || !state || !images || !cell)
 		return OPAQUE_REAL_CMD_INVARIANT;
 	if (!r->init_tgid || !r->init_start_ticks || !r->init_mntns ||
 	    !r->init_role)
@@ -650,12 +661,27 @@ real_owner_publish_first(const struct opaque_real_route_publish_request *r)
 		} else {
 			real_owner_metadata_copy_locked(&b->records[0].metadata,
 							r);
-			serial = b->records[0].serial;
-			incarnation = route->incarnation;
-			code = OPAQUE_REAL_CMD_OK;
+			if (se_image_snapshot_prepare_locked(images, b, 0)) {
+				/* G020: no sealed image of the handle: undo
+				 * the prepare and the open (an empty binding
+				 * on a FREE route again). */
+				b->records[0] = (struct se_snapshot){};
+				real_owner_binding_clear_locked(b);
+				route->cgroup_identity = 0;
+				route->scope = 0;
+				route->payload_slot = 0;
+				route->phase = SE_ROUTE_FREE;
+				code = OPAQUE_REAL_CMD_IMAGE;
+			} else {
+				serial = b->records[0].serial;
+				incarnation = route->incarnation;
+				code = OPAQUE_REAL_CMD_OK;
+			}
 		}
 	}
 	bpf_spin_unlock(&route->lock);
+	if (code == OPAQUE_REAL_CMD_IMAGE)
+		real_owner_image_witness(SE_IMAGE_CLASS_PREPARE_REFUSED);
 	if (code != OPAQUE_REAL_CMD_OK)
 		return code;
 	__u64 locator = se_route_locator(slot, incarnation);
@@ -756,6 +782,10 @@ real_owner_publish_revision(const struct opaque_real_route_publish_request *r)
 	struct se_epoch_cell *cell = SE_EPOCH_BANK_LOOKUP(&bank);
 	if (!binding || !route || !state || !cell)
 		return OPAQUE_REAL_CMD_INVARIANT;
+	struct se_binding_images *images =
+		bpf_map_lookup_elem(&se_image_bindings, &slot);
+	if (!images)
+		return OPAQUE_REAL_CMD_INVARIANT;
 	struct se_binding_snapshots *b = &binding->state;
 	__u32 record = 0, incarnation = 0;
 	int code = OPAQUE_REAL_CMD_RETRY;
@@ -820,10 +850,21 @@ real_owner_publish_revision(const struct opaque_real_route_publish_request *r)
 		struct se_snapshot *candidate =
 			&b->records[real_owner_record(record)];
 		real_owner_metadata_copy_locked(&candidate->metadata, r);
-		serial = candidate->serial;
-		code = OPAQUE_REAL_CMD_OK;
+		if (se_image_snapshot_prepare_locked(
+			    images, b, real_owner_record(record))) {
+			/* G020: undo the prepare; the record was FREE. Both
+			 * records reference one descriptor otherwise (the
+			 * revision grace period, references == 2). */
+			*candidate = (struct se_snapshot){};
+			code = OPAQUE_REAL_CMD_IMAGE;
+		} else {
+			serial = candidate->serial;
+			code = OPAQUE_REAL_CMD_OK;
+		}
 	}
 	bpf_spin_unlock(&route->lock);
+	if (code == OPAQUE_REAL_CMD_IMAGE)
+		real_owner_image_witness(SE_IMAGE_CLASS_PREPARE_REFUSED);
 	if (code != OPAQUE_REAL_CMD_OK)
 		return code;
 	int epoch = -1;
@@ -1570,10 +1611,48 @@ int opaque_real_adopt_finish(struct opaque_real_adopt_request *r)
 	bpf_iter_css_task_destroy(&it);
 	bpf_cgroup_release(group);
 	if (!started || state->bad || !state->iterated ||
-	    state->iterated != state->adopted) {
+	    state->iterated != state->adopted || !state->scope) {
 		real_owner_adopt_fail(state);
 		return OPAQUE_REAL_CMD_REFUSED;
 	}
+	/* H1: the binding's root anchor, read from the init leader (looked
+	 * up outside the iteration: one task, no per-iteration state). */
+	struct se_binding_root anchor = { .init_tgid = state->init_tgid,
+					  .init_start =
+						  state->init_start_ticks };
+	struct task_struct *init = bpf_task_from_pid(state->init_tgid);
+	__u32 leader = 0;
+	int rooted = init && !real_owner_adopt_identity(init, state, &leader) &&
+		     leader &&
+		     !real_owner_task_root(init, &anchor.root_ino,
+					   &anchor.root_mnt_id,
+					   &anchor.root_dev, &anchor.mntns) &&
+		     anchor.mntns == state->init_mntns;
+	if (init)
+		bpf_task_release(init);
+	if (!rooted) {
+		real_owner_adopt_fail(state);
+		return OPAQUE_REAL_CMD_REFUSED;
+	}
+	/* H1: record the anchor before the adopting word clears (no claim
+	 * of this binding is evaluated earlier); scope last, so an exec
+	 * reader never takes a half-written record for this binding. */
+	struct se_binding_root *root =
+		bpf_map_lookup_elem(&se_binding_roots, &slot);
+	if (!root) {
+		real_owner_adopt_fail(state);
+		return OPAQUE_REAL_CMD_INVARIANT;
+	}
+	root->scope = 0;
+	asm volatile("" ::: "memory");
+	root->init_start = anchor.init_start;
+	root->root_ino = anchor.root_ino;
+	root->init_tgid = anchor.init_tgid;
+	root->mntns = anchor.mntns;
+	root->root_mnt_id = anchor.root_mnt_id;
+	root->root_dev = anchor.root_dev;
+	asm volatile("" ::: "memory");
+	root->scope = state->scope;
 	bpf_spin_lock(&state->lock);
 	__u32 incarnation = state->incarnation;
 	__u64 generation = state->generation;

@@ -28,8 +28,10 @@ annotations:
   # node-wide (checked against the loaded map sizes at admission). 32 WORK
   # per binding: burst capacity (W-1)/2 = 15 >= the 8 zero-gated streams
   # (the WORK quota must be a power of two; 16 gave 7).
-  enforce-exec-shared-images: "2"
-  enforce-exec-shared-image-quota: "1"
+  # G020 image index: 128 lower-layer roots per binding, Images = Bindings
+  # x 128 (se_image_keys, preallocated; product admission requires it).
+  enforce-exec-shared-images: "256"
+  enforce-exec-shared-image-quota: "128"
   enforce-exec-shared-inode-facts: "2"
   enforce-exec-shared-inode-quota: "1"
   enforce-exec-shared-tasks: "256"
@@ -41,14 +43,57 @@ annotations:
   # Burst-sized credit-at-exit tombstone table (SE_PROFILE_EXIT_TOMBSTONES):
   # sized for the exit burst, never by TASK count.
   enforce-exec-shared-exit-tombstones: "8192"
-  # Three 256-cell policy objects for two bindings: revision is
-  # make-before-break (the new policy is staged into a FREE object before the
-  # old one is released), so one object must stay spare (product control
-  # admission refuses objects <= bindings).
-  enforce-exec-shared-slots-256: "3"
+  # G020 verdict events: the node-wide ring opaque_real_verdict_events
+  # (SE_PROFILE_VERDICT_RING; default max(1 MiB, Bindings x 256 KiB), a
+  # power of two) and the event ABI the "verdict" datasource carries.
+  enforce-exec-shared-verdict-ring: "1048576"
+  enforce-exec-shared-event-abi: "1"
+  # Four 256-cell policy objects for two bindings (2 x Bindings, the PoC
+  # default): revision is make-before-break (the new policy is staged into a
+  # FREE object before the old one is released), so one object must stay
+  # spare (product control admission refuses objects <= bindings), and with
+  # 2 x Bindings one binding's long-held RETIRING record never starves the
+  # other binding's revision.
+  enforce-exec-shared-slots-256: "4"
   enforce-exec-shared-slots-1024: "0"
   enforce-exec-shared-slots-4096: "0"
   enforce-exec-shared-slots-16384: "0"
+# G020: one event per evaluated exec pass and per fail-closed fault
+# (full/shared_verdict_event.h). The prefix up to error is the legacy
+# enforce_exec_full verdict event (full/gadget.yaml); the rest is additive.
+datasources:
+  verdict:
+    fields:
+      path:
+        annotations:
+          description: resolved executable path
+      exec_class:
+        annotations:
+          description: binding execution class (1 Audit, 2 Strict)
+      scope:
+        annotations:
+          description: binding scope cookie of the exec
+      exec_id:
+        annotations:
+          description: exec sequence of the task, equal across the passes of one exec; key execs on (load_epoch, task_cookie, exec_id)
+      pass:
+        annotations:
+          description: evaluated pass of the exec (0 first, 1.. interpreter), 4294967295 for a fault
+      error:
+        annotations:
+          description: 0 for a decision (an AUDIT_UNKNOWN decision reports error 0 with uncertain 1), 1..3 for the fail-closed class (FE_INVALID, FE_UNKNOWN, FE_ROLE_CONFLICT), 1 for a fault
+      uncertain:
+        annotations:
+          description: the verdict rests on an unknown fact (AUDIT_UNKNOWN reports error 0 and uncertain 1)
+      facts_unknown:
+        annotations:
+          description: bitmask of unknown facts (target path, uid, ancestors, fs, argv, stdin, actor path, image)
+      task_cookie:
+        annotations:
+          description: identity cookie of the exec'ing task (node-unique within one collection load; restarts on reload); (load_epoch, task_cookie, exec_id) identifies one exec, host_pid is informational
+      load_epoch:
+        annotations:
+          description: random nonzero epoch of the collection load that emitted the event; qualifies task_cookie across reloads
 # The product object's tail-call slots (sharedProductTailCalls, pinned at
 # admission). The eBPF operator installs each target in its PROG_ARRAY at
 # load, before any hook attaches, and freezes the arrays: the birth

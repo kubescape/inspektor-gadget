@@ -155,9 +155,10 @@ func TestSharedHostRejectsImageKeyGeometry(t *testing.T) {
 				metadata.Set("annotations.enforce-exec-owner-development", true)
 				metadata.Set("annotations.enforce-exec-shared-profile", "1")
 				p := cfg.Profile
-				for name, count := range map[string]uint64{"inode-facts": p.InodeFacts, "inode-quota": p.PerBinding.InodeFacts, "tasks": p.Tasks, "scratch": p.Scratch, "accepted-uids": p.AcceptedUIDs, "task-quota": p.PerBinding.Tasks, "scratch-quota": p.PerBinding.Scratch, "bindings": p.Bindings, "exit-tombstones": p.exitTombstones(), "slots-256": p.PolicySlots[0], "slots-1024": p.PolicySlots[1], "slots-4096": p.PolicySlots[2], "slots-16384": p.PolicySlots[3], "images": p.Images, "image-quota": p.PerBinding.Images} {
+				for name, count := range map[string]uint64{"inode-facts": p.InodeFacts, "inode-quota": p.PerBinding.InodeFacts, "tasks": p.Tasks, "scratch": p.Scratch, "accepted-uids": p.AcceptedUIDs, "task-quota": p.PerBinding.Tasks, "scratch-quota": p.PerBinding.Scratch, "bindings": p.Bindings, "exit-tombstones": p.exitTombstones(), "slots-256": p.PolicySlots[0], "slots-1024": p.PolicySlots[1], "slots-4096": p.PolicySlots[2], "slots-16384": p.PolicySlots[3], "images": p.Images, "image-quota": p.PerBinding.Images, "verdict-ring": p.verdictRing()} {
 					metadata.Set("annotations.enforce-exec-shared-"+name, strconv.FormatUint(count, 10))
 				}
+				metadata.Set("annotations."+SharedEventABIAnnotation, SharedEventABIVersion)
 				metadata.Set("annotations.enforce-exec-shared-"+key, value)
 				_, err = instantiateSharedNode(gc, metadata, n)
 				if err == nil || !strings.Contains(err.Error(), "shared image geometry mismatch: "+key) {
@@ -342,8 +343,14 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 			"\t!defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE)\n" +
 			"#error \"the extended fail-closed injector requires the fail-closed injectors and the product publisher\"\n#endif\n",
 		"#else\n#define SE_FC_EXEC_OPEN_PARENT_FAULT(key) 0\n#define SE_FC_EXEC_ADMISSION_FAULT(later) 0\n" +
-			"#define SE_FC_BIRTH_ADMISSION_FAULT() 0\n#endif\n",
+			"#define SE_FC_BIRTH_ADMISSION_FAULT() 0\n#define SE_FC_TARGET_ADMISSION_FAULT() 0\n" +
+			"#define SE_FC_READER_BEGIN_FAULT() 0\n#endif\n",
 		"good = !SE_FC_EXEC_OPEN_PARENT_FAULT(key) &&\n\t\t       real_owner_child_open_parent(&owner) == SE_OL_OK;\n",
+		// G020 carryover: the target re-admission and reader-not-begun
+		// injectors (every[3], every[4]) take the product's own paths.
+		"if (admission == SE_ROUTE_OWNED && SE_FC_TARGET_ADMISSION_FAULT()) {\n" +
+			"\t\t(void)real_owner_child_release_claim(&claim);\n",
+		"int opened = !SE_FC_READER_BEGIN_FAULT() &&\n\t\t\t     real_owner_reader_open_exact(&owner, &claim, bprm,\n",
 		"(frozen_class != claim.execution_class ||\n\t     SE_FC_EXEC_ADMISSION_FAULT(later))) {\n",
 		"if (admission == SE_ROUTE_OWNED && SE_FC_BIRTH_ADMISSION_FAULT()) {\n" +
 			"\t\t(void)real_owner_child_release_claim(&claim);\n",
@@ -534,8 +541,9 @@ func TestOpaqueRealVerdictCandidateCompileGuards(t *testing.T) {
 	}; !slices.Equal(conditionals, want) {
 		t.Errorf("final-free header conditionals %q, want only %q: the withdrawal must not depend on any option", conditionals, want)
 	}
-	// SE_OC_WORD has no bound of its own in the one-word profile; its
-	// documented precondition must stay next to the macro.
+	// SE_OC_WORD (se_oc_word) clamps the word index to the last bitmap
+	// word for the verifier only; a caller still owes local < SE_OC_QUOTA,
+	// so the documented precondition must stay next to the macro.
 	raw, err = os.ReadFile("../full/shared_pool_opaque_charge_candidate.h")
 	if err != nil {
 		t.Fatal(err)

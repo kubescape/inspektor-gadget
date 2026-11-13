@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -333,7 +334,8 @@ func TestProductPublisherAuditWithdrawsAtOnce(t *testing.T) {
 // TestProductPublisherMigratedAfterRelease (migrate-in residual): a task
 // that migrates into a refused Strict slot's cgroup between the empty poll
 // and the withdrawal runs under the WITHDRAWN (allowing) route. The release
-// re-reads the cgroup after the withdrawal and reports the residual,
+// re-reads the cgroup after the withdrawal (G020 carryover: 3 reads over
+// 250 ms, then once before the recycle) and reports the residual once,
 // Degraded (MigratedAfterRelease), kept after the slot is recycled and
 // counted; a cgroup still empty after the withdrawal reports nothing.
 func TestProductPublisherMigratedAfterRelease(t *testing.T) {
@@ -341,10 +343,16 @@ func TestProductPublisherMigratedAfterRelease(t *testing.T) {
 		name     string
 		migrated bool
 		gone     bool
+		// from is the post-withdrawal read that first sees the task (1:
+		// at once, 3: the window's last read, 4: the check before the
+		// recycle); reads the post-withdrawal reads.
+		from, reads int
 	}{
-		{"migrated in", true, false},
-		{"still empty", false, false},
-		{"cgroup gone", false, true},
+		{"migrated in", true, false, 1, 1},
+		{"migrated in late in the window", true, false, 3, 3},
+		{"migrated in before the recycle", true, false, 4, 4},
+		{"still empty", false, false, 0, 4},
+		{"cgroup gone", false, true, 0, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := &sharedFakeCommander{verifyCode: sharedProductRefused}
@@ -352,9 +360,12 @@ func TestProductPublisherMigratedAfterRelease(t *testing.T) {
 			p, _ := newTestProductPublisher(cmd, threads)
 			defer p.Close()
 			withdrawn := func() bool { return strings.Contains(strings.Join(cmd.log(), ","), "withdraw") }
+			var reads atomic.Int32 // post-withdrawal reads
 			p.threads = func(slot uint32) ([]uint32, error) {
-				if withdrawn() && tc.migrated {
-					return []uint32{42}, nil // migrated in after the empty poll
+				if withdrawn() {
+					if n := int(reads.Add(1)); tc.migrated && n >= tc.from {
+						return []uint32{42}, nil // migrated in after the empty poll
+					}
 				}
 				return threads.list(slot)
 			}
@@ -365,6 +376,9 @@ func TestProductPublisherMigratedAfterRelease(t *testing.T) {
 			waitFor(t, "release", func() bool { _, reported := p.adoptionStatus(0); return !reported })
 			if log := strings.Join(cmd.log(), ","); !strings.HasSuffix(log, "withdraw,recycle") {
 				t.Fatalf("release %s", log)
+			}
+			if n := int(reads.Load()); n != tc.reads {
+				t.Fatalf("%d post-withdrawal reads, want %d", n, tc.reads)
 			}
 			slots, counts := p.adoptionReport()
 			if !tc.migrated {

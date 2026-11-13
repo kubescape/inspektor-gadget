@@ -24,7 +24,10 @@ type sharedPhysicalScope struct {
 	preparedID, cgroup uint64
 	registration       sharedReceiptWire
 	pins               *sharedPhysicalPins
-	route              sharedLiveRoute
+	// containerID is the binding's trusted containerd container ID (G020
+	// image index), set with the first pins and immutable after.
+	containerID string
+	route       sharedLiveRoute
 	// withdrawn is terminal: the account's route was withdrawn, so this
 	// cgroup is never bound or published again on this node (D5).
 	withdrawn bool
@@ -43,7 +46,11 @@ type sharedPhysicalScope struct {
 func (a *sharedPhysicalScope) initIdentity() (SharedInitIdentity, error) {
 	p := a.pins
 	if p != nil && p.identityTest != nil {
-		return *p.identityTest, nil
+		id := *p.identityTest
+		if id.ContainerID == "" {
+			id.ContainerID = a.containerID
+		}
+		return id, nil
 	}
 	if p == nil || p.initPID == 0 || p.mount == nil {
 		return SharedInitIdentity{}, fmt.Errorf("no retained init pins")
@@ -56,7 +63,7 @@ func (a *sharedPhysicalScope) initIdentity() (SharedInitIdentity, error) {
 	if err != nil {
 		return SharedInitIdentity{}, err
 	}
-	return SharedInitIdentity{TGID: p.initPID, StartTicks: ticks, MountNS: mount[1]}, nil
+	return SharedInitIdentity{TGID: p.initPID, StartTicks: ticks, MountNS: mount[1], ContainerID: a.containerID}, nil
 }
 
 // sharedLiveRoute is the last-good publication of one live route slot.
@@ -234,6 +241,9 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 	if c.CgroupID == 0 || c.InitHostPID == 0 || c.Acquire == nil {
 		return nil, fmt.Errorf("trusted cgroup and init identity required")
 	}
+	if c.ContainerID != "" && !ValidSharedContainerID(c.ContainerID) {
+		return nil, fmt.Errorf("container ID %q is not a containerd identifier", c.ContainerID)
+	}
 	n.mu.Lock()
 	if err := n.bindRefusalLocked(c.CgroupID); err != nil {
 		n.mu.Unlock()
@@ -288,8 +298,12 @@ func (n *NodeEnforcer) bindPhysicalScope(ctx context.Context, c SharedBindingCon
 		account.mu.Lock()
 		if account.withdrawn {
 			err = ErrSharedBindingWithdrawn
+		} else if account.pins != nil && account.containerID != c.ContainerID {
+			// G020: the image index belongs to the cgroup's container.
+			err = fmt.Errorf("rebind cannot replace the retained container ID")
 		} else if account.pins == nil {
 			account.pins = s.pending
+			account.containerID = c.ContainerID
 			s.pending = nil
 		} else {
 			old, candidate := account.pins, s.pending

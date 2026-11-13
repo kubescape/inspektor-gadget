@@ -411,14 +411,22 @@ func (p *productRoutePublisher) release(ctx context.Context, slot uint32, cgroup
 	p.mu.Lock()
 	owned := p.status[slot] // the report this poller releases
 	p.mu.Unlock()
+	migrated := false // one MigratedAfterRelease report per release
 	for k, step := range []func() (uint32, error){
 		func() (uint32, error) { return p.cmd.withdraw(ctx, slot, cgroup) },
 		func() (uint32, error) { return p.cmd.recycle(ctx, slot) },
 	} {
 		if k == 1 {
-			p.checkMigratedAfterRelease(slot, owned)
+			var live bool
+			if migrated, live = p.watchMigratedAfterRelease(slot, owned); !live {
+				return // node teardown: the collection is destroyed latched
+			}
 		}
 		for {
+			if k == 1 && !migrated {
+				// The check before every recycle attempt.
+				migrated = p.checkMigratedAfterRelease(slot, owned)
+			}
 			code, err := step()
 			// Retry while contended; recycle UNCLEAN (6) keeps the slot
 			// occupied and retries too, it is never reused on 6.
@@ -450,17 +458,42 @@ func (p *productRoutePublisher) release(ctx context.Context, slot uint32, cgroup
 	p.mu.Unlock()
 }
 
-// checkMigratedAfterRelease re-reads a withdrawn Strict slot's cgroup: the
-// empty poll and the withdrawal are not atomic, so a task can migrate in
+// sharedMigratedRereads reads of a withdrawn Strict slot's cgroup, spread
+// evenly over sharedMigratedWindow, follow the withdrawal (G020 carryover:
+// one read missed a task that migrated in a moment after it).
+const (
+	sharedMigratedRereads = 3
+	sharedMigratedWindow  = 250 * time.Millisecond
+)
+
+// watchMigratedAfterRelease re-reads a withdrawn Strict slot's cgroup
+// sharedMigratedRereads times over sharedMigratedWindow (at 0, 125 and
+// 250 ms), stopping at the first report (reported). live is false only on
+// node teardown.
+func (p *productRoutePublisher) watchMigratedAfterRelease(slot uint32, owned *SharedAdoptionStatus) (reported, live bool) {
+	for i := range sharedMigratedRereads {
+		if i > 0 && p.sleep(p.pollCtx, sharedMigratedWindow/(sharedMigratedRereads-1)) != nil {
+			return false, false
+		}
+		if p.checkMigratedAfterRelease(slot, owned) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// checkMigratedAfterRelease re-reads a withdrawn Strict slot's cgroup once:
+// the empty poll and the withdrawal are not atomic, so a task can migrate in
 // between and then run under the WITHDRAWN (allowing) route. A non-empty or
-// unreadable (not gone) cgroup is reported MigratedAfterRelease.
-func (p *productRoutePublisher) checkMigratedAfterRelease(slot uint32, owned *SharedAdoptionStatus) {
+// unreadable (not gone) cgroup is reported MigratedAfterRelease (sticky;
+// the caller reports a release at most once) and true is returned.
+func (p *productRoutePublisher) checkMigratedAfterRelease(slot uint32, owned *SharedAdoptionStatus) bool {
 	if owned == nil || owned.Audit {
-		return // Audit withdraws at once by design: its tasks are allowed anyway
+		return false // Audit withdraws at once by design: its tasks are allowed anyway
 	}
 	tids, err := p.threads(slot)
 	if errors.Is(err, errCgroupGone) || (err == nil && len(tids) == 0) {
-		return
+		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -468,6 +501,7 @@ func (p *productRoutePublisher) checkMigratedAfterRelease(slot uint32, owned *Sh
 	st.Reason, st.Stuck = MigratedAfterRelease, false
 	p.migrated = append(p.migrated, st)
 	p.counts[MigratedAfterRelease]++
+	return true
 }
 
 // setOnReleased installs the node's callback for a slot whose refused
@@ -600,6 +634,10 @@ func sharedProductCodeError(op string, code uint32, err error) error {
 		return fmt.Errorf("%s: %w", op, ErrSharedBindingWithdrawn)
 	case code == sharedProductAuthFailed:
 		return fmt.Errorf("%s: product command authentication refused", op)
+	case code == sharedProductUncertain:
+		return fmt.Errorf("%s: %w (reconciled by INSPECT)", op, errSharedImageUncertain)
+	case code == sharedProductImage:
+		return fmt.Errorf("%s: the image handle is not a sealed set of the binding: %w: %w", op, ErrSharedImageIndexUnavailable, ErrSharedRetryableRefusal)
 	case code == sharedProductUnarmed:
 		// Reachable only on a test-gate twin: on a product object an
 		// unarmed image already fails authentication (code 5), which

@@ -124,8 +124,8 @@ func validateWorkerPrebuild(r workerPrebuildV1) error {
 	if err := validateWorkerChecks(r.Checks); err != nil {
 		return err
 	}
-	proof, err := deriveWorkerTail(r.Snapshot)
-	if err != nil {
+	proof, err := deriveWorkerTail(r.Snapshot) //nolint:staticcheck // SA4023: stub refuses by design.
+	if err != nil {                            //nolint:staticcheck // SA4023: deriveWorkerTail refuses until its dependency lands; keep guard.
 		return err
 	}
 	if !reflect.DeepEqual(proof, r.TailProof) || r.BootstrapBytes != proof.Bootstrap || r.TailBytes != proof.Tail || proof.Bootstrap == 0 || proof.Tail == 0 || proof.Tail > ^uint64(0)-proof.Bootstrap {

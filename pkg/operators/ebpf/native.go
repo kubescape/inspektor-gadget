@@ -6,6 +6,7 @@ package ebpfoperator
 import (
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -21,7 +22,11 @@ func (i *ebpfInstance) publishNativeResources(gc operators.GadgetContext) {
 		gc.SetVar(operators.NativeResourcesKey, (*operators.NativeResources)(nil))
 		return
 	}
-	gc.SetVar(operators.NativeResourcesKey, i.nativeResources())
+	r := i.nativeResources()
+	// Preflight admission runs before load: report the constants the load
+	// will set (an invalid set reports none; the load then refuses it).
+	r.Constants, _ = i.nativeConstantPlan(gc, false)
+	gc.SetVar(operators.NativeResourcesKey, r)
 }
 
 func (i *ebpfInstance) nativeResources() *operators.NativeResources {
@@ -34,6 +39,7 @@ func (i *ebpfInstance) nativeResources() *operators.NativeResources {
 	}
 	// Invalid declarations are refused by validateNativeResources.
 	r.TailCalls, _ = i.nativeTailCalls()
+	r.Constants = maps.Clone(i.nativeConstants)
 	return r
 }
 
@@ -49,6 +55,67 @@ func nativeMapResource(m *ebpf.MapSpec, depth int) operators.NativeMapResource {
 		r.InnerMap = &inner
 	}
 	return r
+}
+
+// applyNativeConstants sets the native owner's read-only constants
+// (operators.NativeConstantsKey) in the final collection spec and records
+// the ones it set (name -> byte size) for native admission.
+func (i *ebpfInstance) applyNativeConstants(gc operators.GadgetContext) error {
+	applied, err := i.nativeConstantPlan(gc, true)
+	i.nativeConstants = applied
+	return err
+}
+
+// nativeConstantPlan checks the NativeConstantsKey constants against the
+// collection spec and returns the ones present (name -> byte size), setting
+// them when apply. Preflight (publishNativeResources) and load share it, so
+// admission sees exactly the constants the load sets.
+func (i *ebpfInstance) nativeConstantPlan(gc operators.GadgetContext, apply bool) (map[string]uint32, error) {
+	value, exists := gc.GetVar(operators.NativeConstantsKey)
+	if !exists {
+		return nil, nil
+	}
+	constants := map[string]any{}
+	switch typed := value.(type) {
+	case map[string]uint32:
+		for name, v := range typed {
+			constants[name] = v
+		}
+	case map[string]uint64:
+		for name, v := range typed {
+			constants[name] = v
+		}
+	case map[string]any:
+		constants = typed
+	default:
+		return nil, fmt.Errorf("invalid native constants %T", value)
+	}
+	applied := map[string]uint32{}
+	for name, v := range constants {
+		var size uint32
+		switch v.(type) {
+		case uint32:
+			size = 4
+		case uint64:
+			size = 8
+		default:
+			return nil, fmt.Errorf("native constant %s: invalid value %T", name, v)
+		}
+		variable, ok := i.collectionSpec.Variables[name]
+		if !ok {
+			continue
+		}
+		if !variable.Constant() || variable.Size() != size {
+			return nil, fmt.Errorf("native constant %s is not a %d-byte read-only constant", name, size)
+		}
+		if apply {
+			if err := variable.Set(v); err != nil {
+				return nil, fmt.Errorf("native constant %s: %w", name, err)
+			}
+		}
+		applied[name] = size
+	}
+	return applied, nil
 }
 
 func (i *ebpfInstance) validateNativeResources(gc operators.GadgetContext) error {

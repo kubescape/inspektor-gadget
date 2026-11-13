@@ -33,6 +33,9 @@
  *   access; retain the original evidence lease until final successful reclaim.
  *   A raw reference count is not a replacement for snapshot quiescence proof.
  *
+ * Every helper is always inlined: the BPF adapters call them while holding
+ * the route spin lock, where a subprogram call is refused on older kernels.
+ *
  * Two independent descriptors allow the same immutable image to be referenced
  * by alternating snapshot slots without stranding the descriptor's birth slot.
  * Expected keys are reserved up front; even aborted or partially deleted sets
@@ -60,7 +63,12 @@ struct se_image_descriptor {
 	__u64 scope, handle, next_operation, pending_sequence;
 	struct se_image_key pending_key;
 	__u32 expected, present, phase, references, pending_kind;
+	/* G020: the container root overlay's kernel dev_t (MKDEV(0, minor))
+	 * this key set was attested for; in the former tail padding. */
+	__u32 overlay_dev;
 };
+_Static_assert(sizeof(struct se_image_descriptor) == 72,
+	       "image descriptor (overlay_dev in the former padding)");
 struct se_image_reference {
 	__u64 serial, handle;
 	__u32 descriptor, held;
@@ -71,6 +79,8 @@ struct se_binding_images {
 	struct se_image_descriptor descriptors[2];
 	struct se_image_reference snapshots[2];
 };
+_Static_assert(sizeof(struct se_binding_images) == 216,
+	       "per-binding image state wire (se_image_bindings value)");
 struct se_image_operation {
 	struct se_image_identity identity;
 	struct se_image_key key;
@@ -78,7 +88,7 @@ struct se_image_operation {
 	__u32 kind, owned;
 };
 
-static inline struct se_image_descriptor *
+static __attribute__((always_inline)) inline struct se_image_descriptor *
 se_image_descriptor_locked(struct se_binding_images *b,
 			   const struct se_image_identity *id)
 {
@@ -92,10 +102,10 @@ se_image_descriptor_locked(struct se_binding_images *b,
 		return 0;
 	return d;
 }
-static inline int se_image_begin_locked(struct se_binding_images *b,
-					__u64 scope, __u64 allocation_sequence,
-					__u32 index, __u32 expected,
-					struct se_image_identity *out)
+static __attribute__((always_inline)) inline int
+se_image_begin_locked(struct se_binding_images *b, __u64 scope,
+		      __u64 allocation_sequence, __u32 index, __u32 expected,
+		      struct se_image_identity *out)
 {
 	if (!scope || scope == ~0ULL || scope != b->scope || index >= 2 ||
 	    !allocation_sequence || allocation_sequence == ~0ULL ||
@@ -118,7 +128,49 @@ static inline int se_image_begin_locked(struct se_binding_images *b,
 					   .descriptor = index };
 	return 0;
 }
-static inline int
+/* G020 command adapter: (re)open a binding's image state for scope. A
+ * binding keeps one scope while any descriptor, reservation or snapshot
+ * reference survives; only a fully empty state takes a new scope (a
+ * recycled route slot restarts its snapshot serials, so the per-record
+ * stale-serial floors are reset with it). last_handle is kept: handles are
+ * global command sequences and never go backwards. */
+static __attribute__((always_inline)) inline int
+se_image_open_locked(struct se_binding_images *b, __u64 scope, __u32 limit)
+{
+	if (!scope || scope == ~0ULL || !limit)
+		return -1;
+	if (b->scope == scope)
+		return b->limit == limit ? 0 : -1;
+	if (b->reserved || b->snapshots[0].held || b->snapshots[1].held)
+		return -1;
+	for (__u32 i = 0; i < 2; i++) {
+		const struct se_image_descriptor *d = &b->descriptors[i];
+		if (d->phase != SE_IMAGE_FREE || d->references ||
+		    d->pending_sequence || d->present || d->expected)
+			return -1;
+	}
+	__u64 last = b->last_handle;
+	*b = (struct se_binding_images){ .scope = scope,
+					 .last_handle = last,
+					 .limit = limit };
+	return 0;
+}
+/* se_image_begin_locked plus the attested overlay dev_t (nonzero, major 0),
+ * stored after the infallible begin under the same lock. */
+static __attribute__((always_inline)) inline int
+se_image_begin_dev_locked(struct se_binding_images *b, __u64 scope,
+			  __u64 allocation_sequence, __u32 index,
+			  __u32 expected, __u32 overlay_dev,
+			  struct se_image_identity *out)
+{
+	if (!overlay_dev || (overlay_dev >> 20) ||
+	    se_image_begin_locked(b, scope, allocation_sequence, index,
+				  expected, out))
+		return -1;
+	b->descriptors[index & 1].overlay_dev = overlay_dev;
+	return 0;
+}
+static __attribute__((always_inline)) inline int
 se_image_operation_begin_locked(struct se_binding_images *b,
 				const struct se_image_identity *id, __u32 kind,
 				const struct se_image_key *key,
@@ -151,7 +203,7 @@ se_image_operation_begin_locked(struct se_binding_images *b,
 }
 /* Call after the LAST physical map access, not while an asynchronous map
  * operation can still finish. A copied stale token cannot consume a new op. */
-static inline int
+static __attribute__((always_inline)) inline int
 se_image_operation_finish_locked(struct se_binding_images *b,
 				 struct se_image_operation *op, int outcome)
 {
@@ -188,8 +240,9 @@ se_image_operation_finish_locked(struct se_binding_images *b,
 	op->owned = 0;
 	return 0;
 }
-static inline int se_image_seal_locked(struct se_binding_images *b,
-				       const struct se_image_identity *id)
+static __attribute__((always_inline)) inline int
+se_image_seal_locked(struct se_binding_images *b,
+		     const struct se_image_identity *id)
 {
 	struct se_image_descriptor *d = se_image_descriptor_locked(b, id);
 	if (!d || d->phase != SE_IMAGE_BUILDING || d->pending_sequence ||
@@ -198,9 +251,10 @@ static inline int se_image_seal_locked(struct se_binding_images *b,
 	d->phase = SE_IMAGE_COMPLETE;
 	return 0;
 }
-static inline int se_image_reference_locked(struct se_binding_images *b,
-					    const struct se_image_identity *id,
-					    __u32 record, __u64 serial)
+static __attribute__((always_inline)) inline int
+se_image_reference_locked(struct se_binding_images *b,
+			  const struct se_image_identity *id, __u32 record,
+			  __u64 serial)
 {
 	struct se_image_descriptor *d = se_image_descriptor_locked(b, id);
 	if (!d || record >= 2 || !serial || serial == ~0ULL ||
@@ -217,9 +271,10 @@ static inline int se_image_reference_locked(struct se_binding_images *b,
 	d->references++;
 	return 0;
 }
-static inline int se_image_known_locked(struct se_binding_images *b,
-					const struct se_image_identity *id,
-					__u32 record, __u64 serial)
+static __attribute__((always_inline)) inline int
+se_image_known_locked(struct se_binding_images *b,
+		      const struct se_image_identity *id, __u32 record,
+		      __u64 serial)
 {
 	struct se_image_descriptor *d = se_image_descriptor_locked(b, id);
 	if (!d || record >= 2 || !serial || d->phase != SE_IMAGE_COMPLETE ||
@@ -229,9 +284,10 @@ static inline int se_image_known_locked(struct se_binding_images *b,
 	return r->held == 1 && r->serial == serial && r->handle == id->handle &&
 	       r->descriptor == id->descriptor;
 }
-static inline int se_image_release_locked(struct se_binding_images *b,
-					  const struct se_image_identity *id,
-					  __u32 record, __u64 serial)
+static __attribute__((always_inline)) inline int
+se_image_release_locked(struct se_binding_images *b,
+			const struct se_image_identity *id, __u32 record,
+			__u64 serial)
 {
 	__u32 index = id->descriptor;
 	if (index >= 2 || !se_image_known_locked(b, id, record, serial))
@@ -243,8 +299,9 @@ static inline int se_image_release_locked(struct se_binding_images *b,
 		d->phase = SE_IMAGE_RETIRING;
 	return 0;
 }
-static inline int se_image_abort_locked(struct se_binding_images *b,
-					const struct se_image_identity *id)
+static __attribute__((always_inline)) inline int
+se_image_abort_locked(struct se_binding_images *b,
+		      const struct se_image_identity *id)
 {
 	struct se_image_descriptor *d = se_image_descriptor_locked(b, id);
 	if (!d || d->references || d->pending_sequence)
@@ -252,8 +309,9 @@ static inline int se_image_abort_locked(struct se_binding_images *b,
 	d->phase = SE_IMAGE_RETIRING;
 	return 0;
 }
-static inline int se_image_reclaim_locked(struct se_binding_images *b,
-					  const struct se_image_identity *id)
+static __attribute__((always_inline)) inline int
+se_image_reclaim_locked(struct se_binding_images *b,
+			const struct se_image_identity *id)
 {
 	struct se_image_descriptor *d = se_image_descriptor_locked(b, id);
 	if (!d || d->phase != SE_IMAGE_RETIRING || d->references ||

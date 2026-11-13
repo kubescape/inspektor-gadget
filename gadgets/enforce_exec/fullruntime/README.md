@@ -57,6 +57,70 @@ BTF/Clang 21.1.8 matrix, not Ready, reload integration, or kernel qualification.
   the synchronous, joined operation. Joining retires logical ownership, not
   allocator/GC or scheduler resources.
 
+### Product predicate admission (G020)
+
+The product evaluator produces only some of the facts a `fullpolicy.Rule` can
+test. A predicate whose fact is missing would evaluate UNKNOWN on every exec
+(Strict denies, Audit reports unknown), so the product path refuses it at
+admission. `BindingSession.Publish` (`SharedBindingPolicy.compile`) checks
+every rule and exception against one table, `SharedProductFactSupport`
+(`shared_product_facts.go`), before compiling anything. It refuses the first
+unsupported predicate with `ErrSharedPredicateUnsupported`. The wrapped
+`*SharedPredicateUnsupportedError` names the policy, the rule index (and the
+exception index, if the predicate is in one) and the predicate kind. The
+legacy per-binding engine (`fullpolicy.CompileKernel`, `Owner`) does not use
+this table.
+
+| Predicate (kind) | Kernel fact | Product support |
+|---|---|---|
+| `Actor.Role` (`actor.role`) | roles from the exact exec history (`se_exec_fill_roles_preclassified`) | supported |
+| `Actor.UID` (`actor.uid`) | effective UID (`cred->euid`) | supported |
+| `Actor.Container` (`actor.container`) | binding container name, staged in the snapshot metadata | supported |
+| `Actor.Path` (`actor.path`) | actor path (UNKNOWN when deleted, not UTF-8, longer than 255 bytes or not under the binding root) | supported |
+| `Target.Path` (`target.path`) | target path, per pass (same UNKNOWN rules; a memfd target is UNKNOWN with its own reason) | supported |
+| `Actor.Ancestor` (`actor.ancestor`) | up to 16 ancestor paths, complete at the binding's init or the workload's edge | supported |
+| `Target.FSType` (`target.fsType`) | filesystem class | supported |
+| `Target.Argv.StdinIsPipe` (`target.stdinIsPipe`) | stdin is a pipe | supported |
+| `Actor.FromImage` / `Target.FromImage` (`actor.fromImage` / `target.fromImage`) | image origin (`actor_image`/`target_image`) from the binding's sealed image index: 1 the file is backed by an indexed read-only lower layer of the container's own overlay; 0 not from the image (an upper or copied-up file, another filesystem, a foreign overlay); -1 UNKNOWN (no index, unauthenticated backing file, writable layer, memfd, overlay layout unavailable, any read fault). A FromImage policy is refused at publish without a sealed index | supported |
+| `Target.Argv.Contains` / `Prefix` (`target.argv`) | argv | **refused for the PoC**: the stock-kernel product evaluator has no authoritative argv fact (documented limitation, follow-up issue) |
+
+`Target.SetRole` is an effect, not a predicate, and is admitted. The table is
+the only switch: the work that adds a fact producer changes its entry to
+supported. `TestSharedProductFactProducerPins` fails when an entry is
+supported but no producer source pin exists for it.
+
+### Verdict events (G020, event ABI 1)
+
+Every product object emits one event per evaluated exec pass (the first
+pass and each `#!`/binfmt_misc interpreter pass), and one per fail-closed
+fault, on the `verdict` datasource (ring `opaque_real_verdict_events`,
+`SharedProfile.VerdictRing`, annotation `enforce-exec-shared-verdict-ring`;
+image annotation `enforce-exec-shared-event-abi: "1"`). The layout is
+`full/shared_verdict_event.h`: the legacy `enforce_exec_full` event byte for
+byte up to `error`, then `exec_class`, `scope`, `exec_id`, `pass`,
+`uncertain`, `facts_unknown`, `task_cookie` and `load_epoch`.
+
+- **Correlation contract.** Consumers key an exec on `(load_epoch,
+  task_cookie, exec_id)`, unique per node: `load_epoch` is the random
+  nonzero epoch the agent sets per collection load (`task_cookie` restarts
+  on every load), `task_cookie` is the
+  exec'ing TASK's identity cookie (a node-wide sequence), `exec_id` that
+  TASK's exec sequence, equal on every pass of one exec (`pass` 0, 1, ...).
+  `exec_id` alone is NOT unique (each new task starts at 1). `host_pid` is
+  informational only (pids are reused). `generation` and `scope` name the
+  route publication (`SharedCompiled.Generation`); bit i of `matched_rules`
+  is `SharedCompiled.Program.Rules[i]`. A fault event carries the exec's
+  identity when its receipt is still present, 0 otherwise.
+- **Verdict.** `deny && mode == 2` is exactly the LSM denial. `error` is
+  0..3: an Audit UNKNOWN fact is `error 0` with `uncertain 1`; a Strict
+  UNKNOWN fact (`error 2`) or role conflict (`error 3`) reports the class
+  verdict `deny 1 mode 2`. Faults (user decision D1): Strict `deny 1 mode 2
+  error 1`, Audit `deny 1 mode 1 error 1`, `pass` 4294967295, every
+  `facts_unknown` bit. A prior LSM denial emits nothing.
+- **Delivery never decides a verdict.** The verdict is computed before the
+  event is reserved; a full ring loses the event (`KernelEventCounters`
+  `Lost`), which labels the node Degraded only (D2), never NotReady.
+
 ### Conditional shared-worker qualification
 
 The private worker covers only a **never-staged, generation-zero binding**. It
@@ -325,7 +389,14 @@ The G019 M0 classes count the outcomes G025 excluded:
   with the same verdict and cleanup, counted once as QUALIFY `[6]` or
   PENDING `[7]` like a first pass, never also here. Before gap 4 that exec was refused as a pending receipt
   (`[7]`); a real pending receipt still is. Residual by construction: an
-  `AT_EXECVE_CHECK` (6.18) runs no `bprm_check` and is never evaluated; a
+  `AT_EXECVE_CHECK` (6.18) runs no `bprm_check` and is never evaluated (user
+  decision D4, a documented residual: the flag only asks whether the file
+  could be executed, nothing runs; `execveat(AT_EXECVE_CHECK)` returns what
+  the kernel says, 0 for an executable file even when a Strict policy
+  denies it, with no event and no counter; the real exec of the same file
+  is evaluated and denied as usual: EPERM and one decision event. 6.12
+  rejects the flag with `EINVAL`. Live:
+  `TestSharedNodeExecveCheckAttached`); a
   binfmt_misc `F` (fix-binary) interpreter, opened at registration and
   possibly outside the container's mount namespace, is evaluated like any
   file, and a path that does not resolve for the policy denies under Strict.
@@ -334,7 +405,9 @@ The G019 M0 classes count the outcomes G025 excluded:
   differs from the previous one only through the roles proposed so far and
   the credentials. A policy of "allowed script, denied interpreter" is
   therefore not expressible yet; it becomes so when target facts are
-  collected per pass, with no change to the continuation itself.
+  collected per pass, with no change to the continuation itself. Until then
+  product admission refuses path, image and other predicates that need those
+  facts (see Product predicate admission).
 
 The live verdict test checks each class against an exact test-only witness
 (`opaque_real_exec_exclusions` for the G019 M0 classes). Remaining exclusion:
@@ -638,16 +711,28 @@ User-approved G025 capacity thresholds:
     (`ErrSharedRevisionDraining`) and the binding is Degraded
     `RevisionDrainTimeout` while the last good revision stays enforced. It
     never allows: the held exec is still judged under the record it holds,
-    and no timeout clears a holder. A policy that kills or quarantines such
-    a holder is carried to G020.
-  - Sizing: policy objects > bindings stays the admission floor (one spare
-    for make-before-break). A held RETIRING record keeps its object, so with
-    `Bindings + 1` objects one long-held record (a traced or stopped exec)
-    starves every other binding's revision until it drains; a node that
-    revises bindings independently under such holds can be built with
-    `2 × Bindings` objects (`SE_PROFILE_SLOTS_256 = 2 × SE_PROFILE_BINDINGS`
-    and the matching `enforce-exec-shared-slots-256` annotation): optional,
-    not the default.
+    and no timeout clears a holder. User decision D3: this RETIRING-holder
+    residual is accepted and documented, not closed: an exec blocked
+    forever keeps the old record, so every later revision of that slot
+    times out (Degraded `RevisionDrainTimeout`, retryable refusal), the
+    last good revision stays enforced, and nothing ever allows. No policy
+    kills or quarantines the holder.
+  - Sizing (user decision D3): policy objects > bindings stays the
+    admission floor (one spare for make-before-break; the product control
+    refuses objects <= bindings). A held RETIRING record keeps its object,
+    so with `Bindings + 1` objects one long-held record (a traced or
+    stopped exec) starves every other binding's revision until it drains
+    (`RevisionObjectStarved`). The PoC default product profile is therefore
+    `2 × Bindings` objects: `-DSE_PROFILE_SLOTS_256=4` for the two bindings
+    in the product build (compile-pkg; was 3) and
+    `enforce-exec-shared-slots-256: "4"` in `candidate/gadget.yaml`. A held
+    record then only affects its own slot (the residual above); the other
+    binding keeps revising (`TestProductCommanderNotStarvedAtDefault`).
+    Cost: one more 256-cell policy object per node, one 80-byte
+    `se_objects` entry and 256 288-byte `se_arena` cells: +74,836 bytes of
+    map keys and values (g19pkg128: 2,375,132 -> 2,449,968), independent of
+    the TASK/WORK profile; every program of every product object still
+    loads under the verifier budget on both AL2023 kernels.
   - Open point (to verify on the VM): a reader of the RETIRING record
     evaluates under its own snapshot while the accepted-epoch catalogue may
     already carry the next generation's root epoch (the catalogue invariant
@@ -826,12 +911,23 @@ withdrawn cgroup is never bound or published again on the node.
 Migrate-in residual (known limit): the empty poll and the withdrawal are not
 atomic. A task that migrates into the cgroup between them runs under the
 WITHDRAWN route, which allows it unevaluated; a withdrawal cannot be undone
-from userspace. The poller therefore re-reads the cgroup right after the
-withdrawal: a non-empty (or unreadable, not gone) cgroup is reported
-`MigratedAfterRelease` (Degraded, counted) in `AdoptionReport` and `Ready`,
-kept until node teardown (the slot itself is still recycled and may be
-reused). A task that migrates in after that re-read is not detected. Audit
-is not checked: it withdraws with its tasks present by design.
+from userspace. The poller therefore re-reads the cgroup after the
+withdrawal, bounded: 3 reads over 250 ms (at 0, 125 and 250 ms), then once
+more immediately before every recycle attempt (a contended recycle retries
+each second). The first non-empty (or unreadable, not gone) read is
+reported `MigratedAfterRelease` (Degraded, counted once per release) in
+`AdoptionReport` and `Ready`, kept until node teardown (the slot itself is
+still recycled and may be reused). Residual, precisely: a task that
+migrates in after the withdrawal and leaves again before the next read is
+never seen (it ran unevaluated); a task that migrates in after the last
+read before the successful recycle is not detected either, and it then
+runs under a free (UNSELECTED) slot, unevaluated, like any task in an
+unbound cgroup. Such a cgroup is never bound or published again on this
+node. Audit is not checked: it withdraws with its tasks present by design.
+Live: `TestSharedNodeM4MigratedAfterReleaseAttached` migrates a task in
+(a privileged `cgroup.procs` write) the moment the route is seen
+withdrawn, after the empty poll, and requires the report, Degraded `Ready`
+and the sticky report after the recycle.
 
 Product publication takes a compiled policy (`SharedBindingPolicy.Source`
 and `Container`, compiled by `CompileKernelWithRoleEpochs`):
@@ -1195,6 +1291,18 @@ Compilation alone is not verifier proof: Clang 19 produced a refused object on
 the tested kernel. The embedding's combined fixture accepts the resulting archive
 through the same native ORAS tar path as its service configuration.
 
+**H1 root anchor recorded at Bind (accepted residual, review 2026-11-13).**
+Every path fact is anchored to the binding's root, recorded by the kernel at
+the adoption finish from the adopted init (its fs root: mount id, inode,
+device, and its mount namespace); an exec whose root differs, or whose
+`fs_struct` root changes while the pass's paths are read (a sibling thread or
+`CLONE_FS` task calling `chroot`), has every path fact UNKNOWN
+(`SE_PF_ROOT_MISMATCH`). The anchor is whatever root the init has at that
+moment: a workload that chroots BEFORE Bind chooses its own anchor. Accepted:
+code running before Bind is the container runtime and the container's init,
+trusted at adoption (the same trust boundary as the D3/D4 residuals above);
+everything after adoption is held to the recorded anchor.
+
 ## Shared-node live health: fail-closed rate witness and accepted G019 residuals
 
 This section supersedes the earlier statements that nothing reads the
@@ -1241,6 +1349,17 @@ never also GAP. Migration relabel (gap 5) is a binding status
 (`MigrationOutUnenforced`), never a counted refusal. The G019 gaps 1-3
 refusals land in CONSTRUCT [5], QUALIFY [6] and OPEN_PARENT [8], not in
 GAP.
+
+**Ancestor membership is node-wide (accepted residual, G020 re-review).** The
+ancestor walk ends complete at the workload's edge: the first parent without a
+TASK in `se_opaque_keys`. That map holds the TASKs of every binding, so a task
+of ANOTHER enforced binding counts as a member and the walk continues through
+it; its executable must then be reachable from this binding's anchored root,
+else the whole ancestor fact is UNKNOWN. Over-inclusion therefore needs both a
+root shared by the two bindings and a cross-binding parent, which only cgroup
+migration produces (the migration relabel residual below). Scoping membership
+to the pass's binding would need the TASK's lease/open per ancestor (its scope
+lives only in the TASK payload), too heavy for the walk.
 
 **Gap 5, migration relabel (accepted residual, D1/U3).** A TASK-carrying task
 moved out of a Strict binding's cgroup into an unrouted cgroup is not

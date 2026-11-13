@@ -121,8 +121,8 @@ func runWorker(goPath, root, target, prebuildPath, output, reportPath string) er
 			return err
 		}
 		checks = append(checks, sentinelCheck)
-		proof, err := deriveWorkerTail(before)
-		if err != nil {
+		proof, err := deriveWorkerTail(before) //nolint:staticcheck // SA4023: stub refuses by design.
+		if err != nil {                        //nolint:staticcheck // SA4023: deriveWorkerTail refuses until its dependency lands; keep guard.
 			// Deliberately no PREBUILD/carrier output: an incomplete obligation is not
 			// evidence that may be laundered by a later BUILD invocation.
 			return err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/cilium/ebpf"
 	"github.com/spf13/viper"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/operators"
@@ -31,6 +32,28 @@ var sharedInterpContinuationTailCalls = []operators.NativeTailCall{
 type sharedObjectShape struct {
 	Programs, Maps map[string]bool
 	Product        bool
+}
+
+// sharedObjectShapeOf is the packaging decision's view of an object
+// (sharedPackagingForObject): a product object carries se_admin or the
+// product publisher commands.
+func sharedObjectShapeOf(spec *ebpf.CollectionSpec) sharedObjectShape {
+	shape := sharedObjectShape{Programs: map[string]bool{}, Maps: map[string]bool{}}
+	for name := range spec.Programs {
+		shape.Programs[name] = true
+	}
+	for name := range spec.Maps {
+		shape.Maps[name] = true
+	}
+	_, admin := spec.Maps["se_admin"]
+	commands := 0
+	for _, name := range sharedProductCommands {
+		if shape.Programs[name] {
+			commands++
+		}
+	}
+	shape.Product = admin || commands == len(sharedProductCommands)
+	return shape
 }
 
 // sharedPackagingForObject returns the candidate image metadata for one

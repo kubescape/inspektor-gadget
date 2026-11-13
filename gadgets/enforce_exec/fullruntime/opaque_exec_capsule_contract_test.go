@@ -211,10 +211,14 @@ func TestOpaqueExecCapsuleTaskStorageSourcePins(t *testing.T) {
 			"\t    a->execution_class != frozen_class ||")) {
 		t.Error("identity-bound re-admission must require the original route's exact payload identity")
 	}
-	// The two capsule CREATE adapters, and the birth park's put (G019 gap
-	// 1: the source's park on the forking task).
-	if n := strings.Count(src, "BPF_LOCAL_STORAGE_GET_F_CREATE"); n != 3 {
-		t.Errorf("BPF_LOCAL_STORAGE_GET_F_CREATE appears %d times, want exactly the two CREATE adapters and the birth park's put", n)
+	// The two capsule CREATE adapters, the birth park's put (G019 gap 1:
+	// the source's park on the forking task), and the staged verdict event
+	// of a clean proposal (G020 H2, the exec'ing task's own storage).
+	if n := strings.Count(src, "BPF_LOCAL_STORAGE_GET_F_CREATE"); n != 4 {
+		t.Errorf("BPF_LOCAL_STORAGE_GET_F_CREATE appears %d times, want exactly the two CREATE adapters, the birth park's put and the staged verdict event", n)
+	}
+	if !strings.Contains(src, squashSpace("bpf_task_storage_get(&se_verdict_staging,\n\t\t\t\t     bpf_get_current_task_btf(), 0,\n\t\t\t\t     BPF_LOCAL_STORAGE_GET_F_CREATE);")) {
+		t.Error("the only verdict-staging CREATE is on the current task")
 	}
 	if strings.Contains(src, squashSpace("__type(value, struct se_exec_capsule);\n} se_exec_capsules")) &&
 		strings.Contains(src, squashSpace("__uint(type, BPF_MAP_TYPE_ARRAY);\n\t__uint(max_entries, 1);\n\t__type(key, __u32);\n\t__type(value, struct se_exec_capsule);")) {

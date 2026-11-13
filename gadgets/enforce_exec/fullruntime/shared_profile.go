@@ -40,6 +40,36 @@ type SharedProfile struct {
 	// 32 x Tasks, kept only so pre-existing qualification objects stay
 	// byte-identical; product profiles set it explicitly.
 	ExitTombstones uint64
+	// VerdictRing is the byte size of the node-wide verdict event ring
+	// (opaque_real_verdict_events max_entries, SE_PROFILE_VERDICT_RING;
+	// G020): a power of two from 4 KiB to 256 MiB. Zero selects the
+	// default, max(1 MiB, Bindings x 256 KiB) rounded up to a power of two
+	// (the object's default for its SE_PROFILE_BINDINGS).
+	VerdictRing uint64
+}
+
+// Verdict ring bounds (the BPF static assert on SE_PROFILE_VERDICT_RING).
+const (
+	sharedVerdictRingMin        = 4096
+	sharedVerdictRingMax        = 1 << 28
+	sharedVerdictRingDefaultMin = 1 << 20
+	sharedVerdictRingPerBinding = 256 << 10
+)
+
+// verdictRing is the effective verdict ring size (see VerdictRing); 0 when
+// the default exceeds sharedVerdictRingMax.
+func (p SharedProfile) verdictRing() uint64 {
+	if p.VerdictRing != 0 {
+		return p.VerdictRing
+	}
+	if p.Bindings > sharedVerdictRingMax/sharedVerdictRingPerBinding {
+		return 0
+	}
+	ring := uint64(sharedVerdictRingDefaultMin)
+	for ring < p.Bindings*sharedVerdictRingPerBinding {
+		ring <<= 1
+	}
+	return ring
 }
 
 // sharedMaxExitTombstones mirrors the BPF static assert on
@@ -125,6 +155,9 @@ func (p SharedProfile) Validate() (SharedAdmission, error) {
 	}
 	if t := p.exitTombstones(); t == 0 || t > sharedMaxExitTombstones || t%p.Bindings != 0 {
 		return SharedAdmission{}, fmt.Errorf("shared exit tombstones %d must be a nonzero multiple of %d bindings, at most %d", t, p.Bindings, sharedMaxExitTombstones)
+	}
+	if r := p.verdictRing(); r < sharedVerdictRingMin || r > sharedVerdictRingMax || r&(r-1) != 0 {
+		return SharedAdmission{}, fmt.Errorf("shared verdict ring %d (%d bindings) must be a power of two from %d to %d bytes", r, p.Bindings, sharedVerdictRingMin, sharedVerdictRingMax)
 	}
 	return a, nil
 }

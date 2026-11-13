@@ -26,6 +26,9 @@ var sharedProductCommands = []string{
 	"opaque_real_route_recycle",
 	// G019 gap 3: drop a RETIRING record once its holders are gone.
 	"opaque_real_route_drop_retired",
+	// G020: the image index commands (BEGIN/KEYS/SEAL/ABORT/DELETE/
+	// RECLAIM/INSPECT, bpf/opaque_real_owner_product_image.h).
+	sharedImageCommand,
 	"opaque_real_adopt_verify",
 	"opaque_real_adopt_task",
 	"opaque_real_adopt_finish",
@@ -51,8 +54,8 @@ var sharedProductAdminGeometry = map[string]operators.NativeMapResource{
 // sharedProductMapGeometry is the exact geometry of the maps the product
 // publisher reads or that size its commands (review M-4): the per-binding
 // adoption state, the adopted set (one entry per TASK), the 12-cell
-// fail-closed witness and its attempts, and the policy objects and arena
-// cells the stager writes.
+// fail-closed witness and its attempts, the policy objects and arena cells
+// the stager writes, and the verdict event ring.
 func sharedProductMapGeometry(p SharedProfile) (map[string]operators.NativeMapResource, error) {
 	admission, err := p.Validate()
 	if err != nil {
@@ -75,10 +78,21 @@ func sharedProductMapGeometry(p SharedProfile) (map[string]operators.NativeMapRe
 		InterpContinuationStatsMap: array(8, InterpContinuationStats),
 		// G019 gaps 1 and 2: the birth-park witness.
 		BirthParkStatsMap: array(8, BirthParkStats),
+		// G020: the per-pass fact witness (full/shared_pass_facts.h).
+		FactStatsMap: array(8, FactStats),
 		// struct er_work, the adoption's per-CPU role scratch (BTF: 536 B).
 		"opaque_real_adopt_roles": {Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 536, MaxEntries: 1},
 		"se_objects":              array(sharedProductObjectBytes, uint32(admission.PolicyObjects)),
 		"se_arena":                array(fullpolicy.KernelBlobSize, uint32(admission.ArenaCells)),
+		// G020: the image index (sharedProductImageGeometry).
+		sharedImageKeysMap:     {Type: uint32(ebpf.Hash), KeySize: 24, ValueSize: 1, MaxEntries: uint32(p.Images), Flags: unix.BPF_F_RDONLY},
+		sharedImageBindingsMap: array(sharedImageBindingBytes, uint32(p.Bindings)),
+		sharedImageWitnessMap:  {Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: sharedImageWitnessBytes, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
+		// The KEYS/DELETE loop state (struct real_owner_image_loop), kept
+		// off the BPF stack.
+		sharedImageScratchMap: {Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: sharedImageScratchBytes, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
+		// G020: the node-wide verdict event ring (SharedProfile.VerdictRing).
+		SharedVerdictRingMap: {Type: uint32(ebpf.RingBuf), MaxEntries: uint32(p.verdictRing())},
 	}, nil
 }
 
@@ -253,6 +267,12 @@ func validateSharedProductControl(p SharedProfile, r *operators.NativeResources)
 	admission, err := p.Validate()
 	if err != nil {
 		return err
+	}
+	// G020: the image index holds up to sharedImageLayersMax lower-layer
+	// roots per binding, every binding's quota reserved in the node pool
+	// (se_image_keys max_entries = Images = Bindings x 128, preallocated).
+	if p.PerBinding.Images != sharedImageLayersMax || p.Images != p.Bindings*sharedImageLayersMax {
+		return fmt.Errorf("shared product profile has %d image cells (%d per binding): the image index requires %d per binding and Images = Bindings x %d", p.Images, p.PerBinding.Images, sharedImageLayersMax, sharedImageLayersMax)
 	}
 	if admission.PolicyObjects <= p.Bindings {
 		return fmt.Errorf("shared product profile has %d policy objects for %d bindings: revision needs at least one spare object (policy objects > bindings)", admission.PolicyObjects, p.Bindings)

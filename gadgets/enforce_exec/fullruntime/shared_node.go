@@ -7,9 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/containerd/containerd/v2/pkg/identifiers"
 
 	"github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/fullpolicy"
 	gadgetcontext "github.com/inspektor-gadget/inspektor-gadget/pkg/gadget-context"
@@ -31,6 +34,15 @@ type SharedNodeConfig struct {
 	// slot's RETIRING record to lose its holders (G019 gap 3; 0:
 	// DefaultRevisionDrainTimeout; at most MaxRevisionDrainTimeout).
 	RevisionDrainTimeout time.Duration
+	// ContainerdAddress is the containerd socket the G020 image index
+	// resolves a binding's rootfs snapshot from (containerd namespace
+	// k8s.io; e.g. /run/containerd/containerd.sock). Empty: no image index
+	// (every publication carries none; FromImage policies are not
+	// published). ImageProcRoot and ImageHostRoot locate the host PID
+	// namespace's procfs and the host mount namespace's root as seen by the
+	// agent (empty: "/proc" and "/").
+	ContainerdAddress            string
+	ImageProcRoot, ImageHostRoot string
 }
 
 func (c SharedNodeConfig) failClosedPollInterval() time.Duration {
@@ -50,6 +62,11 @@ func validateSharedNodeSelection(config SharedNodeConfig) error {
 	if d := config.RevisionDrainTimeout; d < 0 || d > MaxRevisionDrainTimeout {
 		return fmt.Errorf("revision drain timeout %s outside [0, %s]", d, MaxRevisionDrainTimeout)
 	}
+	for name, path := range map[string]string{"containerd address": config.ContainerdAddress, "image proc root": config.ImageProcRoot, "image host root": config.ImageHostRoot} {
+		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) != path) {
+			return fmt.Errorf("%s %q is not an absolute clean path", name, path)
+		}
+	}
 	recoveryImage := strings.HasSuffix(config.Image, ":abi3-recovery-development")
 	if recoveryImage != config.RecoveryDevelopment {
 		return fmt.Errorf("recovered image and trusted opt-in mismatch")
@@ -61,8 +78,25 @@ type SharedBindingConfig struct {
 	CgroupID uint64
 	// InitHostPID is supplied by the trusted runtime, never policy metadata.
 	InitHostPID uint32
+	// ContainerID is the container's containerd container ID (the CRI
+	// container ID, containerd namespace k8s.io), supplied by the trusted
+	// runtime together with the cgroup and init, never policy metadata. It
+	// selects the rootfs snapshot whose lower layers the image index holds
+	// (G020 FromImage). Optional: empty means no image index for this
+	// binding, so a policy with a FromImage predicate is never published
+	// (ErrSharedImageIndexUnavailable). A rebind of the same cgroup must
+	// carry the same ID. Bind refuses an ID that is not a containerd
+	// identifier (ValidSharedContainerID).
+	ContainerID string
 	Acquire     func(context.Context) (BindingLease, error)
 }
+
+// ValidSharedContainerID reports whether id is a containerd identifier
+// (containerd pkg/identifiers.Validate: at most 76 characters,
+// alphanumeric runs separated by single '.', '_' or '-'). A CRI container
+// ID (64 hex characters) is one.
+func ValidSharedContainerID(id string) bool { return identifiers.Validate(id) == nil }
+
 type SharedBindingStatus struct {
 	ScopeCookie, CgroupID, Generation uint64
 	PreparedID                        uint64
@@ -205,8 +239,13 @@ func sharedCompiledPolicyOfCells(program *fullpolicy.KernelProgram, entries []fu
 }
 
 // compile compiles Source at generation, retaining the binding's activated
-// root epochs, and derives Class, Fallback and Rules from the program.
+// root epochs, and derives Class, Fallback and Rules from the program. A
+// predicate the product evaluator cannot produce is refused first
+// (ErrSharedPredicateUnsupported, sharedProductFactSupport).
 func (p SharedBindingPolicy) compile(generation uint64, activated map[string]uint64) (SharedBindingPolicy, error) {
+	if err := admitSharedProductPolicy(p.Source); err != nil {
+		return p, err
+	}
 	program, err := fullpolicy.CompileKernelWithRoleEpochs([]fullpolicy.Policy{*p.Source}, generation, p.Container, activated)
 	if err != nil {
 		return p, fmt.Errorf("compile shared policy %s: %w", p.Source.ID, err)
@@ -287,6 +326,9 @@ type SharedInitIdentity struct {
 	TGID       uint32
 	StartTicks uint64
 	MountNS    uint64
+	// ContainerID is the binding's SharedBindingConfig.ContainerID (G020:
+	// the image index's rootfs snapshot); empty without one.
+	ContainerID string
 }
 
 // SharedRoutePublisher is a TEST/QUALIFICATION-ONLY seam: it commits one
@@ -373,6 +415,9 @@ type SharedNodeQualification struct {
 	// birthParkStats replaces the birth-park witness borrowed from the host
 	// gadget context (borrowSharedBirthParkStats). Package tests only.
 	birthParkStats func(gc operators.GadgetContext) (sharedBirthParkStatsRead, error)
+	// factStats replaces the per-pass fact witness borrowed from the host
+	// gadget context (borrowSharedFactStats). Package tests only.
+	factStats func(gc operators.GadgetContext) (sharedFactStatsRead, error)
 	// failClosed replaces the fail-closed rate witness borrowed from the
 	// host gadget context (borrowSharedFailClosed), failClosedClock its
 	// clock. Package tests only.
@@ -381,6 +426,15 @@ type SharedNodeQualification struct {
 	// newProductPublisher replaces the product publisher borrowed from the
 	// host gadget context (borrowSharedProductPublisher). Package tests only.
 	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)
+	// verdictCounters replaces the verdict counters borrowed from the host
+	// gadget context (borrowSharedVerdictCounters), verdictClock their
+	// Degraded window's clock. Package tests only.
+	verdictCounters func(gc operators.GadgetContext) (sharedVerdictCountersRead, func() error, error)
+	verdictClock    func() time.Time
+	// imageSource replaces the containerd rootfs snapshot source of the
+	// image index (the real resolver and host attestation still run).
+	// Package tests only: the live image test's own overlay mount.
+	imageSource sharedImageLayerSource
 }
 
 // WithSharedNodeQualification selects the qualification-only candidate
@@ -513,104 +567,31 @@ func (s *BindingSession) Inspect() SharedBindingStatus {
 // qualification publisher. The first publication opens the route; later ones
 // advance its generation under the same class (a class change needs a new
 // route, G019 gap 6). A refused or faulted publication keeps last-good and
-// changes no other binding. It never reports Ready.
+// changes no other binding. It never reports Ready. It is Compile and
+// PublishCompiled under one hold of the binding's locks (shared_compiled.go),
+// so it is never refused as stale.
 func (s *BindingSession) Publish(ctx context.Context, policy SharedBindingPolicy) (SharedRouteState, error) {
 	if err := policy.validate(); err != nil {
 		return SharedRouteState{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.removed {
-		return SharedRouteState{}, fmt.Errorf("binding removed")
-	}
-	publisher, err := s.node.livePublisher(true)
+	publisher, err := s.publishableLocked(ctx)
 	if err != nil {
-		return SharedRouteState{}, err
-	}
-	if err := ctx.Err(); err != nil {
 		return SharedRouteState{}, err
 	}
 	a := s.account
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.native.reserved {
-		return SharedRouteState{}, fmt.Errorf("binding has no route slot")
-	}
-	if a.withdrawn {
-		return SharedRouteState{}, ErrSharedBindingWithdrawn
-	}
-	init, err := a.initIdentity()
+	init, err := s.routeInitLocked()
 	if err != nil {
-		return SharedRouteState{}, fmt.Errorf("init identity: %w", err)
+		return SharedRouteState{}, err
 	}
-	last := a.route
-	if policy.Source != nil {
-		// Compiled at the generation this publication creates, with the
-		// root epoch of a policy UID this binding already activated.
-		activated := map[string]uint64{}
-		if last.published && last.policy.Source != nil && last.policy.Source.ID == policy.Source.ID && last.epoch != 0 {
-			activated[policy.Source.ID] = last.epoch
-		}
-		if policy, err = policy.compile(last.state.Generation+1, activated); err != nil {
-			return last.state, err
-		}
-	}
-	if last.published && last.policy.Class != policy.Class {
-		// Checked first: the most specific terminal refusal (G019 gap 6).
-		return last.state, sharedClassChangeError(a.native.slot, last.policy.Class, policy.Class)
-	}
-	if policy.Class == sharedClassStrict {
-		s.node.mu.Lock()
-		refused := s.node.host.strictRefused
-		s.node.mu.Unlock()
-		if refused != nil {
-			return last.state, fmt.Errorf("strict publication refused (design 13.8): %w: %w", refused, ErrSharedNativeUnavailable)
-		}
-	}
-	if last.published && last.policy.program != nil && policy.program != nil {
-		// G019 limit (lead decision, fail-closed): a revision keeps the
-		// policy UID and root role; either change is terminal.
-		was, _ := sharedCompiledPolicyOf(last.policy.program, last.policy.object)
-		now, _ := sharedCompiledPolicyOf(policy.program, policy.object)
-		if was.UID != now.UID || was.RootRole != now.RootRole {
-			return last.state, fmt.Errorf("revision changes the policy UID or root role (terminal): %w", ErrSharedNativeUnavailable)
-		}
-	}
-	state, err := publisher.Publish(ctx, a.native.slot, s.cgroup, policy, !last.published, init)
-	if err == nil {
-		err = checkPublishedRoute(last, state, s.cgroup, policy)
-	}
+	compiled, err := s.compileLocked(policy)
 	if err != nil {
-		err = fmt.Errorf("publish route slot %d: %w", a.native.slot, err)
-		var adoption *ErrSharedAdoptionRefused
-		if errors.As(err, &adoption) || errors.Is(err, errSharedPublishUnknown) {
-			// A refused adoption (its route latched or being released) or an
-			// unconfirmed first publication (latched) makes the cgroup
-			// terminal at once (D5, design 13.15): no Publish of this session
-			// and no rebind of the cgroup, even while the slot is latched.
-			// This includes AdoptionRefusedIdentity refused before anything
-			// was committed (an incomplete init identity): the identity comes
-			// from the binding's immutable pins, so a retry cannot succeed.
-			a.withdrawn = true
-			s.node.markWithdrawn(s.cgroup)
-		}
-		if !last.published {
-			// No last-good exists: the kernel may hold a route Go never
-			// accepted. Read it back and record it as a fault, so Inspect
-			// reports it and Remove withdraws at its generation.
-			a.route = unconfirmedFirstRoute(publisher, a.native.slot, policy, err)
-			return a.route.state, err
-		}
-		// Last-good: the recorded tuple stays authoritative; Inspect
-		// reports any kernel divergence from it as a fault.
-		return last.state, err
+		return a.route.state, err
 	}
-	a.route = sharedLiveRoute{published: true, state: state, policy: policy}
-	if policy.program != nil {
-		c, _ := sharedCompiledPolicyOf(policy.program, policy.object) // validated by compile
-		a.route.epoch = c.RootEpoch
-	}
-	return state, nil
+	return s.publishCompiledLocked(ctx, publisher, init, compiled.policy)
 }
 
 // unconfirmedFirstRoute records a failed first publication of slot: the

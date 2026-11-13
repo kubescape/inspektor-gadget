@@ -539,9 +539,13 @@ func TestSharedProductAdmissionRefusesTwinMaps(t *testing.T) {
 		"opaque_real_fc_inject_selector":   {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 24, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
 		"opaque_real_fc_inject_counts":     {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 6, Flags: unix.BPF_F_RDONLY},
 		"opaque_real_fc_pending_marked":    {Type: uint32(ebpf.LRUHash), KeySize: 16, ValueSize: 4, MaxEntries: 4096, Flags: unix.BPF_F_RDONLY},
-		"opaque_real_fc_inject_ext":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 16, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
-		"opaque_real_fc_inject_ext_counts": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 6, Flags: unix.BPF_F_RDONLY},
+		"opaque_real_fc_inject_ext":        {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 24, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
+		"opaque_real_fc_inject_ext_counts": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 10, Flags: unix.BPF_F_RDONLY},
 		"opaque_real_interp_stale_resume":  {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 1},
+		// G020 H2: the verdict-event suspension-fault injector.
+		"opaque_real_verdict_suspend_fault": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 8, MaxEntries: 1},
+		// G020: the per-pass fact witness ring (struct real_owner_pass_witness).
+		"opaque_real_fact_witness": {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 832, MaxEntries: 17},
 	}
 	if len(injectors) != len(sharedProductForbiddenMaps)-1 {
 		t.Fatalf("forbidden maps %v, injector cases %d", sharedProductForbiddenMaps, len(injectors))

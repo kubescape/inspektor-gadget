@@ -90,6 +90,15 @@ var sharedFCKinds = map[string]sharedFCKind{
 	// ext every[2]: the Nth fork admission faults (claim released, never
 	// parked); Strict refuses the fork, Audit leaves the child unmanaged.
 	"birth-admission": {ext: true, index: 2, rate: FailClosedRateAdmission, command: "FORKN:%d:0\n", births: 1, execs: 1, refusal: -1, follow: true},
+	// ext every[3]: the Nth fork target that took its parked claim releases
+	// it and takes the target re-admission fault path (ADMISSION against
+	// the source's birth attempt, never CONSTRUCT); Strict refuses the fork,
+	// Audit leaves the child unmanaged.
+	"target-admission": {ext: true, index: 3, rate: FailClosedRateAdmission, command: "FORKN:%d:0\n", births: 1, execs: 1, refusal: -1, follow: true},
+	// ext every[4]: the Nth owned exec whose TASK opened does not begin its
+	// reader: OPEN_PARENT, no reader and no verdict (Strict denies, Audit
+	// allows).
+	"reader-not-begun": {ext: true, index: 4, rate: FailClosedRateOpenParent, command: "FORKN:%d:0\n", births: 1, execs: 1, refusal: 77},
 	// Natural: a host-joined task (no TASK) execs in place (bash -c).
 	"entry": {natural: true, rate: FailClosedRateEntry, execs: 1, refusal: 126},
 	// The stale-resume injector (ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC,
@@ -102,7 +111,7 @@ var sharedFCKinds = map[string]sharedFCKind{
 	"gap": {natural: true, rate: FailClosedRateGap, command: "FORKN:%d:0\n", births: 1, execs: 2, refusal: 77, serial: true},
 }
 
-var sharedFCDefaultKinds = []string{"qualify", "pending", "birth-open-parent", "exec-open-parent", "exec-admission", "birth-admission", "entry", "gap"}
+var sharedFCDefaultKinds = []string{"qualify", "pending", "birth-open-parent", "exec-open-parent", "exec-admission", "birth-admission", "target-admission", "reader-not-begun", "entry", "gap"}
 
 type sharedFCConfig struct {
 	helper   string
@@ -319,7 +328,7 @@ func (f *sharedFCEnv) injectorSet(k sharedFCKind, n int) {
 	if k.ext {
 		// Mirrors struct opaque_real_fc_inject_ext.
 		var value struct {
-			Every    [3]uint32
+			Every    [5]uint32
 			Reserved uint32
 		}
 		value.Every[k.index] = uint32(n)
@@ -341,20 +350,21 @@ func (f *sharedFCEnv) injectorSet(k sharedFCKind, n int) {
 	}
 }
 
-// injectorCounts returns the kind's (edges, injected) counters.
+// injectorCounts returns the kind's (edges, injected) counters: the
+// selector's [0..2]/[3..5], the extended injector's [0..4]/[5..9].
 func (f *sharedFCEnv) injectorCounts(k sharedFCKind) (uint64, uint64) {
 	f.t.Helper()
-	name := "opaque_real_fc_inject_counts"
+	name, periods := "opaque_real_fc_inject_counts", 3
 	if k.ext {
-		name = "opaque_real_fc_inject_ext_counts"
+		name, periods = "opaque_real_fc_inject_ext_counts", 5
 	}
 	m := f.mapOf(name)
 	var edges, injected uint64
 	if err := m.Lookup(uint32(k.index), &edges); err != nil {
 		f.t.Fatalf("%s[%d]: %v", name, k.index, err)
 	}
-	if err := m.Lookup(uint32(3+k.index), &injected); err != nil {
-		f.t.Fatalf("%s[%d]: %v", name, 3+k.index, err)
+	if err := m.Lookup(uint32(periods+k.index), &injected); err != nil {
+		f.t.Fatalf("%s[%d]: %v", name, periods+k.index, err)
 	}
 	return edges, injected
 }
@@ -508,7 +518,7 @@ func (f *sharedFCEnv) requireHealth(label string, want SharedFailClosedState) Sh
 //   - attempts[0]/[1] deltas == nominal births/execs + the calibrated
 //     overhead (Strict: minus the execs of refused births);
 //   - exits: Strict refusals exactly the injected ones (FORKED:-1:EPERM
-//     only for birth-admission), Audit all 0;
+//     only for birth-admission and target-admission), Audit all 0;
 //   - TASK/WORK back to baseline and no stray receipt within 60 s;
 //   - the poller: Total and ADMISSION kinds NotReady within 2 intervals +
 //     1 s (FailClosedHealth and Ready, ErrSharedFailClosedNotReady,

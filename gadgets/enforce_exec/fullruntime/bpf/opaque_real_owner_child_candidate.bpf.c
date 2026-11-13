@@ -33,6 +33,34 @@
 	!defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE)
 #error "the product publisher requires the interpreter continuation"
 #endif
+/* G020: every product object collects the per-pass exec facts (path, fs
+ * class, stdin, ancestors) on each evaluated pass, first and interpreter
+ * (full/shared_pass_facts.h). Test objects opt in with the same flag. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE)
+#define ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE 1
+#endif
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE) &&                \
+	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE))
+#error "the per-pass exec facts require the real-policy verdict candidate and the interpreter continuation"
+#endif
+/* G020 verdict events: every product-publisher object emits one
+ * legacy-compatible verdict event per evaluated pass and per fail-closed
+ * fault (full/shared_verdict_event.h, se_verdict_emit). Objects without the
+ * publisher stay byte-identical. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#define SE_VERDICT_EVENTS 1
+#endif
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_WITNESS) && \
+	!defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE)
+#error "the per-pass fact witness requires the per-pass exec facts"
+#endif
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_WITNESS) && \
+	defined(SE_PRODUCT_NO_TEST_RUN) &&                  \
+	!defined(SE_PRODUCT_DIAGNOSTIC_TWIN)
+#error "the per-pass fact witness is test-only: a product object never carries it"
+#endif
 #if defined(SE_PRODUCT_DIAGNOSTIC_TWIN) && SE_PRODUCT_DIAGNOSTIC_TWIN != 1
 #error "SE_PRODUCT_DIAGNOSTIC_TWIN must be exactly 1"
 #endif
@@ -241,6 +269,16 @@ real_owner_reader_quarantine_pending(__u64 physical);
 	  !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                      \
 	 !defined(ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE))
 #error "the stale-resume injector is test only and needs the interpreter continuation"
+#endif
+/* Test-only (G020 H2 attached test): the finish program's WORK suspension
+ * of a clean proposal behaves as failed, so its staged decision event is
+ * superseded by the pass's fault event. Never in a product object; admitted
+ * in the product diagnostic twin only. */
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_VERDICT_SUSPEND_FAULT_DIAGNOSTIC) && \
+	((defined(SE_PRODUCT_NO_TEST_RUN) &&                              \
+	  !defined(SE_PRODUCT_DIAGNOSTIC_TWIN)) ||                        \
+	 !defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE))
+#error "the verdict suspend-fault injector is test only and needs the product publisher"
 #endif
 #if defined(ENFORCE_EXEC_POOL_OPAQUE_POLICY_TASK_CLOSE_FAULT_DIAGNOSTIC) &&  \
 	(!defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE) || \
@@ -1476,9 +1514,17 @@ static __attribute__((noinline)) int real_owner_fc_qualify_fault(int qualified)
  * the Nth owned fork admission (real_owner_child_prepare_claimed) releases
  * its claim before anything is parked and takes the source admission-fault
  * path (birth attempt [0], ADMISSION [12]; Strict refuses the fork, Audit
- * allows it unmanaged). Each fault then takes the product's own path. */
+ * allows it unmanaged); every[3] target admission: the Nth fork target
+ * (real_owner_child_claimed_construct) whose parked claim it took releases
+ * it and takes the target re-admission fault path (ADMISSION [12] against
+ * the source's birth attempt, never CONSTRUCT; Strict refuses the fork,
+ * Audit allows it unmanaged); every[4] reader not begun: the Nth owned exec
+ * whose TASK opened skips its reader begin (real_owner_reader_open_exact)
+ * as if it failed: OPEN_PARENT [8], the TASK closed, no reader, no verdict
+ * (Strict denies, Audit allows). Each fault then takes the product's own
+ * path. */
 struct opaque_real_fc_inject_ext {
-	__u32 every[3];
+	__u32 every[5];
 	__u32 reserved;
 };
 struct {
@@ -1488,31 +1534,33 @@ struct {
 	__type(key, __u32);
 	__type(value, struct opaque_real_fc_inject_ext);
 } opaque_real_fc_inject_ext SEC(".maps");
-/* [0..2] edges seen while enabled, [3..5] injected, per period. */
+/* [0..4] edges seen while enabled, [5..9] injected, per period. */
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 6);
+	__uint(max_entries, 10);
 	__uint(map_flags, BPF_F_RDONLY);
 	__type(key, __u32);
 	__type(value, __u64);
 } opaque_real_fc_inject_ext_counts SEC(".maps");
 static __attribute__((noinline)) int real_owner_fc_inject_ext(__u32 kind)
 {
-	__u32 zero = 0, edge = kind < 3 ? kind : 0;
+	__u32 zero = 0, edge = kind < 5 ? kind : 0;
 	const struct opaque_real_fc_inject_ext *ext =
 		bpf_map_lookup_elem(&opaque_real_fc_inject_ext, &zero);
 	if (!ext)
 		return 0;
 	__u32 n = edge == 0 ? ext->every[0] :
 		  edge == 1 ? ext->every[1] :
-			      ext->every[2];
+		  edge == 2 ? ext->every[2] :
+		  edge == 3 ? ext->every[3] :
+			      ext->every[4];
 	if (!n)
 		return 0;
 	__u64 *seen =
 		bpf_map_lookup_elem(&opaque_real_fc_inject_ext_counts, &edge);
 	if (!seen || __sync_add_and_fetch(seen, 1) % n)
 		return 0;
-	__u32 hit = edge + 3;
+	__u32 hit = edge + 5;
 	__u64 *injected =
 		bpf_map_lookup_elem(&opaque_real_fc_inject_ext_counts, &hit);
 	if (injected)
@@ -1532,10 +1580,14 @@ real_owner_fc_exec_open_parent_fault(__u64 key)
 #define SE_FC_EXEC_ADMISSION_FAULT(later) \
 	(!(later) && real_owner_fc_inject_ext(1))
 #define SE_FC_BIRTH_ADMISSION_FAULT() real_owner_fc_inject_ext(2)
+#define SE_FC_TARGET_ADMISSION_FAULT() real_owner_fc_inject_ext(3)
+#define SE_FC_READER_BEGIN_FAULT() real_owner_fc_inject_ext(4)
 #else
 #define SE_FC_EXEC_OPEN_PARENT_FAULT(key) 0
 #define SE_FC_EXEC_ADMISSION_FAULT(later) 0
 #define SE_FC_BIRTH_ADMISSION_FAULT() 0
+#define SE_FC_TARGET_ADMISSION_FAULT() 0
+#define SE_FC_READER_BEGIN_FAULT() 0
 #endif
 #include "shared_pool_opaque_inherit_candidate.h"
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_WORK_READER_CATALOGUE_CANDIDATE
@@ -3501,6 +3553,13 @@ real_owner_child_claimed_construct(struct se_owk_semantic_handle *semantic,
 #else
 	int admission = se_route_admit(bpf_get_current_cgroup_id(), &claim);
 #endif
+	/* Test-only target re-admission fault: the taken claim is released
+	 * here and the target takes its re-admission fault path. */
+	if (admission == SE_ROUTE_OWNED && SE_FC_TARGET_ADMISSION_FAULT()) {
+		(void)real_owner_child_release_claim(&claim);
+		admission = claim.execution_class == 2 ? SE_ROUTE_STRICT_FAULT :
+							 SE_ROUTE_AUDIT_FAULT;
+	}
 	int committed = 0;
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_RATE_CANDIDATE
 	int attempted = 0;
@@ -5114,11 +5173,217 @@ int opaque_real_owner_alt_request_probe(struct __sk_buff *skb)
 #endif
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
+#ifdef SE_VERDICT_EVENTS
+/* G020 verdict events (event ABI 1, full/shared_verdict_event.h): the
+ * node-wide ring of the "verdict" datasource and its counters
+ * (fullruntime/shared_verdict_events.go: SharedVerdictRingMap,
+ * SharedVerdictCountersMap). The ring's size is the profile's
+ * enforce-exec-shared-verdict-ring geometry (SharedProfile.VerdictRing):
+ * by default max(1 MiB, Bindings x 256 KiB) rounded up to a power of two. */
+#include <gadget/macros.h>
+#include "shared_verdict_event.h"
+#define SE_VERDICT_RING_FOR(b)                            \
+	((b) * 262144ULL <= (1ULL << 20) ? (1ULL << 20) : \
+	 (b) * 262144ULL <= (1ULL << 21) ? (1ULL << 21) : \
+	 (b) * 262144ULL <= (1ULL << 22) ? (1ULL << 22) : \
+	 (b) * 262144ULL <= (1ULL << 23) ? (1ULL << 23) : \
+	 (b) * 262144ULL <= (1ULL << 24) ? (1ULL << 24) : \
+	 (b) * 262144ULL <= (1ULL << 25) ? (1ULL << 25) : \
+	 (b) * 262144ULL <= (1ULL << 26) ? (1ULL << 26) : \
+	 (b) * 262144ULL <= (1ULL << 27) ? (1ULL << 27) : \
+	 (b) * 262144ULL <= (1ULL << 28) ? (1ULL << 28) : \
+					   0ULL)
+#ifndef SE_PROFILE_VERDICT_RING
+#define SE_PROFILE_VERDICT_RING SE_VERDICT_RING_FOR(SE_PROFILE_BINDINGS)
+#endif
+_Static_assert(SE_PROFILE_VERDICT_RING >= 4096ULL &&
+		       SE_PROFILE_VERDICT_RING <= (1ULL << 28) &&
+		       !(SE_PROFILE_VERDICT_RING &
+			 (SE_PROFILE_VERDICT_RING - 1ULL)),
+	       "verdict ring: a power of two from 4 KiB to 256 MiB");
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, SE_PROFILE_VERDICT_RING);
+} opaque_real_verdict_events SEC(".maps");
+GADGET_TRACER(verdict, opaque_real_verdict_events, shared_verdict_event);
+/* submitted, lost (failed reservations), observation errors */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 3);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_verdict_counters SEC(".maps");
+/* Cells of opaque_real_verdict_counters (SharedVerdictSubmitted, ...). */
+#define SE_VERDICT_SUBMITTED 0U
+#define SE_VERDICT_LOST 1U
+#define SE_VERDICT_OBSERVATION_ERRORS 2U
+static __always_inline void se_verdict_count(__u32 key)
+{
+	__u64 *count = bpf_map_lookup_elem(&opaque_real_verdict_counters, &key);
+	/* Atomic: a non-sleepable LSM program can still be preempted by
+	 * another on the same CPU (preemptible RCU). */
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+/* se_verdict_emit info word: class (bits 0-7), kind (bit 8), pass (bits
+ * 16-23, 0xff unknown). */
+#define SE_VERDICT_INFO(class, kind, pass)                 \
+	(((__u32)(class) & 0xffU) | ((__u32)(kind) << 8) | \
+	 (((__u32)(pass) & 0xffU) << 16))
+#define SE_VERDICT_INFO_PASS_UNKNOWN 0xffU
+/* The event metadata of the LSM call: ctx is the bprm_check_security LSM
+ * context; generation, scope, exec_id and task_cookie come from the exec's
+ * receipt when it is still this physical task's and bprm's, else 0. */
+static __always_inline void se_verdict_meta_of(void *ctx, __u32 info,
+					       struct se_verdict_meta *meta)
+{
+	/* The physical task and bprm of the LSM call (the receipt's key and
+	 * identity); ctx, never caller scalars: both are kernel pointers. */
+	__u64 physical = (__u64)bpf_get_current_task_btf();
+	struct linux_binprm *bprm =
+		(struct linux_binprm *)((unsigned long long *)ctx)[0];
+	__u32 pass = (info >> 16) & 0xffU;
+	*meta = (struct se_verdict_meta){
+		.cgroup = bpf_get_current_cgroup_id(),
+		.host_pid = bpf_get_current_pid_tgid() >> 32,
+		.exec_class = info & 0xffU,
+		.pass = pass == SE_VERDICT_INFO_PASS_UNKNOWN ?
+				SE_VERDICT_PASS_UNKNOWN :
+				pass,
+		.kind = (info >> 8) & 1U,
+	};
+	const struct se_exec_terminal_receipt *receipt =
+		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
+	if (receipt && receipt->physical == physical &&
+	    receipt->bprm == (__u64)bprm) {
+		meta->generation = receipt->generation;
+		meta->scope = receipt->scope;
+		meta->exec_id = receipt->invocation;
+		meta->task_cookie = receipt->cookie;
+	}
+}
+/* The one immediate emitter (global: verified once, whatever its call
+ * sites), for an event whose verdict is already final (a fault, or a
+ * decision whose verdict is the class failure). It returns nothing the
+ * caller may act on (always 0): a full or missing ring loses the event and
+ * counts it, never the verdict (Strict never depends on delivery). facts and
+ * decision may be null (a fault). Never called after a prior LSM denial. */
+__attribute__((noinline)) int
+se_verdict_emit(void *ctx __attribute__((btf_decl_tag("arg:ctx"))),
+		const struct fe_facts *facts,
+		const struct fe_decision *decision, __u32 info)
+{
+	struct se_verdict_meta meta;
+	se_verdict_meta_of(ctx, info, &meta);
+	struct shared_verdict_event *event = bpf_ringbuf_reserve(
+		&opaque_real_verdict_events, sizeof(*event), 0);
+	if (!event) {
+		se_verdict_count(SE_VERDICT_LOST);
+		return 0;
+	}
+	/* A decision event without its decision is submitted as a fault. */
+	if (se_verdict_event_fill(event, facts, decision, &meta))
+		se_verdict_count(SE_VERDICT_OBSERVATION_ERRORS);
+	bpf_ringbuf_submit(event, 0);
+	se_verdict_count(SE_VERDICT_SUBMITTED);
+	return 0;
+}
+/* A decision event whose verdict is not final yet (a clean proposal: the
+ * WORK suspension, its release and the TASK close can still fail and turn
+ * it into the class failure). It is staged in the exec'ing task's own
+ * storage (no other task can touch it, preempted or not) while the WORK is
+ * held, and published only after the verdict is final; a superseded staged
+ * event is never published (the failure path emits the pass's one fault
+ * event instead). */
+struct se_verdict_staged {
+	__u64 bprm;
+	__u32 armed, reserved;
+	struct shared_verdict_event event;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct se_verdict_staged);
+} se_verdict_staging SEC(".maps");
+/* 0 staged, -1 not (no storage: the event is lost and counted). */
+__attribute__((noinline)) int
+se_verdict_stage(void *ctx __attribute__((btf_decl_tag("arg:ctx"))),
+		 const struct fe_facts *facts,
+		 const struct fe_decision *decision, __u32 info)
+{
+	struct se_verdict_staged *staged = bpf_task_storage_get(
+		&se_verdict_staging, bpf_get_current_task_btf(), 0,
+		BPF_LOCAL_STORAGE_GET_F_CREATE);
+	if (!staged) {
+		se_verdict_count(SE_VERDICT_LOST);
+		return -1;
+	}
+	staged->armed = 0;
+	struct se_verdict_meta meta;
+	se_verdict_meta_of(ctx, info, &meta);
+	if (se_verdict_event_fill(&staged->event, facts, decision, &meta))
+		se_verdict_count(SE_VERDICT_OBSERVATION_ERRORS);
+	staged->bprm = ((unsigned long long *)ctx)[0];
+	staged->armed = 1;
+	return 0;
+}
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_VERDICT_SUSPEND_FAULT_DIAGNOSTIC
+/* Test-only: the harness writes N; each of the next N clean proposals takes
+ * the failed-suspension path (the WORK is released, the class failure
+ * follows). */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_verdict_suspend_fault SEC(".maps");
+static __attribute__((noinline)) int real_owner_verdict_suspend_fault(void)
+{
+	__u32 zero = 0;
+	__u64 *armed =
+		bpf_map_lookup_elem(&opaque_real_verdict_suspend_fault, &zero);
+	if (!armed || !*armed)
+		return 0;
+	__sync_fetch_and_sub(armed, 1);
+	return 1;
+}
+#define SE_VERDICT_SUSPEND_FAULT() real_owner_verdict_suspend_fault()
+#endif
+/* Publishes the staged event of this bprm exactly once (always 0). */
+__attribute__((noinline)) int
+se_verdict_publish(void *ctx __attribute__((btf_decl_tag("arg:ctx"))))
+{
+	struct se_verdict_staged *staged = bpf_task_storage_get(
+		&se_verdict_staging, bpf_get_current_task_btf(), 0, 0);
+	if (!staged || staged->armed != 1 ||
+	    staged->bprm != ((unsigned long long *)ctx)[0]) {
+		se_verdict_count(SE_VERDICT_LOST);
+		return 0;
+	}
+	staged->armed = 0;
+	if (bpf_ringbuf_output(&opaque_real_verdict_events, &staged->event,
+			       sizeof(staged->event), 0)) {
+		se_verdict_count(SE_VERDICT_LOST);
+		return 0;
+	}
+	se_verdict_count(SE_VERDICT_SUBMITTED);
+	return 0;
+}
+#endif
+#ifndef SE_VERDICT_SUSPEND_FAULT
+#define SE_VERDICT_SUSPEND_FAULT() 0
+#endif
 /* Resume/propose uses new lexical authority, never the suspended-read pointer.
  * Bit 1 means proposal and lexical cleanup succeeded; bit 0 is a policy deny.
  * A clean deny leaves the reader/receipt for the actual failure terminal. */
 static __attribute__((noinline)) int
-real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
+real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode
+#ifdef SE_VERDICT_EVENTS
+				   ,
+				   void *ctx
+#endif
+)
 {
 	const struct se_exec_terminal_receipt *receipt =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
@@ -5134,6 +5399,9 @@ real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
 	struct se_owk_semantic_handle semantic = {};
 	struct se_invocation *work = 0;
 	int result = 0;
+#ifdef SE_VERDICT_EVENTS
+	int staged = 0;
+#endif
 	if (owner.lease.cookie != receipt->cookie ||
 	    owner.lease.locator != receipt->locator ||
 	    se_owk_resume(&owner, REAL_OWNER_EVAL_RESUME, &ticket) != SE_OL_OK)
@@ -5143,6 +5411,40 @@ real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
 		(void)se_owk_done(&owner, &ticket);
 		goto close;
 	}
+#ifdef SE_VERDICT_EVENTS
+	if (work->history.transaction.execution_class == mode) {
+		int proposed = se_owk_exec_propose_reader(&semantic, receipt,
+							  physical,
+							  0) == SE_OL_OK;
+		const struct fe_decision *decision =
+			&work->observation.evaluator.decision;
+		int error = decision->error != FE_OK &&
+			    decision->error != FE_AUDIT_UNKNOWN;
+		if (proposed && !error)
+			result = 2 |
+				 (fe_lsm_verdict(mode, 0, 0, decision) != 0);
+		/* One terminal event per evaluated pass, carrying its final
+		 * verdict (H2). A decision the evaluator finished with an
+		 * UNKNOWN fact or a role conflict is final now (its verdict is
+		 * the class failure below): emitted, and bit 2 tells that
+		 * failure path the event of this pass is out. A clean proposal
+		 * is staged here and published below only once suspension,
+		 * release and close all succeeded; otherwise the failure path
+		 * emits the pass's fault event. Pass p evaluates at stage
+		 * 3p+2. */
+		__u32 info = SE_VERDICT_INFO(mode, SE_VERDICT_DECISION,
+					     ticket.continuation_stage / 3);
+		if (result & 2)
+			staged = se_verdict_stage(ctx, &work->observation.facts,
+						  decision, info) == 0;
+		else if (error && (decision->error == FE_UNKNOWN ||
+				   decision->error == FE_ROLE_CONFLICT)) {
+			(void)se_verdict_emit(ctx, &work->observation.facts,
+					      decision, info);
+			result |= 4;
+		}
+	}
+#else
 	if (work->history.transaction.execution_class == mode &&
 	    se_owk_exec_propose_reader(&semantic, receipt, physical, 0) ==
 		    SE_OL_OK) {
@@ -5154,24 +5456,33 @@ real_owner_policy_propose_finished(__u64 physical, __u64 bprm, __u32 mode)
 			result = 2 |
 				 (fe_lsm_verdict(mode, 0, 0, decision) != 0);
 	}
+#endif
 	/* A clean proposal keeps this WORK for the exec terminal; a failed
 	 * suspension faults the ticket and falls back to the class verdict. */
 	if ((result & 2) &&
-	    se_owk_semantic_suspend(
-		    &semantic, &work,
-		    REAL_OWNER_NEXT_STAGE(ticket, REAL_OWNER_TERMINAL_STAGE)) !=
-		    SE_OL_OK)
-		result = 0;
+	    (SE_VERDICT_SUSPEND_FAULT() ||
+	     se_owk_semantic_suspend(
+		     &semantic, &work,
+		     REAL_OWNER_NEXT_STAGE(
+			     ticket, REAL_OWNER_TERMINAL_STAGE)) != SE_OL_OK))
+		result &= 4;
 	if (semantic.held && work &&
 	    se_owk_semantic_done(&semantic, &work) != SE_OL_OK)
-		result = 0;
+		result &= 4;
 close:
 	if (!(result & 2))
 		(void)se_op_task_owned_fault(&owner, bprm);
 	if (se_ol_payload_close(&owner) != SE_OL_OK) {
 		(void)se_op_task_owned_fault(&owner, bprm);
-		result = 0;
+		result &= 4;
 	}
+#ifdef SE_VERDICT_EVENTS
+	/* The verdict is final: publish the staged clean decision. */
+	if ((result & 2) && staged) {
+		(void)se_verdict_publish(ctx);
+		result |= 4;
+	}
+#endif
 	return result;
 }
 
@@ -5185,6 +5496,31 @@ real_owner_policy_failure(__u64 physical, __u64 bprm, __u32 mode)
 	(void)real_owner_policy_abort_handoff(physical, bprm);
 	return fe_lsm_verdict(mode, 0, 1, 0);
 }
+#ifdef SE_VERDICT_EVENTS
+/* G020: the failure path with its fault event (D1: Strict deny=1 mode=2,
+ * Audit deny=1 mode=1, error 1), unless the pass's decision event is
+ * already out (emitted). The verdict is the static class's, computed first;
+ * the event goes before the cleanup retires the receipt it reports. */
+static __attribute__((always_inline)) inline long
+real_owner_policy_failure_event(void *ctx, __u64 physical, __u64 bprm,
+				__u32 mode, int emitted)
+{
+	long verdict = fe_lsm_verdict(mode, 0, 1, 0);
+	if (!emitted)
+		(void)se_verdict_emit(
+			ctx, 0, 0,
+			SE_VERDICT_INFO(mode, SE_VERDICT_FAULT,
+					SE_VERDICT_INFO_PASS_UNKNOWN));
+	(void)real_owner_policy_finish_stage_one(physical, bprm);
+	(void)real_owner_policy_abort_handoff(physical, bprm);
+	return verdict;
+}
+#define REAL_OWNER_POLICY_FAILURE(ctx, physical, bprm, mode) \
+	real_owner_policy_failure_event(ctx, physical, bprm, mode, 0)
+#else
+#define REAL_OWNER_POLICY_FAILURE(ctx, physical, bprm, mode) \
+	real_owner_policy_failure(physical, bprm, mode)
+#endif
 
 /* Global (independently verified once) failure path for the policy class
  * program. Inlined into the policy program it exceeded 1M processed
@@ -5196,14 +5532,522 @@ __attribute__((noinline)) long real_owner_policy_failure_global(
 {
 	struct linux_binprm *bprm =
 		(struct linux_binprm *)((unsigned long long *)ctx)[0];
-	return real_owner_policy_failure((__u64)bpf_get_current_task_btf(),
+	return REAL_OWNER_POLICY_FAILURE(ctx, (__u64)bpf_get_current_task_btf(),
 					 (__u64)bprm, mode == 1 ? 1 : 2);
 }
+
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE
+/* G020 per-pass exec facts (design O3, full/shared_pass_facts.h): one global
+ * frame, called from the prepare frame on every evaluated pass (first pass
+ * and interpreter continuation), writes straight into the WORK's observation
+ * facts, so the prepare stack grows by one small frame only. The product has
+ * no memfd marker: shmem/hugetlb files stay MEMFD-unknown, every other file
+ * MEMFD-known-false. */
+#define FULL_FS_SHARED_MARK(inode) ((void)(inode))
+#define FULL_FS_SHARED_READ(inode) 0
+#include "filesystem.h"
+#include "stdio.h"
+/* Per-reason fact counters (SE_PF_*), RDONLY to userspace; pinned by the Go
+ * product admission (shared_fact_stats.go) and reported as node health. */
+#define REAL_OWNER_FACT_STATS 17
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 17);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, __u64);
+} opaque_real_fact_stats SEC(".maps");
+/* An out-of-range cell is no reason of the collector: never counted
+ * (under another cell's name). */
+static __always_inline void real_owner_fact_stat(__u32 cell)
+{
+	if (cell >= REAL_OWNER_FACT_STATS)
+		return;
+	__u64 *count = bpf_map_lookup_elem(&opaque_real_fact_stats, &cell);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+/* MNT_NS_INTERNAL (fs/mount.h): the mnt_ns of a kernel-internal mount
+ * (kern_mount: shmem's memfd files, anon inodes). */
+#define REAL_OWNER_MNT_NS_INTERNAL ((unsigned long)-22L)
+struct real_owner_reach_walk {
+	struct dentry *dentry, *root_dentry;
+	struct mount *mnt;
+	struct vfsmount *root_mnt;
+	int result;
+};
+/* One step up from (dentry, mount) toward the current task's root: d_path's
+ * own walk (prepend_path), which d_path does not report when it ends at a
+ * namespace root instead of the task's root. Reads only; BPF runs under RCU,
+ * which keeps dentries and mounts alive. Each d_parent read is bracketed by
+ * the dentry's d_seq (M3: a rename in flight or between the two reads makes
+ * the walk unknown, never a stale answer); the mount tree is bracketed by
+ * the caller (mount namespace event). */
+static long real_owner_reach_step(__u64 index, void *opaque)
+{
+	struct real_owner_reach_walk *w = opaque;
+	(void)index;
+	/* Plain locals: BPF_CORE_READ(w->x, ...) would relocate the walk
+	 * record's own field access against vmlinux (poisoned by CO-RE). */
+	struct dentry *dentry = w->dentry;
+	struct mount *mnt = w->mnt;
+	struct vfsmount *vfs =
+		(void *)mnt + bpf_core_field_offset(struct mount, mnt);
+	if (dentry == w->root_dentry && vfs == w->root_mnt) {
+		w->result = 1;
+		return 1;
+	}
+	struct dentry *mnt_root = BPF_CORE_READ(vfs, mnt_root);
+	if (dentry == mnt_root) {
+		struct mount *parent = BPF_CORE_READ(mnt, mnt_parent);
+		if (!parent || parent == mnt) {
+			/* A namespace root or a detached mount; a
+			 * kernel-internal one (a memfd) is told apart. */
+			unsigned long ns =
+				(unsigned long)BPF_CORE_READ(mnt, mnt_ns);
+			w->result = ns == REAL_OWNER_MNT_NS_INTERNAL ? 2 : 0;
+			return 1;
+		}
+		w->dentry = BPF_CORE_READ(mnt, mnt_mountpoint);
+		w->mnt = parent;
+		return 0;
+	}
+	unsigned int seq = 0, again = 1;
+	if (BPF_CORE_READ_INTO(&seq, dentry, d_seq.seqcount.sequence) ||
+	    (seq & 1)) {
+		w->result = -1;
+		return 1;
+	}
+	struct dentry *up = BPF_CORE_READ(dentry, d_parent);
+	if (BPF_CORE_READ_INTO(&again, dentry, d_seq.seqcount.sequence) ||
+	    again != seq) {
+		w->result = -1;
+		return 1;
+	}
+	if (!up || up == dentry) {
+		w->result = 0; /* disconnected */
+		return 1;
+	}
+	w->dentry = up;
+	return 0;
+}
+/* The current mount namespace's event counter (bumped by every mount tree
+ * change), 0 unreadable; 1 when the kernel has none (nothing to bracket). */
+static __always_inline __u64 real_owner_mount_event(struct task_struct *task)
+{
+	__u64 event = 0;
+	if (!bpf_core_field_exists(struct mnt_namespace, event))
+		return 1;
+	if (BPF_CORE_READ_INTO(&event, task, nsproxy, mnt_ns, event))
+		return 0;
+	return event + 1;
+}
+/* 1: file is reachable from the current task's root; 0: it is not (D5);
+ * 2: on a kernel-internal mount (memfd); -1: unknown (unreadable, longer
+ * than the walk, or the mount tree changed during the walk: M3). */
+static __always_inline int real_owner_reachable(struct file *file)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	struct real_owner_reach_walk w = { .result = -1 };
+	struct vfsmount *vfs = 0;
+	__u64 before = real_owner_mount_event(task);
+	if (!before ||
+	    BPF_CORE_READ_INTO(&w.root_dentry, task, fs, root.dentry) ||
+	    BPF_CORE_READ_INTO(&w.root_mnt, task, fs, root.mnt) ||
+	    BPF_CORE_READ_INTO(&w.dentry, file, f_path.dentry) ||
+	    BPF_CORE_READ_INTO(&vfs, file, f_path.mnt) || !w.root_dentry ||
+	    !w.root_mnt || !w.dentry || !vfs)
+		return -1;
+	w.mnt = (void *)vfs - bpf_core_field_offset(struct mount, mnt);
+	if (bpf_loop(256, real_owner_reach_step, &w, 0) < 0)
+		return -1;
+	if (real_owner_mount_event(task) != before)
+		return -1;
+	return w.result;
+}
+/* M2: 1 the file's dentry is unlinked (d_unlinked: unhashed, not a root),
+ * 0 linked, -1 unreadable. */
+static __always_inline int real_owner_unlinked(struct file *file)
+{
+	struct dentry *dentry = 0, *parent = 0;
+	void *pprev = 0;
+	if (BPF_CORE_READ_INTO(&dentry, file, f_path.dentry) || !dentry ||
+	    BPF_CORE_READ_INTO(&parent, dentry, d_parent) ||
+	    BPF_CORE_READ_INTO(&pprev, dentry, d_hash.pprev))
+		return -1;
+	return !pprev && parent != dentry;
+}
+/* 1 the task has a TASK (it is a task of the enforced workload), 0 not. */
+static __always_inline int real_owner_member(struct task_struct *task)
+{
+	__u64 physical = (__u64)task;
+	return bpf_map_lookup_elem(&se_opaque_keys, &physical) ? 1 : 0;
+}
+#define SE_PF_TYPES_ONLY 1
+#include "shared_pass_facts.h"
+#undef SE_PF_TYPES_ONLY
+/* M1: UTF-8 validation of a path (shared_pass_facts.h se_pf_utf8_step),
+ * one bpf_loop callback verified once. */
+struct real_owner_utf8_walk {
+	const __u8 *bytes;
+	__u32 n, state;
+	int bad;
+};
+static long real_owner_utf8_step(__u64 index, void *opaque)
+{
+	struct real_owner_utf8_walk *w = opaque;
+	if (index >= w->n || index >= 255) {
+		w->bad |= w->state != 0;
+		return 1;
+	}
+	const __u8 *bytes = w->bytes;
+	__u32 state = w->state;
+	if (se_pf_utf8_step(&state, bytes[index & 0xff])) {
+		w->bad = 1;
+		return 1;
+	}
+	w->state = state;
+	return 0;
+}
+static __always_inline int real_owner_utf8(const __u8 *bytes, __u32 n)
+{
+	struct real_owner_utf8_walk w = { bytes, n, 0, 0 };
+	if (n > 255 || bpf_loop(n + 1, real_owner_utf8_step, &w, 0) < 0)
+		return 0;
+	return !w.bad;
+}
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+/* H1: the binding's root anchor, recorded by the adoption finish
+ * (opaque_real_adopt_finish) from the adopted init before the route's
+ * adopting word clears: no claim of the binding is evaluated earlier. scope
+ * names the binding the record is for (written last, re-checked by the
+ * reader). RDONLY to userspace. */
+struct se_binding_root {
+	__u64 scope, init_start, root_ino;
+	__u32 init_tgid, mntns, root_mnt_id, root_dev;
+};
+_Static_assert(sizeof(struct se_binding_root) == 40, "binding root anchor");
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, SE_PROFILE_BINDINGS);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct se_binding_root);
+} se_binding_roots SEC(".maps");
+#endif
+/* A task's fs root and mount namespace identity (each read at its field's
+ * exact width): 0, or -1 unreadable. */
+static __always_inline int real_owner_task_root(struct task_struct *task,
+						__u64 *ino, __u32 *mnt_id,
+						__u32 *dev, __u32 *mntns)
+{
+	struct vfsmount *vfs = 0;
+	struct dentry *dentry = 0;
+	int id = 0;
+	unsigned long i_ino = 0;
+	__u32 s_dev = 0;
+	unsigned int inum = 0;
+	if (BPF_CORE_READ_INTO(&vfs, task, fs, root.mnt) ||
+	    BPF_CORE_READ_INTO(&dentry, task, fs, root.dentry) || !vfs ||
+	    !dentry)
+		return -1;
+	struct mount *mnt =
+		(void *)vfs - bpf_core_field_offset(struct mount, mnt);
+	if (BPF_CORE_READ_INTO(&id, mnt, mnt_id) ||
+	    BPF_CORE_READ_INTO(&i_ino, dentry, d_inode, i_ino) ||
+	    BPF_CORE_READ_INTO(&s_dev, dentry, d_sb, s_dev) ||
+	    BPF_CORE_READ_INTO(&inum, task, nsproxy, mnt_ns, ns.inum) ||
+	    !i_ino || !inum)
+		return -1;
+	*ino = i_ino;
+	*mnt_id = (__u32)id;
+	*dev = s_dev;
+	*mntns = inum;
+	return 0;
+}
+/* H1 bracket: the fs_struct sequence count of the current task (bumped
+ * around every root/pwd change: set_fs_root/set_fs_pwd). 6.12 has
+ * seqcount_spinlock_t seq (seq.seqcount.sequence), 6.18 seqlock_t seq
+ * (seq.seqcount.seqcount.sequence); either is read through its own CO-RE
+ * flavour. 1 (odd: never a stable value) when unreadable or neither shape. */
+struct se_pf_seqcount___l {
+	unsigned int sequence;
+} __attribute__((preserve_access_index));
+struct se_pf_seqcount_spin___l {
+	struct se_pf_seqcount___l seqcount;
+} __attribute__((preserve_access_index));
+struct se_pf_seqlock___l {
+	struct se_pf_seqcount_spin___l seqcount;
+} __attribute__((preserve_access_index));
+struct fs_struct___se_pf_seqcount {
+	struct se_pf_seqcount_spin___l seq;
+} __attribute__((preserve_access_index));
+struct fs_struct___se_pf_seqlock {
+	struct se_pf_seqlock___l seq;
+} __attribute__((preserve_access_index));
+static __always_inline __u32 real_owner_fs_seq(void)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	void *fs = 0;
+	unsigned int seq = 1;
+	if (BPF_CORE_READ_INTO(&fs, task, fs) || !fs)
+		return 1;
+	if (bpf_core_field_exists(((struct fs_struct___se_pf_seqlock *)0)
+					  ->seq.seqcount.seqcount.sequence)) {
+		if (BPF_CORE_READ_INTO(&seq,
+				       (struct fs_struct___se_pf_seqlock *)fs,
+				       seq.seqcount.seqcount.sequence))
+			return 1;
+	} else if (bpf_core_field_exists(
+			   ((struct fs_struct___se_pf_seqcount *)0)
+				   ->seq.seqcount.sequence)) {
+		if (BPF_CORE_READ_INTO(&seq,
+				       (struct fs_struct___se_pf_seqcount *)fs,
+				       seq.seqcount.sequence))
+			return 1;
+	} else {
+		return 1;
+	}
+	asm volatile("" ::: "memory");
+	return seq;
+}
+#define SE_PF_FS_SEQ() real_owner_fs_seq()
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+/* H1: 1 the current task's root is the binding's anchored root (same mount
+ * namespace, root mount and root inode), 0 not (a chroot, pivot_root or
+ * setns since Bind), -1 no anchor or unreadable. */
+static __always_inline int real_owner_rooted(const struct se_pf_anchor *a)
+{
+	__u64 ino = 0;
+	__u32 mnt_id = 0, dev = 0, mntns = 0;
+	if (!a->known || real_owner_task_root(bpf_get_current_task_btf(), &ino,
+					      &mnt_id, &dev, &mntns))
+		return -1;
+	return ino == a->root_ino && mnt_id == a->root_mnt_id &&
+	       dev == a->root_dev && mntns == a->mntns;
+}
+/* 1 the task is the binding's init (tgid and leader start ticks). */
+static __always_inline int real_owner_binding_init(struct task_struct *task,
+						   const struct se_pf_anchor *a)
+{
+	__u32 tgid = 0;
+	__u64 start = 0;
+	if (!a->known || BPF_CORE_READ_INTO(&tgid, task, tgid) ||
+	    tgid != a->init_tgid ||
+	    BPF_CORE_READ_INTO(&start, task, group_leader, start_boottime))
+		return 0;
+	return start / (1000000000ULL / 100) == a->init_start;
+}
+#define SE_PF_ROOTED(anchor) real_owner_rooted(anchor)
+#define SE_PF_INIT(task, anchor) real_owner_binding_init(task, anchor)
+#else
+/* No adoption (no anchor) outside the product publisher: these test objects
+ * keep the exec'ing task's own root; every product object carries the
+ * publisher. */
+#define SE_PF_ROOTED(anchor) ((void)(anchor), 1)
+#define SE_PF_INIT(task, anchor) ((void)(task), (void)(anchor), 0)
+#endif
+#define SE_PF_STAT(cell) real_owner_fact_stat(cell)
+#define SE_PF_FS(file) full_file_filesystem(file)
+#define SE_PF_STDIN(task) full_stdin_pipe(task)
+#define SE_PF_REACHABLE(file) real_owner_reachable(file)
+#define SE_PF_UNLINKED(file) real_owner_unlinked(file)
+#define SE_PF_MEMBER(task) real_owner_member(task)
+#define SE_PF_UTF8(bytes, n) real_owner_utf8(bytes, n)
+/* G020 image facts (full/shared_image_classify.h). The image handle and
+ * overlay dev come from the metadata of the snapshot record the exec's
+ * reader holds (real_owner_prepare_image): that claim references the sealed
+ * descriptor, so its keys stay in se_image_keys through the last lookup.
+ * Objects without the product image index leave the image facts UNKNOWN. */
+struct real_owner_image_ctx {
+	__u64 handle;
+	__u32 dev, known;
+};
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+#include "shared_image_kernel.h"
+#include "shared_image_classify.h"
+/* The classifier's witness (classifier reasons; the command side counts its
+ * own slots, opaque_real_owner_product_image.h). */
+#define REAL_OWNER_IMAGE_WITNESS_MAP 1
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__uint(map_flags, BPF_F_RDONLY);
+	__type(key, __u32);
+	__type(value, struct se_image_class_witness);
+} se_image_witness SEC(".maps");
+static __always_inline int
+real_owner_image_class(struct file *file,
+		       const struct real_owner_image_ctx *image)
+{
+	__u32 zero = 0;
+	struct se_image_class_witness *w =
+		bpf_map_lookup_elem(&se_image_witness, &zero);
+	if (!image->known)
+		return se_image_class_note(w, SE_IMAGE_CLASS_AUTH, -1);
+	return se_image_classify(file, image->handle, image->dev, w);
+}
+/* Global (its own frame, after real_owner_pass_facts: the classifier's
+ * locals never share a stack chain with the facts' root-walk callback): the
+ * target's and the actor's image facts, 1 from the binding's image, 0 not,
+ * -1 UNKNOWN. The facts collector already reset both to -1 this pass. */
+__attribute__((noinline)) int
+real_owner_pass_image(struct linux_binprm *bprm __arg_trusted,
+		      struct fe_facts *facts, __u64 image_handle,
+		      __u32 image_dev, __u32 image_known)
+{
+	if (!bprm || !facts)
+		return -1;
+	struct real_owner_image_ctx image = { image_handle, image_dev,
+					      image_known };
+	struct file *target = bprm->file;
+	if (target)
+		facts->target_image = real_owner_image_class(target, &image);
+	struct file *actor = bpf_get_task_exe_file(bpf_get_current_task_btf());
+	if (actor) {
+		facts->actor_image = real_owner_image_class(actor, &image);
+		bpf_put_file(actor);
+	}
+	return 0;
+}
+#endif
+#include "shared_pass_facts.h"
+_Static_assert(SE_PF_STATS == REAL_OWNER_FACT_STATS,
+	       "opaque_real_fact_stats has one cell per SE_PF_* reason");
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_WITNESS
+/* Test-only per-pass witness ring (diagnostic twins; refused in a product
+ * object above and by sharedProductForbiddenMaps): [0].seq is the head,
+ * [1..16] the last 16 passes. */
+struct real_owner_pass_witness {
+	__u64 seq, tgid;
+	__s32 result, target_image, actor_image, stdin_pipe;
+	__u32 fs_mask, fs_known, ancestor_count, ancestors_complete;
+	__u32 target_length, actor_length, ancestor0_length, reserved;
+	__u8 target[256], actor[256], ancestor0[256];
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 17);
+	__type(key, __u32);
+	__type(value, struct real_owner_pass_witness);
+} opaque_real_fact_witness SEC(".maps");
+static __attribute__((noinline)) void
+real_owner_pass_witness(const struct fe_facts *facts, int result)
+{
+	__u32 zero = 0;
+	struct real_owner_pass_witness *head =
+		bpf_map_lookup_elem(&opaque_real_fact_witness, &zero);
+	if (!head)
+		return;
+	__u64 seq = __sync_fetch_and_add(&head->seq, 1) + 1;
+	__u32 key = 1 + ((seq - 1) & 15);
+	struct real_owner_pass_witness *w =
+		bpf_map_lookup_elem(&opaque_real_fact_witness, &key);
+	if (!w)
+		return;
+	w->seq = seq;
+	w->tgid = bpf_get_current_pid_tgid() >> 32;
+	w->result = result;
+	w->target_image = facts->target_image;
+	w->actor_image = facts->actor_image;
+	w->stdin_pipe = facts->stdin_pipe;
+	w->fs_mask = facts->fs_mask;
+	w->fs_known = facts->fs_known;
+	w->ancestor_count = facts->ancestor_count;
+	w->ancestors_complete = facts->ancestors_complete;
+	w->target_length = facts->target_path.length;
+	w->actor_length = facts->actor_path.length;
+	w->ancestor0_length = facts->ancestors[0].length;
+	__builtin_memcpy(w->target, facts->target_path.bytes, 256);
+	__builtin_memcpy(w->actor, facts->actor_path.bytes, 256);
+	__builtin_memcpy(w->ancestor0, facts->ancestors[0].bytes, 256);
+}
+#endif
+/* Global (verified once, its own frame): the facts of one evaluated pass into
+ * the WORK's observation facts. bprm is the bprm_check argument of the
+ * calling prepare program (trusted: bprm->file is BTF_TYPE_SAFE_TRUSTED on
+ * the matrix kernels, as bpf_path_d_path's KF_TRUSTED_ARGS requires). */
+__attribute__((noinline)) int
+real_owner_pass_facts(struct linux_binprm *bprm __arg_trusted,
+		      struct fe_facts *facts, const struct se_pf_anchor *anchor)
+{
+	return se_pass_facts_collect(bprm, facts, anchor);
+}
+#endif
+
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE)
+/* The image identity of the snapshot record this exec's reader holds: the
+ * reader claim (re-authenticated from the live TASK, as the policy bridge
+ * does) keeps that record ACTIVE or RETIRING, so its immutable metadata and
+ * the sealed descriptor it references (shared_image_snapshot.h) stay valid
+ * through the classifier's last lookup. A revision between two passes of one
+ * exec therefore never changes the handle a pass classifies against. Any
+ * mismatch leaves image->known 0 (image facts UNKNOWN). */
+static __attribute__((noinline)) void
+real_owner_prepare_image(struct se_ol_payload_handle *owner,
+			 const struct se_exec_terminal_receipt *receipt,
+			 struct real_owner_image_ctx *image,
+			 struct se_pf_anchor *anchor)
+{
+	struct real_owner_policy_auth auth = {};
+	if (!real_owner_policy_authenticate(owner, receipt, receipt->bprm,
+					    &auth) ||
+	    auth.slot >= SE_OC_ACCOUNTS || auth.record >= 2 || !auth.serial)
+		return;
+	/* Scalar-bounded record index (old verifier state joins). */
+	volatile __u64 bounded_record = auth.record;
+	struct se_shared_binding *binding =
+		bpf_map_lookup_elem(&se_bindings, &auth.slot);
+	if (!binding)
+		return;
+	const struct se_snapshot *snapshot =
+		&binding->state.records[bounded_record & 1ULL];
+	__u32 phase = snapshot->phase;
+	if (snapshot->serial != auth.serial ||
+	    snapshot->scope != receipt->scope ||
+	    snapshot->generation != receipt->generation ||
+	    (phase != SE_SNAPSHOT_ACTIVE && phase != SE_SNAPSHOT_RETIRING))
+		return;
+	image->handle = snapshot->metadata.image_handle;
+	image->dev = snapshot->metadata.image_dev;
+	/* The claim keeps the record ACTIVE or RETIRING; re-checked after
+	 * the copy anyway (a record that moved on is no identity). */
+	asm volatile("" ::: "memory");
+	phase = snapshot->phase;
+	image->known =
+		snapshot->serial == auth.serial &&
+		(phase == SE_SNAPSHOT_ACTIVE || phase == SE_SNAPSHOT_RETIRING);
+	/* H1: the binding's root anchor, only when recorded for this exact
+	 * binding scope (re-checked after the copy: a recycle in between
+	 * leaves it unknown). */
+	const struct se_binding_root *root =
+		bpf_map_lookup_elem(&se_binding_roots, &auth.slot);
+	if (!root || !root->scope || root->scope != receipt->scope)
+		return;
+	*anchor = (struct se_pf_anchor){
+		.root_ino = root->root_ino,
+		.init_start = root->init_start,
+		.root_mnt_id = root->root_mnt_id,
+		.root_dev = root->root_dev,
+		.mntns = root->mntns,
+		.init_tgid = root->init_tgid,
+	};
+	asm volatile("" ::: "memory");
+	anchor->known = root->scope == receipt->scope && anchor->root_ino &&
+			anchor->mntns;
+}
+#endif
 
 /* Prepare program body: reopen the exact receipt TASK, resume the stage-1
  * WORK, snapshot history/catalogue/roles, suspend to the evaluation stage.
  * Returns 1 only when the WORK is suspended at REAL_OWNER_EVAL_STAGE. */
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE
+static __attribute__((noinline)) int
+real_owner_prepare_frame(__u64 physical, struct linux_binprm *bprm)
+#else
 static __attribute__((noinline)) int real_owner_prepare_frame(__u64 physical)
+#endif
 {
 	const struct se_exec_terminal_receipt *receipt =
 		bpf_map_lookup_elem(&se_exec_terminal_receipts, &physical);
@@ -5228,11 +6072,35 @@ static __attribute__((noinline)) int real_owner_prepare_frame(__u64 physical)
 		(void)se_owk_done(&owner, &ticket);
 		goto close;
 	}
+	/* UNKNOWN until the per-pass facts below collect them (the image
+	 * facts in real_owner_pass_image, after real_owner_pass_facts). */
 	work->observation.facts.actor_image = -1;
 	work->observation.facts.target_image = -1;
 	work->observation.facts.stdin_pipe = -1;
+#if defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE)
+	struct real_owner_image_ctx image = {};
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE
+	/* H1: no anchor (known 0) unless the binding recorded one. */
+	struct se_pf_anchor anchor = {};
+#endif
 	if (real_owner_prepare_reader_frame(&semantic, receipt, physical) ==
 		    SE_OL_OK &&
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    (real_owner_prepare_image(&owner, receipt, &image, &anchor), 1) &&
+#endif
+	    real_owner_pass_facts(bprm, &work->observation.facts, &anchor) >=
+		    0 &&
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    real_owner_pass_image(bprm, &work->observation.facts, image.handle,
+				  image.dev, image.known) >= 0 &&
+#endif
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_WITNESS
+	    (real_owner_pass_witness(&work->observation.facts, 0), 1) &&
+#endif
+#endif
 	    se_owk_semantic_suspend(
 		    &semantic, &work,
 		    REAL_OWNER_NEXT_STAGE(ticket, REAL_OWNER_EVAL_STAGE)) ==
@@ -5255,7 +6123,12 @@ real_owner_prepare_class(unsigned long long *ctx, struct linux_binprm *bprm,
 	__s64 prior = (__s64)ctx[1];
 	if (prior)
 		return prior;
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE
+	if (real_owner_prepare_frame((__u64)bpf_get_current_task_btf(), bprm) ==
+	    1) {
+#else
 	if (real_owner_prepare_frame((__u64)bpf_get_current_task_btf()) == 1) {
+#endif
 		if (mode == 1)
 			bpf_tail_call(ctx, &opaque_real_stage_audit, 0);
 		else
@@ -5330,7 +6203,7 @@ real_owner_stage_class(unsigned long long *ctx, struct linux_binprm *bprm,
 				scope, REAL_OWNER_EVAL_RESUME, 2);
 		}
 	}
-	return real_owner_policy_failure(physical, (__u64)bprm, mode);
+	return REAL_OWNER_POLICY_FAILURE(ctx, physical, (__u64)bprm, mode);
 }
 
 static __attribute__((always_inline)) inline long
@@ -5395,6 +6268,14 @@ real_owner_rule_class(unsigned long long *ctx, struct linux_binprm *bprm,
 	if (held)
 		(void)se_owk_suspended_current(held, REAL_OWNER_EVAL_RESUME, 2);
 	(void)physical;
+#ifdef SE_VERDICT_EVENTS
+	/* The pass's one fault event (D1): the finish program, the only
+	 * decision emitter, never ran for it. Last, with nothing live after
+	 * it (the rule frame is at the 512-byte combined stack limit). */
+	(void)se_verdict_emit(ctx, 0, 0,
+			      SE_VERDICT_INFO(mode, SE_VERDICT_FAULT,
+					      SE_VERDICT_INFO_PASS_UNKNOWN));
+#endif
 	if (mode == 2) {
 		asm volatile("" ::: "memory");
 		return -1L;
@@ -5413,8 +6294,13 @@ real_owner_finish_class(unsigned long long *ctx, struct linux_binprm *bprm,
 	if (prior)
 		return prior;
 	__u64 physical = (__u64)bpf_get_current_task_btf();
+#ifdef SE_VERDICT_EVENTS
+	int result = real_owner_policy_propose_finished(physical, (__u64)bprm,
+							mode, ctx);
+#else
 	int result =
 		real_owner_policy_propose_finished(physical, (__u64)bprm, mode);
+#endif
 	if (result & 2) {
 		if (result & 1) {
 			asm volatile("" ::: "memory");
@@ -5422,7 +6308,12 @@ real_owner_finish_class(unsigned long long *ctx, struct linux_binprm *bprm,
 		}
 		return 0;
 	}
+#ifdef SE_VERDICT_EVENTS
+	return real_owner_policy_failure_event(ctx, physical, (__u64)bprm, mode,
+					       result & 4);
+#else
 	return real_owner_policy_failure(physical, (__u64)bprm, mode);
+#endif
 }
 
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_INTERP_CONTINUATION_CANDIDATE
@@ -6194,7 +7085,10 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 	int transfer = 0;
 	if (good) {
 		__u64 invocation = 0;
-		int opened = real_owner_reader_open_exact(&owner, &claim, bprm,
+		/* The test-only reader-begin fault skips the begin (nothing
+		 * begun, nothing to abort). */
+		int opened = !SE_FC_READER_BEGIN_FAULT() &&
+			     real_owner_reader_open_exact(&owner, &claim, bprm,
 							  &invocation);
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
 		/* The TASK opened but its reader could not begin: the Strict
@@ -6403,6 +7297,15 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
 				bpf_tail_call(ctx, &opaque_real_policy_audit,
 					      0);
 			SE_GRAPH_MISS();
+#ifdef SE_VERDICT_EVENTS
+			/* The pass's one fault event (D1): no policy program
+			 * ran for it. */
+			(void)se_verdict_emit(
+				ctx, 0, 0,
+				SE_VERDICT_INFO(result & 1 ? 2 : 1,
+						SE_VERDICT_FAULT,
+						SE_VERDICT_INFO_PASS_UNKNOWN));
+#endif
 #else
 			bpf_tail_call(ctx, &opaque_real_owner_policy_targets,
 				      0);

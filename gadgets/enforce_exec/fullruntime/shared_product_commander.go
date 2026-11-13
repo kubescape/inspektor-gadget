@@ -82,6 +82,10 @@ type productCommander struct {
 	bindings             sharedBytesMap
 	starvedSince         map[uint32]time.Time
 	revisionStatus       map[uint32]*SharedRevisionStatus
+
+	// image is the G020 image index (shared_product_image.go); nil: every
+	// publication carries no image (handle 0).
+	image *productImageIndex
 }
 
 type productSlot struct {
@@ -168,6 +172,10 @@ type sharedPublishFields struct {
 	slot, class, object, bank                           uint32
 	policy                                              sharedCompiledPolicy
 	container                                           string
+	// imageHandle/imageDev: the binding's sealed image set and its root
+	// overlay's kernel dev_t (G020); both zero without one.
+	imageHandle uint64
+	imageDev    uint32
 }
 
 func sharedProductPublishBody(f sharedPublishFields) ([]byte, error) {
@@ -182,14 +190,19 @@ func sharedProductPublishBody(f sharedPublishFields) ([]byte, error) {
 	for i, v := range []uint32{f.slot, f.class, f.object, f.init.TGID, f.bank} {
 		le.PutUint32(b[56+4*i:], v)
 	}
+	if (f.imageHandle == 0) != (f.imageDev == 0) || f.imageDev>>sharedKernelMinorBits != 0 {
+		return nil, fmt.Errorf("image handle %d with overlay dev %#x", f.imageHandle, f.imageDev)
+	}
 	// struct se_snapshot_metadata: root_epochs[8], policy_uids[8],
 	// image_handle, role_writers, required_known, container_length,
-	// container[256], reserved. One policy (count 1).
+	// container[256], image_dev. One policy (count 1).
 	m := b[80 : 80+sharedSnapshotMetadataBytes]
 	le.PutUint64(m[0:], f.policy.RootEpoch)
 	le.PutUint64(m[64:], f.policy.UID)
+	le.PutUint64(m[128:], f.imageHandle)
 	le.PutUint32(m[144:], uint32(len(f.container)))
 	copy(m[148:], f.container)
+	le.PutUint32(m[404:], f.imageDev)
 	return b, nil
 }
 
@@ -434,9 +447,19 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 	if err != nil {
 		return 0, err
 	}
+	// G020: the binding's image set, built before the route opens (its
+	// PREPARE references it). Required by a FromImage policy; otherwise
+	// best effort (a binding without one publishes handle 0).
+	imageHandle, imageDev, err := c.image.build(ctx, slot, scope, init)
+	if err != nil {
+		if sharedPolicyUsesImage(policy.Source) {
+			return 0, fmt.Errorf("publish slot %d (FromImage policy): %w", slot, err)
+		}
+		imageHandle, imageDev = 0, 0
+	}
 	object, generation, err := c.stage(ctx, compiled)
 	if err != nil {
-		return 0, err
+		return 0, joinIfErr(err, c.image.discard(context.WithoutCancel(ctx), slot))
 	}
 	defer c.settle(object)
 	// M4: one policy per binding, so the slot's epoch-bank cell is its own
@@ -444,10 +467,11 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 	body, err := sharedProductPublishBody(sharedPublishFields{
 		cgroup: cgroup, scope: scope, objectGeneration: generation, init: init, initRole: compiled.RootRole,
 		slot: slot, class: compiled.Class, object: object, bank: slot, policy: compiled, container: policy.Container,
+		imageHandle: imageHandle, imageDev: imageDev,
 	})
 	if err != nil {
 		c.discard(context.WithoutCancel(ctx), object)
-		return 0, err
+		return 0, joinIfErr(err, c.image.discard(context.WithoutCancel(ctx), slot))
 	}
 	code, err := c.control.run(ctx, "opaque_real_route_publish", body)
 	record := func() {
@@ -460,9 +484,10 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 		record()
 		return code, nil
 	case err == nil && code != sharedProductInvariant:
-		// Refused: BPF undid everything it did.
+		// Refused: BPF undid everything it did, the image reference
+		// included (the set is RETIRING or was never referenced): free it.
 		c.discard(context.WithoutCancel(ctx), object)
-		return code, nil
+		return code, c.image.discard(context.WithoutCancel(ctx), slot)
 	}
 	// Outcome unknown (lost reply, or an undo that failed): the route read
 	// back decides (review M2). Only this node's own scope and cgroup on a
@@ -472,7 +497,7 @@ func (c *productCommander) publishFirst(ctx context.Context, slot uint32, cgroup
 	switch {
 	case readErr == nil && route.State.Phase == 0:
 		c.discard(context.WithoutCancel(ctx), object)
-		return code, err
+		return code, joinIfErr(err, c.image.discard(context.WithoutCancel(ctx), slot))
 	case readErr == nil && err != nil && route.State.Scope == scope && route.State.Cgroup == cgroup:
 		// Committed, then the reply was lost: record it (scope, object,
 		// identity; the epoch is the compiled one this request carried),
@@ -522,9 +547,18 @@ func (c *productCommander) revise(ctx context.Context, slot uint32, cgroup uint6
 	}
 	c.clearRevision(slot, false)
 	defer c.settle(object)
+	// G020: a revision keeps the binding's image set (no refresh: the
+	// container's rootfs is immutable for its lifetime); both records
+	// reference it during the grace period.
+	imageHandle, imageDev := c.image.sealed(slot, record.scope)
+	if imageHandle == 0 && sharedPolicyUsesImage(policy.Source) {
+		c.discard(context.WithoutCancel(ctx), object)
+		return 0, fmt.Errorf("revise slot %d (FromImage policy): %w: the binding has no sealed image set", slot, ErrSharedImageIndexUnavailable)
+	}
 	body, err := sharedProductPublishBody(sharedPublishFields{
 		cgroup: cgroup, scope: record.scope, generationExpected: route.State.Generation, objectGeneration: generation,
 		initRole: compiled.RootRole, slot: slot, class: compiled.Class, object: object, bank: slot, policy: compiled, container: policy.Container,
+		imageHandle: imageHandle, imageDev: imageDev,
 	})
 	if err != nil {
 		c.discard(context.WithoutCancel(ctx), object)
@@ -714,6 +748,10 @@ func (c *productCommander) recycle(ctx context.Context, slot uint32) (uint32, er
 		// (still held), retried by the next stage.
 		c.releaseTaken(ctx, slot, record, stale)
 	}
+	// G020: both records are FREE, so the image set is RETIRING: exact
+	// deletes and reclaim. A failure keeps it charged (health: Degraded)
+	// and the slot's next first publication retries the discard.
+	_ = c.image.discard(ctx, slot)
 	return code, nil
 }
 

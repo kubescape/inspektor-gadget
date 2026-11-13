@@ -53,7 +53,20 @@ type sharedCommanderFixture struct {
 
 func newSharedCommanderFixture(t *testing.T) *sharedCommanderFixture {
 	t.Helper()
+	return newSharedCommanderFixtureFor(t, sharedCandidateQualificationProfile())
+}
+
+// sharedFloorProfile is the qualification profile at the admission floor,
+// Bindings + 1 policy objects (the product default is 2 x Bindings): the
+// starvation and exhaustion cases are pinned there.
+func sharedFloorProfile() SharedProfile {
 	p := sharedCandidateQualificationProfile()
+	p.PolicySlots = [4]uint64{p.Bindings + 1, 0, 0, 0}
+	return p
+}
+
+func newSharedCommanderFixtureFor(t *testing.T, p SharedProfile) *sharedCommanderFixture {
+	t.Helper()
 	programs, fakes := sharedProductPrograms()
 	control, err := newSharedProductControl(t.Context(), p, sharedProductManifest(p), &sharedFakeAdminMap{}, &sharedFakeAdminMap{}, programs)
 	if err != nil {
@@ -520,12 +533,13 @@ func (k *sharedHonestKernel) set(fn func(*sharedHonestKernel)) {
 func TestProductCommanderStageExhaustion(t *testing.T) {
 	policy, _ := sharedCompiledTestPolicy(t)
 	init := SharedInitIdentity{TGID: 1, StartTicks: 1, MountNS: 1}
-	objects := uint32(sharedProductPolicySlots[0])
-	if p := sharedCandidateQualificationProfile(); p.PolicySlots != sharedProductPolicySlots || uint64(objects) != p.Bindings+1 {
-		t.Fatalf("fixture profile %v / %d bindings is not Bindings+1 objects", p.PolicySlots, p.Bindings)
+	floor := sharedFloorProfile()
+	objects := uint32(floor.PolicySlots[0])
+	if p := sharedCandidateQualificationProfile(); p.PolicySlots != sharedProductPolicySlots || p.PolicySlots[0] != 2*p.Bindings || uint64(objects) != p.Bindings+1 {
+		t.Fatalf("default profile %v / %d bindings is not 2 x Bindings, or the floor %d is not Bindings+1", p.PolicySlots, p.Bindings, objects)
 	}
 	newFixture := func(t *testing.T, publish uint32) (*sharedCommanderFixture, *sharedHonestKernel) {
-		f := newSharedCommanderFixture(t)
+		f := newSharedCommanderFixtureFor(t, floor)
 		k := installSharedHonestKernel(f)
 		for slot := range publish {
 			if code, err := f.cmd.publishFirst(t.Context(), slot, uint64(100+slot), policy, init); err != nil || code != sharedProductOK {
@@ -1041,7 +1055,9 @@ func TestProductCommanderRevisionDrain(t *testing.T) {
 	})
 }
 
-// TestProductCommanderObjectStarved (G019 gap 3): at Bindings+1 objects a
+// TestProductCommanderObjectStarved (G019 gap 3): at Bindings+1 objects (the
+// admission floor; the product default is 2 x Bindings, see
+// TestProductCommanderNotStarvedAtDefault) a
 // RETIRING record with holders keeps the only spare object; the other
 // slot's revision is refused retryably and, past the drain timeout, its slot
 // is Degraded RevisionObjectStarved; once the holders leave, the next stage
@@ -1050,7 +1066,7 @@ func TestProductCommanderRevisionDrain(t *testing.T) {
 func TestProductCommanderObjectStarved(t *testing.T) {
 	policy, _ := sharedCompiledTestPolicy(t)
 	init := SharedInitIdentity{TGID: 1, StartTicks: 1, MountNS: 1}
-	f := newSharedCommanderFixture(t)
+	f := newSharedCommanderFixtureFor(t, sharedFloorProfile())
 	k := installSharedHonestKernel(f)
 	clock := installSharedDrainClock(f.cmd)
 	f.cmd.revisionDrainTimeout = time.Second
@@ -1080,6 +1096,42 @@ func TestProductCommanderObjectStarved(t *testing.T) {
 	}
 	if _, ok := f.cmd.revisionReport(1); ok {
 		t.Fatal("RevisionObjectStarved not cleared")
+	}
+}
+
+// TestProductCommanderNotStarvedAtDefault (G020 carryover, D3 user
+// decision): at the product default of 2 x Bindings objects, slot 0's
+// RETIRING record held by a blocked exec keeps its object, yet slot 1 still
+// revises (twice: each commit releases its own previous object) with no
+// refusal and no report. The held slot itself is the residual: its next
+// revision needs the held record (a binding has two records) and waits for
+// its drain (Degraded RevisionDrainTimeout past the timeout, the last good
+// revision still enforced: TestProductCommanderRevisionDrain).
+func TestProductCommanderNotStarvedAtDefault(t *testing.T) {
+	policy, _ := sharedCompiledTestPolicy(t)
+	init := SharedInitIdentity{TGID: 1, StartTicks: 1, MountNS: 1}
+	f := newSharedCommanderFixture(t)
+	if p := sharedCandidateQualificationProfile(); p.PolicySlots[0] != 2*p.Bindings {
+		t.Fatalf("default profile %v / %d bindings is not 2 x Bindings", p.PolicySlots, p.Bindings)
+	}
+	k := installSharedHonestKernel(f)
+	installSharedDrainClock(f.cmd)
+	for slot := range uint32(2) {
+		if code, err := f.cmd.publishFirst(t.Context(), slot, uint64(100+slot), policy, init); err != nil || code != sharedProductOK {
+			t.Fatalf("slot %d: %d %v", slot, code, err)
+		}
+	}
+	k.set(func(k *sharedHonestKernel) { k.holders[0] = 1 })
+	if code, err := f.cmd.revise(t.Context(), 0, 100, policy); err != nil || code != sharedProductOK {
+		t.Fatalf("revision of slot 0 while held: %d %v", code, err)
+	}
+	for i := range 2 {
+		if code, err := f.cmd.revise(t.Context(), 1, 101, policy); err != nil || code != sharedProductOK {
+			t.Fatalf("slot 1 revision %d with slot 0's RETIRING record held: %d %v, want it committed (2 x Bindings)", i, code, err)
+		}
+		if st, ok := f.cmd.revisionReport(1); ok {
+			t.Fatalf("slot 1 revision %d: report %+v", i, st)
+		}
 	}
 }
 

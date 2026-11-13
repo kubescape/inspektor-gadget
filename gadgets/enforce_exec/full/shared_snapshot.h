@@ -24,11 +24,16 @@ struct se_pin_ticket {
 /* Scoped factual metadata is not part of a deduplicated compiled object.
  * PREPARE supplies it, Commit authenticates epochs/image authority; immutable
  * once PREPARED. It never certifies successful history by itself. */
+/* G020: image_handle names the binding's sealed image index descriptor
+ * (shared_image.h) and image_dev is the container root overlay's kernel
+ * dev_t (MKDEV(0, minor), super_block->s_dev); both zero without an index.
+ * The product publisher references the descriptor at PREPARE and releases
+ * it when the record is reclaimed (full/shared_image_snapshot.h). */
 struct se_snapshot_metadata {
 	__u64 root_epochs[8], policy_uids[8], image_handle;
 	__u32 role_writers, required_known, container_length;
 	unsigned char container[256];
-	__u32 reserved;
+	__u32 image_dev;
 };
 _Static_assert(sizeof(struct se_snapshot_metadata) == 408,
 	       "scoped metadata wire");
@@ -59,7 +64,15 @@ se_snapshot_metadata_valid(const struct se_snapshot_metadata *m, __u32 count,
 			   __u64 generation)
 {
 	if (!count || count > 8 || !generation || generation == ~0ULL ||
-	    m->reserved || !m->container_length || m->container_length > 255 ||
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	    /* G020: a handle names exactly one anonymous overlay (major 0). */
+	    !m->image_handle != !m->image_dev || (m->image_dev >> 20) ||
+#else
+	    /* No image index outside the product publisher: the former
+	     * reserved word stays zero (IDENT objects unchanged). */
+	    m->image_dev ||
+#endif
+	    !m->container_length || m->container_length > 255 ||
 	    ((m->role_writers | m->required_known) >> count))
 		return 0;
 	for (__u32 i = 0; i < 8; i++) {

@@ -377,6 +377,10 @@ func sharedM3Exec(cgroup, name, script string) (string, error) {
 // configure, when not nil, adjusts the node configuration (e.g. the
 // fail-closed poll interval) before StartNode.
 // Shared by M3 (bootstrap publisher, unchanged) and M4 (product publisher).
+// sharedTestQualification, when set by a test, adjusts the qualification
+// startSharedCandidateNode starts the node with (test-only seams).
+var sharedTestQualification func(*SharedNodeQualification)
+
 func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublisher func(*ebpf.CollectionSpec) func(operators.GadgetContext) (SharedRoutePublisher, error), configure func(*SharedNodeConfig)) (*NodeEnforcer, *gadgetcontext.GadgetContext, context.Context) {
 	t.Helper()
 	elf, err := os.ReadFile(object)
@@ -414,8 +418,15 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 		profile = sharedCandidateProfileFor(128, 16)
 		profile.ExitTombstones = sharedProductExitTombstones
 	}
+	// The node configuration (configure may change the profile, e.g. a
+	// test object's own geometry) before the image annotations it pins.
+	const image = "local/shared-candidate:abi3-development"
+	nodeConfig := SharedNodeConfig{Profile: profile, ABI3Development: true, Image: image}
+	if configure != nil {
+		configure(&nodeConfig)
+	}
 	merged := packagingForObject(t, mergedSharedCandidateMetadataFor(t, true), spec, "m3 object")
-	for key, value := range sharedGeometryAnnotations(profile) {
+	for key, value := range sharedGeometryAnnotations(nodeConfig.Profile) {
 		merged.Set(key, value)
 	}
 	for name, symbol := range map[string]string{
@@ -447,7 +458,6 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 	if err != nil {
 		t.Fatal(err)
 	}
-	const image = "local/shared-candidate:abi3-development"
 	store := memory.New()
 	push := func(media string, data []byte) ocispec.Descriptor {
 		desc := content.NewDescriptorFromBytes(media, data)
@@ -498,11 +508,11 @@ func startSharedCandidateNode(t *testing.T, object, handlerEnv string, newPublis
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	t.Cleanup(cancel)
-	nodeConfig := SharedNodeConfig{Profile: profile, ABI3Development: true, Image: image}
-	if configure != nil {
-		configure(&nodeConfig)
+	q := SharedNodeQualification{Run: run, Publisher: publisherFor}
+	if sharedTestQualification != nil {
+		sharedTestQualification(&q)
 	}
-	node, err := StartNode(WithSharedNodeQualification(ctx, SharedNodeQualification{Run: run, Publisher: publisherFor}), nodeConfig)
+	node, err := StartNode(WithSharedNodeQualification(ctx, q), nodeConfig)
 	if err != nil {
 		t.Fatalf("StartNode: %v", err)
 	}

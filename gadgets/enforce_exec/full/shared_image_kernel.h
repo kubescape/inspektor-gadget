@@ -104,6 +104,68 @@ se_image_map_change(struct bpf_spin_lock *lock, struct se_binding_images *b,
 	return result < 0 ? -1 : outcome;
 }
 
+/* G020 IMAGE_INSPECT: reconcile the descriptor's pending (UNCERTAIN)
+ * operation under EXCLUSIVE ownership. Invoke with NO spin lock held. The
+ * authenticated caller is the node's single admin and no map operation of
+ * this handle can be in flight (se_image_map_change is synchronous and only
+ * the pinned descriptor's operation mutates its handle's keys), so the
+ * pending {handle, key}'s membership now IS the operation's outcome: an
+ * insert whose key is present was APPLIED, absent NOT_APPLIED; a delete
+ * whose key is absent was APPLIED, present NOT_APPLIED. The key list's
+ * distinctness stays the adapter's obligation (a duplicate is never sent).
+ * 0 with *outcome = APPLIED/NOT_APPLIED (settled), or -1 when nothing was
+ * pending; -1 refused or malformed membership (still pending). */
+static __always_inline int
+se_image_map_reconcile(struct bpf_spin_lock *lock, struct se_binding_images *b,
+		       const struct se_image_identity *identity, int *outcome)
+{
+	if (!lock || !b || !identity || !outcome)
+		return -1;
+	struct se_image_identity id = *identity;
+	struct se_image_operation op = {};
+	int valid = 0, pending = 0;
+	*outcome = -1;
+	bpf_spin_lock(lock);
+	struct se_image_descriptor *d = 0;
+	if (b->limit == SE_PROFILE_IMAGE_QUOTA && b->reserved <= b->limit)
+		d = se_image_descriptor_locked(b, &id);
+	if (d) {
+		valid = 1;
+		if (d->pending_sequence) {
+			pending = 1;
+			op = (struct se_image_operation){
+				.identity = id,
+				.key = d->pending_key,
+				.sequence = d->pending_sequence,
+				.kind = d->pending_kind,
+				.owned = 1
+			};
+		}
+	}
+	bpf_spin_unlock(lock);
+	if (!valid)
+		return -1;
+	if (!pending)
+		return 0;
+	if (op.kind != SE_IMAGE_INSERT && op.kind != SE_IMAGE_DELETE)
+		return -1;
+	struct se_image_map_key key = { .image_handle = id.handle,
+					.origin = op.key };
+	const __u8 *membership = bpf_map_lookup_elem(&se_image_keys, &key);
+	if (membership && *membership != 1)
+		return -1;
+	int result = (op.kind == SE_IMAGE_INSERT) == !!membership ?
+			     SE_IMAGE_APPLIED :
+			     SE_IMAGE_NOT_APPLIED;
+	bpf_spin_lock(lock);
+	int finished = se_image_operation_finish_locked(b, &op, result);
+	bpf_spin_unlock(lock);
+	if (finished)
+		return -1;
+	*outcome = result;
+	return 0;
+}
+
 /* Return -1 UNKNOWN, 0 known absent, 1 known present. The caller ALREADY owns an
  * actual snapshot reader/claim for {slot,scope,record,serial}; retain it through
  * the LAST map lookup/value read. Image-reference validation here does not

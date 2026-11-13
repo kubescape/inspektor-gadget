@@ -492,7 +492,7 @@ func TestSharedBorrowNeverReturnsTypedNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	pin := "p, err := n.buildSharedProductPublisher("
-	ret := "if err != nil {\n\t\treturn nil, err // never a typed nil in the interface\n\t}\n\treturn p.withBindings(maps[\"se_bindings\"]), nil"
+	ret := "if err != nil {\n\t\treturn nil, err // never a typed nil in the interface\n\t}\n\tif err := n.withImageIndex(p, maps[sharedImageBindingsMap]); err != nil {\n\t\treturn nil, errors.Join(err, p.Close())\n\t}\n\treturn p.withBindings(maps[\"se_bindings\"]), nil"
 	if strings.Count(squashSpace(string(raw)), squashSpace(pin)) != 1 || strings.Count(squashSpace(string(raw)), squashSpace(ret)) != 1 {
 		t.Fatal("borrowSharedProductPublisher must return an untyped nil on error")
 	}

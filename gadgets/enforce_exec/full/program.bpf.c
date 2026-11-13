@@ -118,6 +118,10 @@ extern void bpf_rcu_read_lock(void) __ksym;
 extern void bpf_rcu_read_unlock(void) __ksym;
 extern struct task_struct *bpf_task_acquire(struct task_struct *) __ksym;
 extern void bpf_task_release(struct task_struct *) __ksym;
+/* G020: the shared node never declares the legacy image-origin maps; its
+ * from-image facts come from the generation-qualified image index
+ * (shared_image_kernel.h) and stay UNKNOWN until that is wired. */
+#ifndef ENFORCE_EXEC_SHARED_NODE
 static __always_inline int origin_ready(void);
 static __always_inline int origin_lookup(const void *);
 #define ORIGIN_READY() origin_ready()
@@ -147,6 +151,7 @@ static __always_inline int origin_lookup(const void *key)
 {
 	return bpf_map_lookup_elem(&image_origins, key) != 0;
 }
+#endif
 #ifndef ENFORCE_EXEC_PERSISTENT_OWNER
 struct legacy_entry {
 	__u64 generation;

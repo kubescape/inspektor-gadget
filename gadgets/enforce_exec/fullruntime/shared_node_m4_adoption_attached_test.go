@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -99,6 +100,106 @@ func sharedM4StartWith(t *testing.T, configure func(*SharedNodeConfig)) *sharedM
 }
 
 // cgroup creates a fresh child cgroup, killed and removed at cleanup.
+// TestSharedNodeM4MigratedAfterReleaseAttached (G020 carryover B, the
+// migrate-in residual): a refused Strict adoption (AdoptionCloneRefused, as
+// TestSharedNodeM4AdoptionCloneRefused) is latched until its cgroup is
+// empty; the cgroup is emptied, and a task is migrated in (a privileged
+// cgroup.procs write) right after the poller's empty poll, as soon as the
+// route is seen withdrawn. The WITHDRAWN route allows it unevaluated (the
+// residual); the release's bounded re-read (3 reads over 250 ms, then once
+// before the recycle) must report it: MigratedAfterRelease, counted once,
+// Degraded in Ready, and still reported after the slot is recycled.
+func TestSharedNodeM4MigratedAfterReleaseAttached(t *testing.T) {
+	e := sharedM4Start(t)
+	path := e.cgroup("migrated")
+	init := startSharedThreadsInit(t, path, "ig15-g019-m4-migrated-init", 1)
+	s := e.bind(init.sharedPipeInit)
+	slot := s.Inspect().RouteSlot
+	e.hookFinish(func() {
+		if _, err := init.in.Write([]byte{'f'}); err != nil {
+			t.Errorf("fork attempt of the adopted init: %v", err)
+			return
+		}
+		if line, err := init.out.ReadString('\n'); err != nil || strings.TrimSpace(line) != fmt.Sprintf("fork %d", int(unix.EPERM)) {
+			t.Errorf("fork attempt of the adopted init: %q %v, want EPERM", line, err)
+		}
+	})
+	_, err := s.Publish(e.ctx, sharedM4Strict("migrated"))
+	e.requireRefused(err, AdoptionCloneRefused)
+	latched := e.anchor(slot)
+	if latched.State.Phase == 0 || latched.Adopting != 1 || latched.State.Class != 2 {
+		t.Fatalf("anchor %+v: want the Strict route latched", latched)
+	}
+	if e.counts()[MigratedAfterRelease] != 0 {
+		t.Fatalf("counters %v before the release", e.counts())
+	}
+	// The migrant waits outside the cgroup; it is moved in the moment the
+	// route leaves its latched state (the withdrawal), i.e. after the
+	// poller's empty poll.
+	migrant := exec.Command("/bin/sleep", "60")
+	if err := migrant.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = migrant.Process.Kill(); _ = migrant.Wait() })
+	init.stop()
+	sharedM4KillCgroup(path)
+	e.waitEmpty(path)
+	var withdrawnAt time.Time
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		if a := e.anchor(slot); a.Adopting != 1 || a.State.Phase != latched.State.Phase {
+			if err := os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(strconv.Itoa(migrant.Process.Pid)), 0); err != nil {
+				t.Fatalf("migrate %d in: %v", migrant.Process.Pid, err)
+			}
+			withdrawnAt = time.Now()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("route never withdrawn after the cgroup emptied: anchor %+v", e.anchor(slot))
+		}
+	}
+	if pids := sharedM4Procs(t, path); !slices.Contains(pids, migrant.Process.Pid) {
+		t.Fatalf("migrant %d not in the cgroup: %v", migrant.Process.Pid, pids)
+	}
+	// Reported within the window (250 ms) plus the pre-recycle check.
+	var report SharedAdoptionStatus
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		slots, counts, err := e.node.AdoptionReport()
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, st := range slots {
+			if st.Reason == MigratedAfterRelease {
+				report, found = st, true
+			}
+		}
+		if found && counts[MigratedAfterRelease] == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no MigratedAfterRelease report %s after the migration: %+v %v", time.Since(withdrawnAt), slots, counts)
+		}
+	}
+	if report.Slot != slot || report.Cgroup != init.ino || report.Audit || report.Stuck {
+		t.Fatalf("report %+v: want slot %d cgroup %d Strict", report, slot, init.ino)
+	}
+	ready := e.node.Ready(e.gc)
+	if !errors.Is(ready, ErrSharedNativeUnavailable) || !strings.Contains(fmt.Sprint(ready), MigratedAfterRelease) {
+		t.Fatalf("Ready: %v, want Degraded MigratedAfterRelease (and ErrSharedNativeUnavailable kept)", ready)
+	}
+	// The migrant is not ours (no TASK): the recycle completes, the report
+	// stays (sticky until node teardown), counted once.
+	e.waitReleased(slot, init.ino)
+	if err := s.Remove(e.ctx, 1); err != nil {
+		t.Fatalf("Remove after the release: %v", err)
+	}
+	e.requireRetired(s, slot)
+	if e.counts()[MigratedAfterRelease] != 1 || !strings.Contains(fmt.Sprint(e.node.Ready(e.gc)), MigratedAfterRelease) {
+		t.Fatalf("after the recycle: counters %v Ready %v, want the sticky report", e.counts(), e.node.Ready(e.gc))
+	}
+	t.Logf("MIGRATED slot %d cgroup %d migrant %d reported %+v", slot, init.ino, migrant.Process.Pid, report)
+}
+
 func (e *sharedM4Env) cgroup(name string) string {
 	e.t.Helper()
 	path := filepath.Join(e.root, "ig15-g019-m4-"+name)

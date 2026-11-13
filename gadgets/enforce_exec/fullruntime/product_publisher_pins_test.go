@@ -173,7 +173,9 @@ func TestProductPublisherSourcePins(t *testing.T) {
 		{"unrecordable adopted TASK is quarantined", "(void)real_owner_birth_quarantine((__u64)task, cookie,\n\t\t\t\t\t\t\t  locator);"},
 		{"finish: exact set, locator, nobody exiting", "if (unreadable || (flags & OPAQUE_REAL_PF_EXITING) || !want ||\n" +
 			"\t\t    !have || *have != want->locator)"},
-		{"finish: count rule", "if (!started || state->bad || !state->iterated ||\n\t    state->iterated != state->adopted) {"},
+		{"finish: count rule", "if (!started || state->bad || !state->iterated ||\n\t    state->iterated != state->adopted || !state->scope) {"},
+		// H1: the binding's root anchor is recorded before adopting clears.
+		{"finish: root anchor", "root->scope = state->scope;\n\tbpf_spin_lock(&state->lock);\n\t__u32 incarnation = state->incarnation;"},
 		{"finish: no faulted claim, then the marker cleared", "!route->adopting_faults && route->incarnation == incarnation &&"},
 		// Code 4: last_cgroup is never cleared (recycle keeps it).
 		{"code 4 on any binding's last cgroup", "if (!state || state->last_cgroup == cgroup)\n\t\t\treturn 1;"},
@@ -264,7 +266,8 @@ func TestProductPublisherSourcePins(t *testing.T) {
 		// no fault outside ENFORCE_EXEC_POOL_OPAQUE_FAIL_CLOSED_INJECTOR_EXT_DIAGNOSTIC
 		// (and that flag is refused in a product object).
 		"#else\n#define SE_FC_EXEC_OPEN_PARENT_FAULT(key) 0\n#define SE_FC_EXEC_ADMISSION_FAULT(later) 0\n" +
-			"#define SE_FC_BIRTH_ADMISSION_FAULT() 0\n#endif\n",
+			"#define SE_FC_BIRTH_ADMISSION_FAULT() 0\n#define SE_FC_TARGET_ADMISSION_FAULT() 0\n" +
+			"#define SE_FC_READER_BEGIN_FAULT() 0\n#endif\n",
 	} {
 		if !strings.Contains(verdict, squashSpace(pin)) {
 			t.Errorf("B6 pin missing: %q", pin)

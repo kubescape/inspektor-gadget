@@ -436,8 +436,6 @@ func sharedImageGeometry(p SharedProfile) (map[string]operators.NativeMapResourc
 		"se_task_sequences":   {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 16, MaxEntries: 1, Flags: unix.BPF_F_RDONLY},
 		"se_inode_facts":      {Type: uint32(ebpf.Hash), KeySize: 8, ValueSize: 48, MaxEntries: uint32(p.InodeFacts), Flags: unix.BPF_F_RDONLY},
 		"se_inode_accounts":   {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 48, MaxEntries: uint32(p.Bindings) + 1, Flags: unix.BPF_F_RDONLY},
-		"image_origins":       {Type: uint32(ebpf.Hash), KeySize: 16, ValueSize: 1, MaxEntries: 65536, Flags: unix.BPF_F_NO_PREALLOC | unix.BPF_F_RDONLY_PROG},
-		"image_ready":         {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 4, MaxEntries: 1, Flags: unix.BPF_F_RDONLY_PROG},
 		"events":              {Type: uint32(ebpf.RingBuf), MaxEntries: 262144},
 		"counters":            {Type: uint32(ebpf.PerCPUArray), KeySize: 4, ValueSize: 8, MaxEntries: 3},
 		".bss":                {Type: uint32(ebpf.Array), KeySize: 4, ValueSize: 16, MaxEntries: 1},
@@ -484,8 +482,13 @@ func validateSharedImageResources(p SharedProfile, r *operators.NativeResources)
 	if len(r.Programs) != len(programs) {
 		return zero, fmt.Errorf("unexpected shared image program inventory")
 	}
-	if p.Images != 65536 || p.TelemetryBytes < 262144 {
-		return zero, fmt.Errorf("transitional image/telemetry geometry exceeds declared profile")
+	// G020: the shared image no longer declares the legacy 65536-cell
+	// image_origins/image_ready maps (full/program.bpf.c under
+	// ENFORCE_EXEC_SHARED_NODE), so Images is no longer pinned to them; the
+	// image index geometry (se_image_keys = Images cells, se_image_bindings
+	// per binding) is the product object's (sharedProductImageGeometry).
+	if p.TelemetryBytes < 262144 {
+		return zero, fmt.Errorf("transitional telemetry geometry exceeds declared profile")
 	}
 	usage := sharedImageUsage{sharedResourceUsage: base, PendingEnforcementQualification: true}
 	usage.ProgramInstructions = 0
@@ -540,7 +543,11 @@ func validateSharedImageResources(p SharedProfile, r *operators.NativeResources)
 // its _EXT_ extension: selector, counts and pending marker, extended
 // periods and counts); opaque_real_interp_stale_resume is the twin's
 // interpreter-continuation stale-resume injector
-// (ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC).
+// (ENFORCE_EXEC_POOL_OPAQUE_INTERP_STALE_RESUME_DIAGNOSTIC);
+// opaque_real_verdict_suspend_fault is the twin's verdict-event
+// suspension-fault injector (ENFORCE_EXEC_POOL_OPAQUE_VERDICT_SUSPEND_FAULT_DIAGNOSTIC, G020 H2);
+// opaque_real_fact_witness is the per-pass fact witness ring
+// (ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_WITNESS, G020).
 var sharedProductForbiddenMaps = []string{
 	"opaque_real_publish_fault",
 	"opaque_real_fc_inject_selector",
@@ -549,6 +556,8 @@ var sharedProductForbiddenMaps = []string{
 	"opaque_real_fc_inject_ext",
 	"opaque_real_fc_inject_ext_counts",
 	"opaque_real_interp_stale_resume",
+	"opaque_real_verdict_suspend_fault",
+	sharedFactWitnessMap,
 }
 
 func refuseSharedProductForbiddenMaps(r *operators.NativeResources) error {

@@ -29,6 +29,9 @@ const sharedNodeKey = "enforce-exec/native-shared-node"
 type sharedBorrowedFD interface{ FD() int }
 
 type sharedHostState struct {
+	// overlayFailure is the node's "overlay layout unavailable" reason from
+	// this node's constants computation (nil: the layout is set).
+	overlayFailure atomic.Pointer[error]
 	sharedProtocolHostOwnership
 	borrowed                                 []sharedBorrowedFD
 	context                                  operators.GadgetContext
@@ -67,6 +70,11 @@ type sharedHostState struct {
 	// birthParkStats borrows the birth-park witness reader (product
 	// objects); nil selects borrowSharedBirthParkStats. Tests only.
 	birthParkStats func(operators.GadgetContext) (sharedBirthParkStatsRead, error)
+	// imageSource replaces the image index's containerd source (tests).
+	imageSource sharedImageLayerSource
+	// factStats borrows the per-pass fact witness reader (objects with the
+	// G020 facts); nil selects borrowSharedFactStats. Tests only.
+	factStats func(operators.GadgetContext) (sharedFactStatsRead, error)
 	// failClosed borrows the fail-closed rate witness reader; nil selects
 	// borrowSharedFailClosed. failClosedClock is its clock (nil: time.Now).
 	// Tests only override them.
@@ -75,6 +83,11 @@ type sharedHostState struct {
 	// newProductPublisher replaces borrowSharedProductPublisher (G1).
 	// Package tests only.
 	newProductPublisher func(operators.GadgetContext, *operators.NativeResources) (SharedRoutePublisher, error)
+	// verdictCounters borrows the verdict counters (objects with the G020
+	// emitter); nil selects borrowSharedVerdictCounters. verdictClock is its
+	// Degraded window's clock (nil: time.Now). Tests only override them.
+	verdictCounters func(operators.GadgetContext) (sharedVerdictCountersRead, func() error, error)
+	verdictClock    func() time.Time
 	// strictRefused is why Strict publication is refused on this node
 	// (design 13.8: the agent is not in the initial pid/time namespaces).
 	strictRefused error
@@ -90,9 +103,13 @@ type sharedLiveCandidate struct {
 	capsule   *sharedLiveCapsule
 	// birthPark is the birth-park witness (nil: not a product object).
 	birthPark *sharedLiveBirthPark
+	// facts is the per-pass fact witness (nil: no G020 facts).
+	facts *sharedLiveFactStats
 	// failClosed polls the fail-closed rate witness (nil: the object has
 	// none and is not a product object).
 	failClosed *sharedLiveFailClosed
+	// verdict is the verdict event counters (nil: no G020 emitter).
+	verdict *sharedLiveVerdict
 	// healthStopped is set once stopLiveHealth ran: the reaper and the
 	// witness no longer watch the node, so it is never healthy again.
 	healthStopped bool
@@ -312,6 +329,19 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 		if node != nil && node.config.RecoveryDevelopment {
 			gc.SetVar(operators.NativeRecoveryTestRunKey, true)
 		}
+		// G020: the image classifier's overlay layout for this exact kernel
+		// and this load's verdict epoch. Without an epoch no constants are
+		// installed: admission then refuses a product object (M8).
+		if constants, err := sharedImageOverlayConstants(); err == nil {
+			gc.SetVar(operators.NativeConstantsKey, constants)
+		}
+		if node != nil && node.host != nil {
+			if reason := sharedImageOverlayUnavailable(); reason != nil {
+				node.host.overlayFailure.Store(&reason)
+			} else {
+				node.host.overlayFailure.Store(nil)
+			}
+		}
 		gc.SetVar(operators.NativeResourceValidatorKey, func(resources *operators.NativeResources) error {
 			if node == nil || node.host == nil {
 				return fmt.Errorf("missing host-owned shared node")
@@ -319,6 +349,20 @@ func WithNodeEnforcer(node *NodeEnforcer) gadgetcontext.Option {
 			return node.admitSharedResources(resources)
 		})
 	}
+}
+
+// validateSharedProductConstants (review M8): a product object is admitted
+// only with its native constants set (operators.NativeResources.Constants):
+// the classifier's se_image_ovl_layout (UNSET off the matrix is a value, a
+// missing one is a refusal) and the verdict event's se_verdict_load_epoch.
+// The eBPF operator itself keeps skipping absent names for other gadgets.
+func validateSharedProductConstants(resources *operators.NativeResources) error {
+	for name, size := range map[string]uint32{sharedImageOverlayLayoutConstant: 4, sharedVerdictLoadEpochConstant: 8} {
+		if got, ok := resources.Constants[name]; !ok || got != size {
+			return fmt.Errorf("product object native constant %s not set as a %d-byte constant", name, size)
+		}
+	}
+	return nil
 }
 
 func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources) error {
@@ -375,6 +419,12 @@ func (n *NodeEnforcer) admitSharedResources(resources *operators.NativeResources
 			if err := validateSharedProductWorkSync(resources); err != nil {
 				return err
 			}
+			if err := validateSharedVerdictCounters(resources); err != nil {
+				return err
+			}
+			if err := validateSharedProductConstants(resources); err != nil {
+				return err
+			}
 		}
 		n.mu.Lock()
 		defer n.mu.Unlock()
@@ -426,6 +476,9 @@ func instantiateSharedNode(gc operators.GadgetContext, metadata *viper.Viper, no
 	recoveryAnnotation := metadata.GetString("annotations.enforce-exec-shared-recovery")
 	if (node.config.RecoveryDevelopment && recoveryAnnotation != "1") || (!node.config.RecoveryDevelopment && recoveryAnnotation != "") || !node.config.ABI3Development || gc.ImageName() != node.config.Image || metadata.GetString("annotations.enforce-exec-owner-abi") != "3" || !metadata.GetBool("annotations.enforce-exec-owner-development") || metadata.GetString("annotations.enforce-exec-shared-profile") != "1" || metadata.GetBool("annotations.enforce-exec") || metadata.GetBool("annotations.enforce-exec-full") {
 		return nil, fmt.Errorf("shared image/native capability mismatch")
+	}
+	if err := admitSharedEventABI(metadata); err != nil {
+		return nil, err
 	}
 	for key, want := range sharedGeometryAnnotations(node.config.Profile) {
 		if metadata.GetString(key) != want {
@@ -515,7 +568,7 @@ func (n *NodeEnforcer) signalStarted(err error) {
 // sharedGeometryAnnotations is the image metadata a shared image must carry
 // for profile p (metadata keys, as read by instantiateSharedNode).
 func sharedGeometryAnnotations(p SharedProfile) map[string]string {
-	values := map[string]uint64{"images": p.Images, "image-quota": p.PerBinding.Images, "inode-facts": p.InodeFacts, "inode-quota": p.PerBinding.InodeFacts, "tasks": p.Tasks, "scratch": p.Scratch, "accepted-uids": p.AcceptedUIDs, "task-quota": p.PerBinding.Tasks, "scratch-quota": p.PerBinding.Scratch, "bindings": p.Bindings, "exit-tombstones": p.exitTombstones(), "slots-256": p.PolicySlots[0], "slots-1024": p.PolicySlots[1], "slots-4096": p.PolicySlots[2], "slots-16384": p.PolicySlots[3]}
+	values := map[string]uint64{"images": p.Images, "image-quota": p.PerBinding.Images, "inode-facts": p.InodeFacts, "inode-quota": p.PerBinding.InodeFacts, "tasks": p.Tasks, "scratch": p.Scratch, "accepted-uids": p.AcceptedUIDs, "task-quota": p.PerBinding.Tasks, "scratch-quota": p.PerBinding.Scratch, "bindings": p.Bindings, "exit-tombstones": p.exitTombstones(), "verdict-ring": p.verdictRing(), "slots-256": p.PolicySlots[0], "slots-1024": p.PolicySlots[1], "slots-4096": p.PolicySlots[2], "slots-16384": p.PolicySlots[3]}
 	out := make(map[string]string, len(values))
 	for key, value := range values {
 		out["annotations.enforce-exec-shared-"+key] = strconv.FormatUint(value, 10)
@@ -602,7 +655,7 @@ func (n *NodeEnforcer) Ready(gc operators.GadgetContext) error {
 		// Receipt and witness reads run outside n.mu.
 		health := n.liveHealthLocked()
 		n.mu.Unlock()
-		return errors.Join(ErrSharedNativeUnavailable, health.check(), n.adoptionDegraded(), n.revisionDegraded())
+		return errors.Join(ErrSharedNativeUnavailable, health.check(), n.adoptionDegraded(), n.revisionDegraded(), n.verdictLossDegraded(), n.overlayDegraded())
 	}
 	n.mu.Unlock()
 	// Routing, union evaluator adaptation, qualified history publication and
@@ -767,6 +820,8 @@ func (n *NodeEnforcer) ReleaseAfterDetach() error {
 	n.closed = true
 	protocol := n.host.protocol != nil
 	n.mu.Unlock()
+	// Verified detach: the verdict counters' Final snapshot.
+	n.finalizeVerdictCounters()
 	if protocol {
 		n.retireProtocolSessionsAfterDetach()
 	}
@@ -847,6 +902,20 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 	if err != nil {
 		return err
 	}
+	facts, err := n.newLiveFactStats(gc, admitted)
+	if err != nil {
+		return err
+	}
+	verdict, err := n.newLiveVerdict(gc, admitted)
+	if err != nil {
+		return err
+	}
+	verdictInstalled := false
+	defer func() {
+		if !verdictInstalled {
+			verdict.close()
+		}
+	}()
 	// The fail-closed rate window opens here too; its poller starts only
 	// once the candidate is installed (a refused startup leaves none).
 	failClosed, err := n.newLiveFailClosed(gc, admitted)
@@ -918,7 +987,8 @@ func (n *NodeEnforcer) startLiveCandidate(gc operators.GadgetContext, admitted *
 	}
 	defer n.mu.Unlock()
 	n.host.scopeSlots = make([]*sharedPhysicalScope, n.config.Profile.Bindings)
-	n.host.live = &sharedLiveCandidate{receipts: receipts, publisher: publisher, reaper: reaper, exit: exit, capsule: capsule, birthPark: birthPark, failClosed: failClosed}
+	n.host.live = &sharedLiveCandidate{receipts: receipts, publisher: publisher, reaper: reaper, exit: exit, capsule: capsule, birthPark: birthPark, facts: facts, failClosed: failClosed, verdict: verdict}
+	verdictInstalled = true
 	if failClosed != nil {
 		failClosed.start() // joined by stopLiveHealth
 	}
@@ -1093,10 +1163,11 @@ func (n *NodeEnforcer) stopLiveHealth() {
 	var exit *sharedLiveExitCredit
 	var capsule *sharedLiveCapsule
 	var birthPark *sharedLiveBirthPark
+	var facts *sharedLiveFactStats
 	var failClosed *sharedLiveFailClosed
 	if n.host != nil && n.host.live != nil {
 		reaper, exit, capsule, failClosed = n.host.live.reaper, n.host.live.exit, n.host.live.capsule, n.host.live.failClosed
-		birthPark = n.host.live.birthPark
+		birthPark, facts = n.host.live.birthPark, n.host.live.facts
 		// From here on the node is never healthy: health is no longer
 		// watched although hooks may still be attached.
 		n.host.live.healthStopped = true
@@ -1110,6 +1181,9 @@ func (n *NodeEnforcer) stopLiveHealth() {
 	}
 	if birthPark != nil {
 		birthPark.close()
+	}
+	if facts != nil {
+		facts.close()
 	}
 	if failClosed != nil {
 		failClosed.close() // joins the poller, then the final reading
@@ -1141,6 +1215,9 @@ func (n *NodeEnforcer) liveHealthFault() error {
 	}
 	if n.host.live.birthPark != nil {
 		result = errors.Join(result, n.host.live.birthPark.check())
+	}
+	if n.host.live.facts != nil {
+		result = errors.Join(result, n.host.live.facts.check())
 	}
 	if n.host.live.failClosed != nil {
 		result = errors.Join(result, n.host.live.failClosed.stickyFault())
@@ -1191,7 +1268,10 @@ type sharedLiveHealth struct {
 	exit                 *sharedLiveExitCredit
 	capsule              *sharedLiveCapsule
 	birthPark            *sharedLiveBirthPark
+	facts                *sharedLiveFactStats
 	failClosed           *sharedLiveFailClosed
+	// image is the product publisher's G020 image index (nil without).
+	image sharedImageReporter
 }
 
 func (n *NodeEnforcer) liveHealthLocked() sharedLiveHealth {
@@ -1199,9 +1279,12 @@ func (n *NodeEnforcer) liveHealthLocked() sharedLiveHealth {
 		return sharedLiveHealth{unavailable: true}
 	}
 	live := n.host.live
-	h := sharedLiveHealth{stopped: live.healthStopped, reaper: live.reaper, exit: live.exit, capsule: live.capsule, birthPark: live.birthPark, failClosed: live.failClosed}
+	h := sharedLiveHealth{stopped: live.healthStopped, reaper: live.reaper, exit: live.exit, capsule: live.capsule, birthPark: live.birthPark, facts: live.facts, failClosed: live.failClosed}
 	for _, receipt := range live.receipts {
 		h.receipts = append(h.receipts, receipt)
+	}
+	if image, ok := live.publisher.(sharedImageReporter); ok {
+		h.image = image
 	}
 	return h
 }
@@ -1229,8 +1312,16 @@ func (h sharedLiveHealth) check() error {
 	if h.birthPark != nil {
 		result = errors.Join(result, h.birthPark.check())
 	}
+	if h.facts != nil {
+		result = errors.Join(result, h.facts.check())
+	}
 	if h.failClosed != nil {
 		result = errors.Join(result, h.failClosed.check())
+	}
+	// G020: any image ledger vs kernel count mismatch, or an UNCERTAIN or
+	// failed exact delete, is Degraded.
+	if h.image != nil {
+		result = errors.Join(result, h.image.imageHealth())
 	}
 	return result
 }
@@ -1267,8 +1358,11 @@ func startQualifiedSharedNode(ctx context.Context, config SharedNodeConfig, q Sh
 	n.host.qualified, n.host.started, n.host.newPublisher, n.host.newReaper, n.host.exitCredit = true, started, q.Publisher, q.newReaper, q.exitCredit
 	n.host.capsuleStats = q.capsuleStats
 	n.host.birthParkStats = q.birthParkStats
+	n.host.factStats = q.factStats
 	n.host.failClosed, n.host.failClosedClock = q.failClosed, q.failClosedClock
 	n.host.newProductPublisher = q.newProductPublisher
+	n.host.verdictCounters, n.host.verdictClock = q.verdictCounters, q.verdictClock
+	n.host.imageSource = q.imageSource
 	n.host.strictRefused = sharedNamespaceCheck()
 	stop, done, err := q.Run(ctx, WithNodeEnforcer(n))
 	if stop == nil {
@@ -1364,5 +1458,31 @@ func (n *NodeEnforcer) TeardownPendingWithdrawals() uint64 {
 // maps, programs and the tail-call slots (the product control re-validates
 // them against this copy at startup).
 func sharedAdmittedCopy(r *operators.NativeResources) *operators.NativeResources {
-	return &operators.NativeResources{Maps: maps.Clone(r.Maps), Programs: maps.Clone(r.Programs), TailCalls: slices.Clone(r.TailCalls)}
+	return &operators.NativeResources{Maps: maps.Clone(r.Maps), Programs: maps.Clone(r.Programs), TailCalls: slices.Clone(r.TailCalls), Constants: maps.Clone(r.Constants)}
+}
+
+// overlayDegraded is the node's overlay-layout-unavailable reason as a
+// Degraded condition (G020 ruling): reported by Ready only, never part of
+// sharedLiveHealth.check, so it never fails qualified startup. Without a
+// layout every image fact is UNKNOWN and a FromImage policy is refused at
+// publish (productImageIndex.build); every other policy publishes.
+func (n *NodeEnforcer) overlayDegraded() error {
+	n.mu.Lock()
+	h := n.host
+	n.mu.Unlock()
+	if err := h.overlayUnavailable(); err != nil {
+		return fmt.Errorf("image facts Degraded, FromImage policies refused: %w", err)
+	}
+	return nil
+}
+
+// overlayUnavailable is the node's overlay-layout-unavailable reason.
+func (h *sharedHostState) overlayUnavailable() error {
+	if h == nil {
+		return nil
+	}
+	if p := h.overlayFailure.Load(); p != nil {
+		return *p
+	}
+	return nil
 }

@@ -30,13 +30,13 @@
 #define SE_OC_WORDS ((SE_OC_QUOTA + 63U) / 64U)
 /* Bitmap word of a slot-local TASK index.
  * Precondition: local < SE_OC_QUOTA. Every caller checks it first; the
- * one-word form below has no clamp, and the multi-word clamp only keeps the
- * offset in bounds, it does not make an out-of-quota index correct.
- * With one word this is the plain expression; with several, the barrier
- * keeps the clamp verifier-visible (the compiler would otherwise drop it as
- * redundant and the verifier, which has lost the subtraction's bound,
- * rejects the variable map-value offset). */
-#if SE_OC_WORDS > 1
+ * clamp only keeps the offset in bounds, it does not make an out-of-quota
+ * index correct. The barrier keeps the clamp verifier-visible (the compiler
+ * would otherwise drop it as redundant and the verifier, which has lost the
+ * subtraction's bound, rejects the variable map-value offset). It is used
+ * for one word too: the plain local / 64U form (TASK quota <= 64) lost
+ * state pruning in the task_alloc birth and adoption roots (q(64,8):
+ * adopt_task > 1M, child_target 918k/928k; with the barrier 37k/86k). */
 static __attribute__((always_inline)) inline __u32 se_oc_word(__u32 local)
 {
 	__u32 word = local / 64U;
@@ -47,9 +47,6 @@ static __attribute__((always_inline)) inline __u32 se_oc_word(__u32 local)
 	return word;
 }
 #define SE_OC_WORD(local) se_oc_word(local)
-#else
-#define SE_OC_WORD(local) ((local) / 64U)
-#endif
 #define SE_OC_COOKIE_LIMIT (~(__u64)0 - 1ULL)
 _Static_assert(SE_OC_ACCOUNTS > 0 && SE_OC_QUOTA > 0 &&
 		       (__u64)SE_OC_ACCOUNTS * SE_OC_QUOTA == SE_OL_TASKS,

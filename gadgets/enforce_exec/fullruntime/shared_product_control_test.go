@@ -119,6 +119,10 @@ func sharedProductManifest(p SharedProfile) *operators.NativeResources {
 		r.Maps[name] = operators.NativeMapResource{Type: uint32(ebpf.TaskStorage), KeySize: 4, ValueSize: valueSize, Flags: unix.BPF_F_NO_PREALLOC}
 	}
 	r.Maps[WorkSyncWitnessMap] = sharedProductWorkSync
+	// G020: the verdict emitter's counters (its ring is in product).
+	r.Maps[SharedVerdictCountersMap] = sharedVerdictCountersShape
+	// M8: the native constants the eBPF operator set (sharedImageOverlayConstants).
+	r.Constants = map[string]uint32{sharedImageOverlayLayoutConstant: 4, sharedVerdictLoadEpochConstant: 8}
 	return r
 }
 
@@ -275,6 +279,7 @@ func TestSharedProductControlRevisionHeadroom(t *testing.T) {
 		{[4]uint64{1, 1, 0, 0}, false},
 		{[4]uint64{3, 0, 0, 0}, true},
 		{[4]uint64{2, 1, 0, 0}, true},
+		{[4]uint64{4, 0, 0, 0}, true}, // the PoC default: 2 x Bindings
 	} {
 		p := sharedProductProfileFor(128, 16)
 		p.ExitTombstones = sharedProductExitTombstones

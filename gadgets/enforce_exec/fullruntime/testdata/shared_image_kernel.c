@@ -35,7 +35,9 @@ static void bpf_spin_unlock(struct bpf_spin_lock *lock)
 static void *bpf_map_lookup_elem(void *, const void *);
 static long bpf_map_update_elem(void *, const void *, const void *, __u64);
 static long bpf_map_delete_elem(void *, const void *);
+#define ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE 1
 #include "shared_image_kernel.h"
+#include "shared_image_snapshot.h"
 _Static_assert(SE_IMAGE_MAP_EEXIST == EEXIST && SE_IMAGE_MAP_ENOENT == ENOENT,
 	       "Linux helper errors");
 _Static_assert(sizeof(*se_image_keys.type) / sizeof(int) == BPF_MAP_TYPE_HASH,
@@ -414,12 +416,253 @@ static void independent_same_key_bindings(void)
 	assert(bindings[1].descriptors[0].present == 1 && lookup(1, b, 9) == 1);
 }
 
+/* G020: exclusive-ownership reconciliation of an UNCERTAIN operation. The
+ * charge is retained (no seal, abort or reclaim) until it is reconciled. */
+static void reconcile_uncertain(void)
+{
+	reset();
+	struct se_image_identity id = allocate(0, 300, 2);
+	struct se_image_map_request r = request(0, id, SE_IMAGE_INSERT, 1);
+	struct se_image_operation op = {};
+	int outcome = 7;
+	assert(!se_image_map_reconcile(&locks[0], &bindings[0], &id,
+				       &outcome) &&
+	       outcome == -1); /* nothing pending */
+	update_applied_error = -5; /* physically inserted, outcome unknown */
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_UNCERTAIN);
+	update_applied_error = 0;
+	bpf_spin_lock(&locks[0]);
+	assert(se_image_seal_locked(&bindings[0], &id) < 0);
+	assert(se_image_abort_locked(&bindings[0], &id) < 0);
+	assert(se_image_reclaim_locked(&bindings[0], &id) < 0);
+	bpf_spin_unlock(&locks[0]);
+	assert(bindings[0].reserved == 2);
+	struct se_image_identity forged = id;
+	forged.handle++;
+	assert(se_image_map_reconcile(&locks[0], &bindings[0], &forged,
+				      &outcome) < 0);
+	assert(!se_image_map_reconcile(&locks[0], &bindings[0], &id,
+				       &outcome) &&
+	       outcome == SE_IMAGE_APPLIED);
+	assert(bindings[0].descriptors[0].present == 1 &&
+	       !bindings[0].descriptors[0].pending_sequence);
+	update_error = -5; /* definitely not inserted, outcome unknown */
+	r.key.inode = 2;
+	op = (struct se_image_operation){};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_UNCERTAIN);
+	update_error = 0;
+	assert(!se_image_map_reconcile(&locks[0], &bindings[0], &id,
+				       &outcome) &&
+	       outcome == SE_IMAGE_NOT_APPLIED);
+	assert(bindings[0].descriptors[0].present == 1);
+	op = (struct se_image_operation){};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_APPLIED);
+	/* Malformed membership never settles a pending delete. */
+	bpf_spin_lock(&locks[0]);
+	assert(!se_image_abort_locked(&bindings[0], &id));
+	bpf_spin_unlock(&locks[0]);
+	r.kind = SE_IMAGE_DELETE;
+	delete_error = -5;
+	op = (struct se_image_operation){};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_UNCERTAIN);
+	delete_error = 0;
+	struct se_image_map_key mk = { .image_handle = id.handle,
+				       .origin = r.key };
+	find(&mk)->value = 3;
+	assert(se_image_map_reconcile(&locks[0], &bindings[0], &id, &outcome) <
+	       0);
+	find(&mk)->value = 1;
+	assert(!se_image_map_reconcile(&locks[0], &bindings[0], &id,
+				       &outcome) &&
+	       outcome == SE_IMAGE_NOT_APPLIED);
+	op = (struct se_image_operation){};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_APPLIED);
+	delete_applied_error = -5; /* physically deleted, outcome unknown */
+	r.key.inode = 1;
+	op = (struct se_image_operation){};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_UNCERTAIN);
+	delete_applied_error = 0;
+	assert(!se_image_map_reconcile(&locks[0], &bindings[0], &id,
+				       &outcome) &&
+	       outcome == SE_IMAGE_APPLIED);
+	assert(!bindings[0].descriptors[0].present);
+	bpf_spin_lock(&locks[0]);
+	assert(!se_image_reclaim_locked(&bindings[0], &id));
+	bpf_spin_unlock(&locks[0]);
+	assert(!bindings[0].reserved && !lock_depth);
+}
+
+static struct se_binding_snapshots snaps;
+static struct se_image_identity sealed(__u32 index, __u64 sequence, __u32 dev,
+				       __u64 inode)
+{
+	struct se_image_identity id = {};
+	bpf_spin_lock(&locks[0]);
+	assert(!se_image_begin_dev_locked(&bindings[0], bindings[0].scope,
+					  sequence, index, 1, dev, &id));
+	bpf_spin_unlock(&locks[0]);
+	struct se_image_map_request r = request(0, id, SE_IMAGE_INSERT, inode);
+	struct se_image_operation op = {};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_APPLIED);
+	bpf_spin_lock(&locks[0]);
+	assert(!se_image_seal_locked(&bindings[0], &id));
+	bpf_spin_unlock(&locks[0]);
+	return id;
+}
+/* The publisher's PREPARE: prepare, metadata, image reference, or undo. */
+static int prepare(__u32 record, __u64 handle, __u32 dev)
+{
+	struct se_pin_ticket ticket = { .object_generation = 1,
+					.object_slot = 0 };
+	bpf_spin_lock(&locks[0]);
+	int result = se_snapshot_prepare_locked(&snaps, record, &ticket, 1, 1);
+	if (!result) {
+		snaps.records[record].metadata.image_handle = handle;
+		snaps.records[record].metadata.image_dev = dev;
+		result = se_image_snapshot_prepare_locked(&bindings[0], &snaps,
+							  record);
+		if (result)
+			snaps.records[record] = (struct se_snapshot){};
+	}
+	bpf_spin_unlock(&locks[0]);
+	return result;
+}
+static int reclaim(__u32 record)
+{
+	bpf_spin_lock(&locks[0]);
+	int result =
+		se_image_snapshot_reclaim_locked(&bindings[0], &snaps, record);
+	bpf_spin_unlock(&locks[0]);
+	return result;
+}
+/* PREPARE references, FREE releases exactly once, the two-record grace
+ * period holds two references, and stale or unsealed handles are refused. */
+static void snapshot_lifetime(void)
+{
+	reset();
+	snaps = (struct se_binding_snapshots){ .scope = 11 };
+	struct se_snapshot_metadata m = { .root_epochs = { 1 },
+					  .policy_uids = { 9 },
+					  .container_length = 1 };
+	assert(se_snapshot_metadata_valid(&m, 1, 1));
+	m.image_handle = 100;
+	assert(!se_snapshot_metadata_valid(&m, 1, 1)); /* handle without dev */
+	m.image_dev = 0x2a;
+	assert(se_snapshot_metadata_valid(&m, 1, 1));
+	m.image_dev = 8U << 20 | 1; /* not an anonymous (major 0) overlay */
+	assert(!se_snapshot_metadata_valid(&m, 1, 1));
+	m.image_handle = 0;
+	m.image_dev = 0x2a;
+	assert(!se_snapshot_metadata_valid(&m, 1, 1)); /* dev without handle */
+
+	struct se_image_identity a = sealed(0, 100, 0x2a, 1);
+	struct se_image_descriptor *d = &bindings[0].descriptors[0];
+	assert(prepare(0, 100, 0x2a) == 0 && d->references == 1 &&
+	       bindings[0].snapshots[0].held &&
+	       bindings[0].snapshots[0].serial == snaps.records[0].serial);
+	__u64 first = snaps.records[0].serial;
+	snaps.records[0].phase = SE_SNAPSHOT_ACTIVE;
+	/* Wrong dev, unknown handle and an unsealed handle are refused, and
+	 * the refused PREPARE leaves the record FREE without a reference. */
+	assert(prepare(1, 100, 0x2b) < 0 && !snaps.records[1].phase);
+	assert(prepare(1, 555, 0x2a) < 0 && !snaps.records[1].phase);
+	struct se_image_identity building = {};
+	bpf_spin_lock(&locks[0]);
+	assert(!se_image_begin_dev_locked(&bindings[0], 11, 101, 1, 1, 0x2a,
+					  &building));
+	bpf_spin_unlock(&locks[0]);
+	assert(prepare(1, 101, 0x2a) < 0 && !snaps.records[1].phase);
+	assert(d->references == 1 && !bindings[0].snapshots[1].held);
+	bpf_spin_lock(&locks[0]);
+	assert(!se_image_abort_locked(&bindings[0], &building));
+	assert(!se_image_reclaim_locked(&bindings[0], &building));
+	/* A stale serial is never referenced again on its record. */
+	assert(se_image_reference_locked(&bindings[0], &a, 0, first) < 0);
+	/* The open state never takes a new scope while referenced. */
+	assert(se_image_open_locked(&bindings[0], 12, 4) < 0);
+	bpf_spin_unlock(&locks[0]);
+	/* Imageless revision record: no reference. */
+	assert(prepare(1, 0, 0) == 0 && d->references == 1 &&
+	       !bindings[0].snapshots[1].held);
+	snaps.records[1].phase = SE_SNAPSHOT_RETIRING;
+	assert(reclaim(1) == 0 && !snaps.records[1].phase);
+	/* Revision grace period: both records reference one descriptor. */
+	assert(prepare(1, 100, 0x2a) == 0 && d->references == 2);
+	snaps.records[1].phase = SE_SNAPSHOT_ACTIVE;
+	snaps.records[0].phase = SE_SNAPSHOT_RETIRING;
+	snaps.records[0].claims = 1; /* a reader still holds the old record */
+	assert(reclaim(0) < 0 && d->references == 2 &&
+	       snaps.records[0].phase == SE_SNAPSHOT_RETIRING);
+	assert(lookup(0, a, 1) == 1); /* the reader's lookup stays known */
+	snaps.records[0].claims = 0;
+	assert(reclaim(0) == 0 && d->references == 1 &&
+	       !bindings[0].snapshots[0].held &&
+	       bindings[0].snapshots[0].serial == first &&
+	       d->phase == SE_IMAGE_COMPLETE);
+	/* Exactly once: a second reclaim of the FREE record is refused. */
+	assert(reclaim(0) < 0 && d->references == 1);
+	/* A record naming a handle without its reference is never freed. */
+	assert(prepare(0, 0, 0) == 0);
+	snaps.records[0].metadata.image_handle = 100;
+	snaps.records[0].metadata.image_dev = 0x2a;
+	snaps.records[0].phase = SE_SNAPSHOT_RETIRING;
+	assert(reclaim(0) < 0 &&
+	       snaps.records[0].phase == SE_SNAPSHOT_RETIRING &&
+	       d->references == 1);
+	snaps.records[0].metadata.image_handle = 0;
+	snaps.records[0].metadata.image_dev = 0;
+	assert(reclaim(0) == 0);
+	/* An imageless record with a held reference is refused too. */
+	assert(prepare(0, 0, 0) == 0);
+	snaps.records[0].phase = SE_SNAPSHOT_RETIRING;
+	bindings[0].snapshots[0].held = 1;
+	assert(reclaim(0) < 0);
+	bindings[0].snapshots[0].held = 0;
+	assert(reclaim(0) == 0);
+	/* Unbind: the last FREE retires the descriptor; exact deletes, then
+	 * reclaim, then the state takes the next binding's scope. */
+	snaps.records[1].phase = SE_SNAPSHOT_RETIRING;
+	assert(reclaim(1) == 0 && !d->references &&
+	       d->phase == SE_IMAGE_RETIRING);
+	assert(lookup(0, a, 1) == -1);
+	struct se_image_map_request r = request(0, a, SE_IMAGE_DELETE, 1);
+	struct se_image_operation op = {};
+	assert(se_image_map_change(&locks[0], &bindings[0], &r, &op) ==
+	       SE_IMAGE_APPLIED);
+	bpf_spin_lock(&locks[0]);
+	assert(se_image_open_locked(&bindings[0], 12, 4) < 0);
+	assert(!se_image_reclaim_locked(&bindings[0], &a));
+	assert(!se_image_open_locked(&bindings[0], 12, 4));
+	assert(bindings[0].scope == 12 && bindings[0].last_handle == 101 &&
+	       !bindings[0].snapshots[0].serial);
+	/* Handles never go backwards across scopes. */
+	struct se_image_identity again = {};
+	assert(se_image_begin_dev_locked(&bindings[0], 12, 101, 0, 1, 0x2a,
+					 &again) < 0);
+	assert(se_image_begin_dev_locked(&bindings[0], 12, 102, 0, 1, 0,
+					 &again) < 0);
+	assert(!se_image_begin_dev_locked(&bindings[0], 12, 102, 0, 1, 0x2a,
+					  &again));
+	assert(bindings[0].descriptors[0].overlay_dev == 0x2a);
+	bpf_spin_unlock(&locks[0]);
+	assert(!lock_depth);
+}
+
 int main(void)
 {
+	reconcile_uncertain();
+	snapshot_lifetime();
 	normal_lifecycle();
 	invalid_and_uncertain();
 	ambiguous_applied_outcomes();
 	lookup_and_isolation();
 	independent_same_key_bindings();
-	puts("shared image adapter: exact keys, NOEXIST, outside-lock maps, uncertainty and isolation PASS");
+	puts("shared image adapter: exact keys, NOEXIST, outside-lock maps, uncertainty, reconciliation, snapshot lifetime and isolation PASS");
 }
