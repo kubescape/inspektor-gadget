@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,6 +22,8 @@ import (
 
 	"github.com/cilium/ebpf/btf"
 	"golang.org/x/sys/unix"
+
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/utils/host"
 )
 
 // SupportedKernelBTF identifies the original isolated proof artifact. This is NOT
@@ -331,19 +334,91 @@ func sharedVerdictLoadEpoch() (uint64, error) {
 	}
 }
 
+// kernelLSMRoots are the roots under which sys/kernel/security/lsm is read,
+// in order: the host root (HOST_ROOT), then this process's own view. An
+// unprivileged agent pod's /sys has no securityfs mounted, while the host's
+// boot-time securityfs is visible under its host root mount. Falling back to
+// the own view is equally correct: securityfs is one kernel-wide superblock
+// (not namespaced), so every mount of it shows the same list, and the
+// SECURITYFS_MAGIC check refuses anything that is not that filesystem.
+var kernelLSMRoots = func() []string { return []string{host.HostRoot, "/"} }
+
+// readKernelLSM returns the active LSM list from the first root whose
+// sys/kernel/security/lsm is on securityfs; every failure is reported.
+func readKernelLSM(roots []string) (string, error) {
+	var errs []error
+	seen := map[string]bool{}
+	for _, root := range roots {
+		path := filepath.Join(root, "sys/kernel/security/lsm")
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		data, err := readSecurityFSFile(root, "sys/kernel/security/lsm")
+		if err == nil {
+			return data, nil
+		}
+		errs = append(errs, err)
+	}
+	if len(errs) == 0 {
+		return "", fmt.Errorf("no LSM list root")
+	}
+	return "", errors.Join(errs...)
+}
+
+// readSecurityFSFile opens name with root as its filesystem root
+// (RESOLVE_IN_ROOT): a symlink inside the host tree cannot redirect the read
+// outside it, e.g. onto a file in the agent's own filesystem.
+func readSecurityFSFile(root, name string) (string, error) {
+	path := filepath.Join(root, name)
+	rootFD, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", root, err)
+	}
+	fd, err := unix.Openat2(rootFD, name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_CLOEXEC, Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_MAGICLINKS})
+	closeErr := unix.Close(rootFD)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	if closeErr != nil {
+		return "", closeErr
+	}
+	var fs unix.Statfs_t
+	if err = unix.Fstatfs(int(file.Fd()), &fs); err != nil {
+		return "", err
+	}
+	if fs.Type != unix.SECURITYFS_MAGIC {
+		return "", fmt.Errorf("%s is not on securityfs", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 4096 {
+		return "", fmt.Errorf("%s exceeds 4096 bytes", path)
+	}
+	return string(data), nil
+}
+
+// requireBPFLSM refuses an LSM list without the exact "bpf" entry.
+func requireBPFLSM(lsm string) error {
+	for _, name := range strings.Split(strings.TrimSpace(lsm), ",") {
+		if name == "bpf" {
+			return nil
+		}
+	}
+	return fmt.Errorf("BPF LSM not active")
+}
+
 func checkKernelControls() error {
-	lsm, err := os.ReadFile("/sys/kernel/security/lsm")
+	lsm, err := readKernelLSM(kernelLSMRoots())
 	if err != nil {
 		return err
 	}
-	found := false
-	for _, name := range strings.Split(strings.TrimSpace(string(lsm)), ",") {
-		if name == "bpf" {
-			found = true
-		}
-	}
-	if !found {
-		return fmt.Errorf("BPF LSM not active")
+	if err = requireBPFLSM(lsm); err != nil {
+		return err
 	}
 	ftrace, err := os.ReadFile("/proc/sys/kernel/ftrace_enabled")
 	if err != nil {
