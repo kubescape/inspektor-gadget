@@ -53,38 +53,82 @@ func supportedKernelBTF(digest string) bool {
 type sharedProductPin struct {
 	Release string // uname -r
 	BuildID string // vmlinux GNU build-id (hex) from /sys/kernel/notes
-	// OuterSymbol and HandlerSymbol are the failure_outer_* and
-	// failure_handler_* kprobe targets the qualified loader resolved.
-	OuterSymbol, HandlerSymbol string
-	// ProductELF is the sha256 set of the qualified product objects for this
-	// kernel (g19pkg64/128/256/512).
-	ProductELF map[string]struct{}
+	// Stage 1 (D1): no failure-frame symbols. The exec frame is
+	// lsm/bprm_creds_for_exec .. tp_btf/sys_exit on every kernel, so a pin
+	// carries no per-kernel handler choice.
+	//
+	// FmodeBacking is the FMODE_BACKING bit of this build
+	// (include/linux/fs.h; source-verified). The live probe only
+	// cross-checks it (kernel_probe.go sharedFmodeBacking).
+	FmodeBacking uint32
+	// ProductObjects is the set of product object sha256 (a subset of
+	// sharedProductObjects) QUALIFIED on this pinned build: the product
+	// admits only a (kernel, object) pair that ran its oracle there (S1
+	// review F1). Literal digests, never derived from sharedProductObjects:
+	// a rebuilt object is NOT qualified until it runs the oracle on the pin.
+	ProductObjects map[string]struct{}
+}
+
+// qualifiesProductObject reports whether digest is a product object of this
+// release that is qualified on pin.
+func (pin sharedProductPin) qualifiesProductObject(digest string) bool {
+	if !sharedProductObject(digest) {
+		return false
+	}
+	_, ok := pin.ProductObjects[digest]
+	return ok
+}
+
+// sharedProductObjects is the sha256 set of the product objects of THIS
+// release, by profile. D3: one CO-RE object per profile for every kernel
+// (they were one set per kernel build: the per-kernel objects differed only
+// in unrelocated CO-RE placeholders and in the BTF/DWARF copied from each
+// kernel's vmlinux.h). The values are those of bpf/build-product.sh with the
+// pinned toolchain; testdata/shared_product_pins.tsv mirrors them.
+var sharedProductObjects = map[string]string{
+	"g19pkg64":  "3c383ebeae93b5f42e72baa457e559b0bdcaecf3377e52eec19647301e15ef52",
+	"g19pkg128": "4fd42419770b1023bcafcd3a3293b7cebcab642d92b8c8c5022c0ab3b9a9f7e6",
+	"g19pkg256": "cdbfe439f9fd6c85fc55336de7cef00213bae43bec975d03724478f58ccb92ac",
+	"g19pkg512": "ea23e0ec18ad50daafd5d274b95bf0e24fab7015de456a74f2a2936ec1fc4b5f",
+}
+
+// sharedProductObject reports whether digest is a product object of this
+// release.
+func sharedProductObject(digest string) bool {
+	for _, want := range sharedProductObjects {
+		if digest != "" && digest == want {
+			return true
+		}
+	}
+	return false
 }
 
 // sharedProductPins maps a vmlinux BTF sha256 to its pinned build.
 var sharedProductPins = map[string]sharedProductPin{
 	"0d7b3abe2b50e1b252b167061fea565e78fb712b691d1c04dd5651872dafcd82": {
-		Release:       "6.12.113-138.209.amzn2023.x86_64",
-		BuildID:       "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
-		OuterSymbol:   "do_execveat_common.isra.0",
-		HandlerSymbol: "search_binary_handler",
-		ProductELF: map[string]struct{}{
-			"2e2b033bde0ece73ac9f95fd7455fcf36be7aa32250f52e527aff4bd86546be9": {}, // g19pkg64
-			"b7245ddfbb7bac323921d0583b67295789e9f3f22cd7460e36f9f37b65b10c31": {}, // g19pkg128
-			"86f04ecc2f919c91992487c85b7be038feee39cec9dfd99187dcd64bc863e5b3": {}, // g19pkg256
-			"16dfb0eaa510d3d5ae9c744d3c8f9023047724f6a2ad253da33629d6a74c3404": {}, // g19pkg512
+		Release:      "6.12.113-138.209.amzn2023.x86_64",
+		BuildID:      "1d135d67e6d0ea8f77d60a2984915eadd28a5fcf",
+		FmodeBacking: sharedFmodeBacking24,
+		// S1 qualification on this pinned build (2026-11-18, build-21):
+		// D3 34/0/0 and D1 18/0/0, Strict + Audit, S1/evidence/vm/s1o11-*.
+		ProductObjects: map[string]struct{}{
+			"3c383ebeae93b5f42e72baa457e559b0bdcaecf3377e52eec19647301e15ef52": {}, // g19pkg64
+			"4fd42419770b1023bcafcd3a3293b7cebcab642d92b8c8c5022c0ab3b9a9f7e6": {}, // g19pkg128
+			"cdbfe439f9fd6c85fc55336de7cef00213bae43bec975d03724478f58ccb92ac": {}, // g19pkg256
+			"ea23e0ec18ad50daafd5d274b95bf0e24fab7015de456a74f2a2936ec1fc4b5f": {}, // g19pkg512
 		},
 	},
 	"d0b0dffa66e521cdfafccc4c640f530fc14fbcf9d459275d04cd9d5d481b15ee": {
-		Release:       "6.18.56-125.164.amzn2023.x86_64",
-		BuildID:       "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
-		OuterSymbol:   "do_execveat_common.isra.0",
-		HandlerSymbol: "exec_binprm",
-		ProductELF: map[string]struct{}{
-			"1ab606ec132732984cd682438dd2ca6be0e98f6bfa567c263d1263326ee351ce": {}, // g19pkg64
-			"142ae885221167eaf258678f508999eb0528447b53355eb5d776ae009b6115ae": {}, // g19pkg128
-			"074ce03442631ab34462de5802addb67c3e783109c6de8b9ec55f05091b2d38a": {}, // g19pkg256
-			"370f971574941b15fcee31dbeb6d6d2467db189a1618a877d8c4636d5afc940c": {}, // g19pkg512
+		Release:      "6.18.56-125.164.amzn2023.x86_64",
+		BuildID:      "884ed4548406a1461ac5fb658c0dffdd87f1b3b2",
+		FmodeBacking: sharedFmodeBacking24,
+		// S1 qualification on this pinned build (2026-11-18, build-21):
+		// D3 34/0/0 and D1 18/0/0, Strict + Audit, S1/evidence/vm/s1o11-*.
+		ProductObjects: map[string]struct{}{
+			"3c383ebeae93b5f42e72baa457e559b0bdcaecf3377e52eec19647301e15ef52": {}, // g19pkg64
+			"4fd42419770b1023bcafcd3a3293b7cebcab642d92b8c8c5022c0ab3b9a9f7e6": {}, // g19pkg128
+			"cdbfe439f9fd6c85fc55336de7cef00213bae43bec975d03724478f58ccb92ac": {}, // g19pkg256
+			"ea23e0ec18ad50daafd5d274b95bf0e24fab7015de456a74f2a2936ec1fc4b5f": {}, // g19pkg512
 		},
 	},
 }
@@ -104,94 +148,90 @@ var sharedCandidateKernelBTF = func() map[string]string {
 
 // Overlay exec-file private_data layouts consumed by se_image_classify through
 // the se_image_ovl_layout rodata constant (full/shared_image_classify.h
-// SE_IMAGE_OVL_LAYOUT_*). struct ovl_file is overlay-module private and absent
-// from vmlinux BTF, so the layout is pinned per exact kernel, never CO-RE.
+// SE_IMAGE_OVL_LAYOUT_*). struct ovl_file is overlay-private: its BTF is in
+// the overlay module (or in vmlinux when overlayfs is built in).
+//
+// D3: there is no per-release layout table any more. The layout is derived
+// from the overlay BTF the loader positively read, and the object relocates
+// struct ovl_file itself (CO-RE against the module BTF); the classifier
+// refuses when the two disagree.
 const (
 	sharedImageOverlayLayoutUnset    uint32 = 0
-	sharedImageOverlayLayoutRealFile uint32 = 1 // 6.12 fs/overlayfs/file.c:170
-	sharedImageOverlayLayoutOvlFile  uint32 = 2 // 6.18 fs/overlayfs/file.c:92-95,232
+	sharedImageOverlayLayoutRealFile uint32 = 1 // < v6.13: private_data is the real file (fs/overlayfs/file.c)
+	sharedImageOverlayLayoutOvlFile  uint32 = 2 // >= v6.13: private_data is a struct ovl_file
 )
 
-// sharedImageOverlayLayouts maps every sharedCandidateKernelBTF release to its
-// source-verified overlay layout.
-var sharedImageOverlayLayouts = map[string]uint32{
-	"6.12.113-138.209.amzn2023.x86_64": sharedImageOverlayLayoutRealFile,
-	"6.18.56-125.164.amzn2023.x86_64":  sharedImageOverlayLayoutOvlFile,
-}
-
-// sharedImageOverlayLayout selects the se_image_ovl_layout constant for an
-// exact shared-candidate vmlinux BTF digest AND the overlay module BTF split
-// spec (review M6: struct ovl_file lives in the overlay module, not vmlinux,
-// so the vmlinux digest alone does not pin it). The digest picks the expected
-// layout; the module BTF must then confirm its exact type shape. A nil spec
-// (overlay module BTF absent), any other kernel or any shape mismatch is
-// refused (UNSET: the classifier then returns UNKNOWN).
-func sharedImageOverlayLayout(btfDigest string, overlay *btf.Spec) (uint32, error) {
-	release, ok := sharedCandidateKernelBTF[btfDigest]
-	if !ok {
-		return sharedImageOverlayLayoutUnset, fmt.Errorf("kernel BTF %q outside the shared candidate matrix", btfDigest)
-	}
-	layout, ok := sharedImageOverlayLayouts[release]
-	if !ok {
-		return sharedImageOverlayLayoutUnset, fmt.Errorf("no proved overlay layout for %s", release)
-	}
+// sharedImageOverlayLayout derives the se_image_ovl_layout constant from the
+// overlay types of the running kernel (a split spec over vmlinux for the
+// module, or vmlinux itself when overlayfs is built in). A nil spec (overlay
+// BTF absent) or a spec that does not carry overlayfs's private types is
+// refused: the absence of struct ovl_file selects the realfile layout only
+// when overlayfs's own types were positively seen (struct ovl_inode is the
+// witness). A struct ovl_file must have a struct file *realfile member; its
+// offset is relocated by CO-RE, so it is not pinned. Any failure is UNSET
+// (the classifier then returns UNKNOWN).
+func sharedImageOverlayLayout(overlay *btf.Spec) (uint32, error) {
 	if overlay == nil {
-		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay module BTF unavailable for %s", release)
+		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay BTF unavailable")
 	}
-	if err := checkOverlayLayoutShape(overlay, layout); err != nil {
-		return sharedImageOverlayLayoutUnset, fmt.Errorf("%s: %w", release, err)
+	// A split spec may carry a type name more than once (a module's own copy
+	// of a vmlinux type): look types up by name, never by a unique match.
+	if n, err := btfStructs(overlay, "ovl_inode"); err != nil || len(n) == 0 {
+		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay BTF carries no overlayfs types (struct ovl_inode): %v", err)
 	}
-	return layout, nil
+	files, err := btfStructs(overlay, "ovl_file")
+	if err != nil {
+		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay BTF lookup: %w", err)
+	}
+	if len(files) == 0 {
+		return sharedImageOverlayLayoutRealFile, nil
+	}
+	if len(files) != 1 {
+		return sharedImageOverlayLayoutUnset, fmt.Errorf("overlay BTF has %d struct ovl_file", len(files))
+	}
+	st := files[0]
+	for _, m := range st.Members {
+		if m.Name != "realfile" {
+			continue
+		}
+		if m.BitfieldSize != 0 || m.Offset%8 != 0 || !isFilePointer(m.Type) {
+			return sharedImageOverlayLayoutUnset, fmt.Errorf("struct ovl_file.realfile is not a struct file * member")
+		}
+		return sharedImageOverlayLayoutOvlFile, nil
+	}
+	return sharedImageOverlayLayoutUnset, fmt.Errorf("struct ovl_file has no realfile member")
 }
 
-// checkOverlayLayoutShape verifies the overlay module BTF against the layout:
-// 6.18 (OvlFile) requires struct ovl_file {struct file *realfile @0; struct
-// file *upperfile @8} size 16 (fs/overlayfs/file.c:92-95); 6.12 (RealFile)
-// requires struct ovl_file ABSENT (private_data is the realfile itself).
-func checkOverlayLayoutShape(overlay *btf.Spec, layout uint32) error {
-	var st *btf.Struct
-	err := overlay.TypeByName("ovl_file", &st)
-	switch layout {
-	case sharedImageOverlayLayoutRealFile:
-		if err == nil {
-			return fmt.Errorf("struct ovl_file present in overlay BTF, expected absent for the realfile layout")
-		}
-		if !errors.Is(err, btf.ErrNotFound) {
-			return fmt.Errorf("overlay BTF lookup: %w", err)
-		}
-		return nil
-	case sharedImageOverlayLayoutOvlFile:
-		if err != nil {
-			return fmt.Errorf("struct ovl_file in overlay BTF: %w", err)
-		}
-		if st.Size != 16 || len(st.Members) != 2 {
-			return fmt.Errorf("struct ovl_file size %d members %d, want 16 and 2", st.Size, len(st.Members))
-		}
-		for i, name := range []string{"realfile", "upperfile"} {
-			m := st.Members[i]
-			if m.Name != name || m.Offset != btf.Bits(i*64) || m.BitfieldSize != 0 || !isFilePointer(m.Type) {
-				return fmt.Errorf("struct ovl_file member %d is %q @%d bits, want struct file *%s @%d bits", i, m.Name, m.Offset, name, i*64)
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("no overlay shape for layout %d", layout)
+// btfStructs returns every struct named name in spec (none is not an error).
+func btfStructs(spec *btf.Spec, name string) ([]*btf.Struct, error) {
+	types, err := spec.AnyTypesByName(name)
+	if err != nil && !errors.Is(err, btf.ErrNotFound) {
+		return nil, err
 	}
+	var out []*btf.Struct
+	for _, t := range types {
+		if st, ok := t.(*btf.Struct); ok {
+			out = append(out, st)
+		}
+	}
+	return out, nil
 }
 
 func isFilePointer(t btf.Type) bool {
-	p, ok := t.(*btf.Pointer)
+	p, ok := btf.UnderlyingType(t).(*btf.Pointer)
 	if !ok {
 		return false
 	}
-	st, ok := p.Target.(*btf.Struct)
+	st, ok := btf.UnderlyingType(p.Target).(*btf.Struct)
 	return ok && st.Name == "file"
 }
 
-// overlayModuleSpec loads /sys/kernel/btf/overlay (sysfs-checked, bounded) as
-// a split spec over the running vmlinux BTF. A missing file means the overlay
-// module is not loaded (or is built in): refused.
-func overlayModuleSpec() (*btf.Spec, error) {
+// overlayTypesSpec is the BTF that carries overlayfs's private types on the
+// running kernel: /sys/kernel/btf/overlay (sysfs-checked, bounded) as a split
+// spec over the running vmlinux BTF, or the vmlinux BTF itself when overlayfs
+// is built in (it then has struct ovl_inode). Neither: fs.ErrNotExist (the
+// overlay module is not loaded).
+func overlayTypesSpec() (*btf.Spec, error) {
 	vmlinux, err := readSysfsBTF("/sys/kernel/btf/vmlinux")
 	if err != nil {
 		return nil, err
@@ -201,6 +241,12 @@ func overlayModuleSpec() (*btf.Spec, error) {
 		return nil, fmt.Errorf("vmlinux BTF: %w", err)
 	}
 	module, err := readSysfsBTF("/sys/kernel/btf/overlay")
+	if errors.Is(err, fs.ErrNotExist) {
+		if n, _ := btfStructs(base, "ovl_inode"); len(n) != 0 {
+			return base, nil // built in
+		}
+		return nil, fmt.Errorf("overlay module BTF: %w", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("overlay module BTF: %w", err)
 	}
@@ -253,30 +299,37 @@ func autoloadOverlayModule() error {
 	return unix.Close(fd)
 }
 
-// liveSharedImageOverlayLayout is the layout of the running kernel: vmlinux
-// digest plus overlay module BTF shape; any failure is UNSET with the error.
+// liveSharedImageOverlayLayout is the layout of the running kernel, from its
+// overlay BTF shape; any failure is UNSET with the error.
 func liveSharedImageOverlayLayout() (uint32, error) {
-	digest, err := kernelBTFDigest()
+	overlay, err := overlayTypesSpec()
 	if err != nil {
 		return sharedImageOverlayLayoutUnset, err
 	}
-	overlay, err := overlayModuleSpec()
-	if err != nil {
-		return sharedImageOverlayLayoutUnset, err
-	}
-	return sharedImageOverlayLayout(digest, overlay)
+	return sharedImageOverlayLayout(overlay)
 }
 
 func verifySupportedKernel() error {
 	return verifyKernelBTF(supportedKernelBTF, "persistent-owner")
 }
 
-// verifySharedCandidateKernel admits only sharedCandidateKernelBTF.
+// verifySharedCandidateKernel admits only sharedCandidateKernelBTF. D3: with
+// the test-only probed-kernel override (qualification builds, explicit
+// opt-in) a kernel outside that matrix is admitted on its probes instead
+// (verifySharedProbedKernel: still x86_64, bpf LSM,
+// ftrace on, no livepatch).
 func verifySharedCandidateKernel() error {
-	return verifyKernelBTF(func(digest string) bool {
+	err := verifyKernelBTF(func(digest string) bool {
 		_, ok := sharedCandidateKernelBTF[digest]
 		return ok
 	}, "shared candidate")
+	if err == nil || !sharedProbedKernelOverride() {
+		return err
+	}
+	if perr := verifySharedProbedKernel(sharedProductKernelProbes); perr != nil {
+		return fmt.Errorf("%w; %w", err, perr)
+	}
+	return nil
 }
 
 func verifyKernelBTF(supported func(string) bool, matrix string) error {
@@ -524,13 +577,26 @@ func sharedImageOverlayConstants() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{sharedImageOverlayLayoutConstant: layout, sharedVerdictLoadEpochConstant: epoch}, nil
+	// FMODE_BACKING: the pinned bit on a pinned kernel (cross-checked by the
+	// live probe), the probed bit elsewhere (kernel_probe.go). Unset (0)
+	// with a layout is refused by the classifier like an unset layout, with
+	// the reason; a failure is not cached, the next load computes it again.
+	backing := uint32(0)
+	if layout != sharedImageOverlayLayoutUnset {
+		if backing, err = fmodeBackingReader(layout); err != nil {
+			backing = 0
+			reason := err
+			sharedOverlayLayoutFailure.Store(&reason)
+		}
+	}
+	return map[string]any{sharedImageOverlayLayoutConstant: layout, sharedImageFmodeBackingConstant: backing, sharedVerdictLoadEpochConstant: epoch}, nil
 }
 
 // Native constant names (full/shared_image_classify.h,
 // full/shared_verdict_event.h).
 const (
 	sharedImageOverlayLayoutConstant = "se_image_ovl_layout"
+	sharedImageFmodeBackingConstant  = "se_image_fmode_backing"
 	sharedVerdictLoadEpochConstant   = "se_verdict_load_epoch"
 )
 

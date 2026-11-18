@@ -167,7 +167,7 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 	}
 	sum := sha256.Sum256(object)
 	elf := hex.EncodeToString(sum[:])
-	if _, ok := pin.ProductELF[elf]; !ok {
+	if !sharedProductObject(elf) {
 		t.Fatalf("object sha256 %s is not a product ELF of %s", elf, pin.Release)
 	}
 	t.Logf("identity: release %s btf %s build-id %s elf-sha256 %s", pin.Release, digest, pin.BuildID, elf)
@@ -188,8 +188,8 @@ func TestSharedProductNodeReadyAttached(t *testing.T) {
 		}
 	}()
 	gc := gcOf()
-	if !node.host.product || len(node.host.live.receipts) != 16 {
-		t.Fatalf("product=%v receipts=%d, want a product node with 16 receipts", node.host.product, len(node.host.live.receipts))
+	if !node.host.product || len(node.host.live.receipts) != sharedProductLinks {
+		t.Fatalf("product=%v receipts=%d, want a product node with %d receipts", node.host.product, len(node.host.live.receipts), sharedProductLinks)
 	}
 	publisher, err := node.livePublisher(false)
 	if _, product := publisher.(*sharedLiveProductPublisher); err != nil || !product {
@@ -441,6 +441,10 @@ func sharedProductSmokeCodes(out string) (string, string) {
 	return r0, r1000
 }
 
+// sharedProductLinks is the product node's link count (S1: 6 BPF LSM + 5
+// tracepoint links; the restart child's check was still the pre-D1 16).
+const sharedProductLinks = 11
+
 // sharedProductRestart starts the node in a child test process, SIGKILLs
 // it, requires its links and programs gone, then starts the node again
 // here: Ready nil and a publish works.
@@ -473,7 +477,7 @@ func sharedProductRestart(t *testing.T, ctx context.Context, host SharedNodeHost
 		}
 		ready = line == "PRODUCT-CHILD READY"
 	}
-	if !ready || len(expected) != 16 {
+	if !ready || len(expected) != sharedProductLinks {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		t.Fatalf("product-restart: child ready=%v links=%d (%v)", ready, len(expected), scanner.Err())

@@ -1,0 +1,11 @@
+# Shared product objects of this release (stage 1: D3's one CO-RE object per
+# profile for every kernel, built with D1's LSM-only exec outcome).
+# TestSharedProductObjectsMatchTestdata requires sharedProductObjects to
+# equal these lines; bpf/build-product.sh --check
+# rebuilds them with the pinned toolchain and compares.
+#
+# profile	sha256
+g19pkg64	3c383ebeae93b5f42e72baa457e559b0bdcaecf3377e52eec19647301e15ef52
+g19pkg128	4fd42419770b1023bcafcd3a3293b7cebcab642d92b8c8c5022c0ab3b9a9f7e6
+g19pkg256	cdbfe439f9fd6c85fc55336de7cef00213bae43bec975d03724478f58ccb92ac
+g19pkg512	ea23e0ec18ad50daafd5d274b95bf0e24fab7015de456a74f2a2936ec1fc4b5f

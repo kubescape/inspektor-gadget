@@ -236,19 +236,84 @@ Ready was nil (G011 pass 2, run g011p2-20261115t160735-f9e2). Ready had
 already gone NotReady before that exec. Only this one exec was measured
 (uid 1000, Deny fallback); nothing else about enforcement with ftrace off is
 known, so treat a NotReady node as unprotected. This is an accepted, detected
-limitation: only root can change the sysctl. The image is bound to the build as well: its failure-frame
-`attach_to` targets must equal the pinned symbols and the loaded eBPF object's
+limitation: only root can change the sysctl. The image is bound to the build as well. **D1 (LSM-only prototype, this
+branch):** the image carries no failure-frame `attach_to` target; the exec
+frame is `lsm/bprm_creds_for_exec` .. `lsm/bprm_committed_creds` (success) or
+`tp_btf/sys_exit` (failure) on every kernel, an `attach_to` override on any
+probe is refused, and the failure-frame symbol columns of the table above
+are historical (the pins no longer hold them). The loaded eBPF object's
 sha256 (recorded by the eBPF operator for native owners,
-`operators.NativeProgramDigestKey`) must be one of the pinned product objects
-(`g19pkg64/128/256/512` of that kernel). Every other kernel or image is refused
-at agent start (`StartNode`, `SelectSharedProductImage`) with an error that
-wraps `ErrSharedNativeUnavailable` and names the reason. The pins live in
-`kernel_matrix.go` (`sharedProductPins`) and `testdata/shared_product_pins.tsv`.
+`operators.NativeProgramDigestKey`) must be one of the product objects
+QUALIFIED on that pin (`sharedProductPin.ProductObjects`, literal digests: the
+four stage-1 objects are qualified on both AL2023 pins by the S1 oracle; a
+rebuilt object is refused until it is qualified again). Every other kernel
+or image is refused at agent start (`StartNode`, `SelectSharedProductImage`)
+with an error that wraps `ErrSharedNativeUnavailable` and names the reason. The
+pins live in `kernel_matrix.go` (`sharedProductPins`) and
+`testdata/shared_product_pins.tsv`.
+
+**Kernel witness and startup canary (stage 1, `shared_kernel_witness.go`).**
+StartNode makes every attached program prove it runs (the canary forks, execs
+and exits; a silent program refuses the start), then requires the
+`ftrace_enabled` weak ksym to have resolved, then judges the `d1_witness`
+cells. Live, the node latches NotReady until restart when the syscall exit
+reads `kernel.ftrace_enabled == 0`, or when an exec or fork reaches its
+tracepoint (`sched_process_exec`, `sched_process_fork`) without the mark its
+LSM hook (`bprm_committed_creds`, `task_alloc`) leaves in the task's own BPF
+task storage. A mark dies with its task, so no number of io_uring workers or
+zombies can exhaust anything. **Start refusals and retry:** an exec or fork in
+flight while the links attach reaches its tracepoint unmarked; StartNode
+refuses with `ErrSharedKernelWitness` wrapping
+`ErrSharedKernelWitnessRetryable`, and the agent retries StartNode with
+backoff (a fresh load counts from zero; `StartNodeRetrying` bounds the
+attempts and doubles the wait up to a cap). A refusal with ftrace seen off, the
+ksym unresolved or a failed mark creation is not retryable for this boot.
+
+**Witness memory (DaemonSet sizing).** A mark lives in BPF task storage,
+allocated with `GFP_ATOMIC` from the BPF memory allocator and charged to the
+agent's memory cgroup. On 6.12 an element is `sizeof(struct
+bpf_local_storage_elem)` (128 bytes, cache-line aligned) plus the 16-byte mark,
+taken from the 192-byte size class; a task's first task-storage element also
+allocates its `struct bpf_local_storage` (about 176 bytes, 192-byte class),
+shared with the engine's other task-storage maps. So each live task that forked
+(its own fork mark) and exec'd (its exec mark) since the agent loaded holds at
+most 2 x 192 + 192 = 576 bytes, freed with the task: about 58 MB per 100,000
+live tasks in the worst case. A creation that fails (memory limit) refuses only
+that fork or exec with `-ENOMEM` and is counted in cell [10]; it never latches
+the node.
+
+**One syscall-exit program.** `real_owner_capsule_terminal`
+(`tp_btf/sys_exit`) carries the ftrace witness and, for exec syscalls only
+(x86_64, ia32 and x32 `execve`/`execveat`), the failure terminal and the
+capsule terminal (there were two `sys_exit` programs). Every syscall of every
+task on the node still pays for the syscall-tracepoint slow path that any
+`sys_exit` program enables.
+
+**One CO-RE object per profile (universal-kernel spike, direction D3; not
+qualified).** The product objects are no longer built per kernel: the
+per-kernel builds had identical instructions after CO-RE relocation and
+differed only in unrelocated placeholders and in the BTF/DWARF copied from
+each kernel's `vmlinux.h`. `sharedProductObjects` (`kernel_matrix.go`,
+`testdata/shared_product_objects.tsv`) pins four sha256 per release
+(`g19pkg64/128/256/512`), for every kernel. The overlay `private_data`
+layout is derived from the overlay BTF shape and relocated by the object
+(`struct ovl_file___se_image`), and `FMODE_BACKING`, a preprocessor constant
+that BTF does not carry and that changed inside the 6.12 stable series, is
+probed live (`kernel_probe.go`). Kernel admission is unchanged in a default
+build: only the exact pinned builds. A qualification build can admit another
+kernel on its probes with the test-only `IG_ENFORCE_EXEC_PROBED_KERNEL=1`
+(`kernel_probe_override_tag.go`); it still refuses a kernel without the bpf
+LSM, with ftrace off, or livepatched. Stage 1 combines this with D1 (the
+objects are built with `ENFORCE_EXEC_D1_LSM_ONLY`): there are no
+failure-frame symbols to resolve, and D1's own test override is folded into
+this one.
 
 **Rebuilding the pinned objects.** `bpf/build-product.sh`
-rebuilds the eight product objects (`g19pkg64/128/256/512` for each kernel)
+rebuilds the four product objects (`g19pkg64/128/256/512`)
 with the exact flag set of the qualification build, and `--check` compares
-each sha256 with `testdata/shared_product_pins.tsv`. Build it in the pinned
+each sha256 with `testdata/shared_product_objects.tsv`. The bytes do not
+depend on the checkout path (`-ffile-prefix-map` to a path that does not
+exist). Build it in the pinned
 Debian trixie container: the CI job `test-enforce-exec-product-objects`
 does, and `make enforce-exec-product-objects` runs the same image and
 scripts with docker. `bpf/install-product-toolchain.sh` installs every

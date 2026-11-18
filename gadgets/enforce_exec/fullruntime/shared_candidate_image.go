@@ -50,11 +50,6 @@ type KernelMatrixEntry struct {
 	// Release is the kernel's release of the shared candidate matrix
 	// (sharedCandidateKernelBTF, e.g. 6.12.113-138.209.amzn2023.x86_64).
 	Release string
-	// OuterSymbol and HandlerSymbol are this kernel's text symbols the
-	// failure-frame kprobes attach to (do_execveat_common[.isra.N];
-	// search_binary_handler or exec_binprm), as the qualified loader
-	// resolves them from /proc/kallsyms.
-	OuterSymbol, HandlerSymbol string
 	// Profile is the object's compile-time geometry, written as the image's
 	// geometry annotations (the node's SharedNodeConfig.Profile).
 	Profile SharedProfile
@@ -67,20 +62,10 @@ func (k KernelMatrixEntry) validate() error {
 	for _, release := range sharedCandidateKernelBTF {
 		known = known || release == k.Release
 	}
-	if !known {
+	// D3: the test-only probed-kernel override admits a release outside
+	// the matrix (verifySharedCandidateKernel still gates the load).
+	if !known && !sharedProbedKernelOverride() {
 		return fmt.Errorf("kernel %q outside the shared candidate matrix", k.Release)
-	}
-	if k.OuterSymbol == "" || k.HandlerSymbol == "" {
-		return fmt.Errorf("kernel %s: failure-frame symbols required", k.Release)
-	}
-	// A product (non-diagnostic) image carries exactly the pinned build's
-	// failure-frame symbols, which the product node also requires.
-	if !k.Diagnostic {
-		for _, pin := range sharedProductPins {
-			if pin.Release == k.Release && (k.OuterSymbol != pin.OuterSymbol || k.HandlerSymbol != pin.HandlerSymbol) {
-				return fmt.Errorf("kernel %s: failure-frame symbols %s/%s, the pin is %s/%s", k.Release, k.OuterSymbol, k.HandlerSymbol, pin.OuterSymbol, pin.HandlerSymbol)
-			}
-		}
 	}
 	_, err := k.Profile.Validate()
 	return err
@@ -122,12 +107,6 @@ func sharedCandidateMetadata(elf []byte, kernel KernelMatrixEntry) ([]byte, erro
 	}
 	if sharedVerdictEmitterLanded {
 		merged.Set("annotations."+SharedEventABIAnnotation, SharedEventABIVersion)
-	}
-	for name, symbol := range map[string]string{
-		"opaque_real_owner_failure_outer_enter": kernel.OuterSymbol, "opaque_real_owner_failure_outer_exit": kernel.OuterSymbol,
-		"opaque_real_owner_failure_handler_enter": kernel.HandlerSymbol, "opaque_real_owner_failure_handler_exit": kernel.HandlerSymbol,
-	} {
-		merged.Set("programs."+name+".attach_to", symbol)
 	}
 	return yaml.Marshal(merged.AllSettings())
 }

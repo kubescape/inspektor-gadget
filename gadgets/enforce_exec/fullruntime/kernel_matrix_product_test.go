@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -33,26 +34,17 @@ func TestSharedProductPinsMatchTestdata(t *testing.T) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 6 {
-			t.Fatalf("testdata line %q: %d fields, want 6", line, len(fields))
+		if len(fields) != 5 {
+			t.Fatalf("testdata line %q: %d fields, want 5", line, len(fields))
 		}
-		release, digest, buildID, outer, handler := fields[0], fields[1], fields[2], fields[3], fields[4]
+		release, digest, buildID := fields[0], fields[1], fields[2] // D1: fields 3 and 4 (failure-frame symbols) are no longer pinned
 		pin, ok := sharedProductPins[digest]
 		if !ok {
 			t.Fatalf("testdata BTF %s (%s) is not pinned", digest, release)
 		}
 		seen[digest] = true
-		if pin.Release != release || pin.BuildID != buildID || pin.OuterSymbol != outer || pin.HandlerSymbol != handler {
+		if pin.Release != release || pin.BuildID != buildID {
 			t.Errorf("pin %s = %+v, testdata %q", digest, pin, fields[:5])
-		}
-		elf := strings.Split(fields[5], ",")
-		if len(elf) != 4 || len(pin.ProductELF) != len(elf) {
-			t.Errorf("pin %s ELF set %v, testdata %v", digest, pin.ProductELF, elf)
-		}
-		for _, sum := range elf {
-			if _, ok := pin.ProductELF[sum]; !ok || len(sum) != 64 || strings.ToLower(sum) != sum {
-				t.Errorf("pin %s lacks testdata ELF %q", digest, sum)
-			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -60,6 +52,35 @@ func TestSharedProductPinsMatchTestdata(t *testing.T) {
 	}
 	if len(seen) != len(sharedProductPins) {
 		t.Fatalf("testdata covers %d of %d pins", len(seen), len(sharedProductPins))
+	}
+}
+
+// TestSharedProductObjectsMatchTestdata (D3): sharedProductObjects equals
+// testdata/shared_product_objects.tsv, one object per profile for every
+// kernel (bpf/build-product.sh --check rebuilds them).
+func TestSharedProductObjectsMatchTestdata(t *testing.T) {
+	data, err := os.ReadFile("testdata/shared_product_objects.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) != 2 || !isLowerHex(fields[1], 64) {
+			t.Fatalf("testdata line %q", line)
+		}
+		got[fields[0]] = fields[1]
+	}
+	if !maps.Equal(got, sharedProductObjects) || len(got) != 4 {
+		t.Fatalf("testdata %v, sharedProductObjects %v", got, sharedProductObjects)
+	}
+	for _, sum := range got {
+		if !sharedProductObject(sum) || sharedProductObject(strings.ToUpper(sum)) || sharedProductObject("") {
+			t.Fatalf("sharedProductObject(%s)", sum)
+		}
 	}
 }
 
