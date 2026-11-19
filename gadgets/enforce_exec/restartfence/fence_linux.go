@@ -23,7 +23,7 @@ import (
 
 // InstallRoot is the default path on the node. In a container use the same
 // directory below the host bpffs mount.
-const InstallRoot = "/sys/fs/bpf/kubescape/fence-v2"
+const InstallRoot = "/sys/fs/bpf/kubescape/fence-v3"
 
 const (
 	execSection = 1
@@ -58,7 +58,8 @@ type challenge struct {
 }
 
 // Totals are cumulative while a pod row exists. Lost covers observation
-// failures and is never part of a verdict.
+// and attribution failures and is never part of a verdict. Loss counts may
+// exceed distinct execs; an unattributable observation is not a measured outage.
 type Totals struct {
 	Denied       uint64
 	Audit        uint64

@@ -238,7 +238,7 @@ func runOwner(root, object, backend string, inode uint64, mutant string) error {
 			if opErr == nil {
 				r.Pod = &state
 			}
-		case "protect", "refence", "commit-withdrawal", "deactivate", "remove":
+		case "protect", "refence", "commit-withdrawal", "acknowledge-accounting", "deactivate", "remove":
 			ref, found := refs[c.Pod]
 			if !found {
 				state, exists, e := f.ReadPod(c.Pod)
@@ -272,6 +272,8 @@ func runOwner(root, object, backend string, inode uint64, mutant string) error {
 				next, opErr = f.RefenceChild(ref, child)
 			case "commit-withdrawal":
 				next, opErr = f.CommitPolicyWithdrawal(ref, child)
+			case "acknowledge-accounting":
+				next, opErr = f.AcknowledgePodAccounting(ref)
 			case "deactivate":
 				next, opErr = f.DeactivateExecScope(ref)
 			case "remove":

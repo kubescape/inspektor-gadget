@@ -16,7 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-// MaxPodMembers is the v2 snapshot capacity, not a truncation limit. A
+// MaxPodMembers is the v3 snapshot capacity, not a truncation limit. A
 // publisher exceeding it must leave the old row and product state intact.
 const MaxPodMembers = 128
 
@@ -51,39 +51,43 @@ type PodMember struct {
 // ChildState is the published classification, not a product readiness claim.
 type ChildState struct {
 	ChildRef
-	Mode       Mode
-	Owner      uint64
-	Generation uint64
+	Mode                 Mode
+	Owner                uint64
+	Generation           uint64
+	AccountedIncarnation uint64
 }
 
 type PodState struct {
 	PodRef
-	Fallback Mode
-	Inactive bool
-	Children []ChildState
+	Fallback                     Mode
+	Inactive                     bool
+	Children                     []ChildState
+	FallbackAccountedIncarnation uint64
 }
 
 type podChild struct {
-	CgroupID       uint64
-	Identity       uint64
-	Owner          uint64
-	Generation     uint64
-	StrictSections uint32
-	AuditSections  uint32
-	OffSections    uint32
-	BoundSections  uint32
-	Reserved       [2]uint64
+	CgroupID             uint64
+	Identity             uint64
+	Owner                uint64
+	Generation           uint64
+	StrictSections       uint32
+	AuditSections        uint32
+	OffSections          uint32
+	BoundSections        uint32
+	AccountedIncarnation uint64
+	Reserved             [1]uint64
 }
 
 type podRow struct {
-	UIDHash        uint64
-	Revision       uint64
-	StrictSections uint32
-	AuditSections  uint32
-	ChildCount     uint32
-	Flags          uint32
-	Reserved       [4]uint64
-	Children       [MaxPodMembers]podChild
+	UIDHash                      uint64
+	Revision                     uint64
+	StrictSections               uint32
+	AuditSections                uint32
+	ChildCount                   uint32
+	Flags                        uint32
+	FallbackAccountedIncarnation uint64
+	Reserved                     [3]uint64
+	Children                     [MaxPodMembers]podChild
 }
 
 func childMode(c podChild) Mode {
@@ -129,24 +133,27 @@ func podFallback(row *podRow) Mode {
 }
 
 func verifyPodRow(row *podRow) error {
-	if row.UIDHash == 0 || row.Revision == 0 || row.ChildCount > MaxPodMembers || row.Reserved != [4]uint64{} {
+	if row.UIDHash == 0 || row.Revision == 0 || row.ChildCount > MaxPodMembers || row.Reserved != [3]uint64{} {
 		return fmt.Errorf("invalid exec fence pod row")
 	}
 	if row.Flags == podInactive {
-		if row.ChildCount == 0 && row.StrictSections|row.AuditSections == 0 {
+		if row.ChildCount == 0 && row.StrictSections|row.AuditSections == 0 && row.FallbackAccountedIncarnation == 0 && row.Children == [MaxPodMembers]podChild{} {
 			return nil
 		}
 		return fmt.Errorf("invalid inactive pod row")
 	}
 	fallback := podFallback(row)
-	if row.Flags != 0 || fallback == 0 {
+	if row.Flags != 0 || fallback == 0 || !validAccountingIncarnation(row.FallbackAccountedIncarnation) {
 		return fmt.Errorf("invalid marked-pod fallback mode")
 	}
 	var previous uint64
 	for _, c := range row.Children[:row.ChildCount] {
 		mode := childMode(c)
-		if c.CgroupID <= previous || c.Identity == 0 || mode == 0 || (fallback == Audit && mode == Strict) || c.Reserved != [2]uint64{} {
+		if c.CgroupID <= previous || c.Identity == 0 || mode == 0 || (fallback == Audit && mode == Strict) || c.Reserved != [1]uint64{} {
 			return fmt.Errorf("invalid or inconsistent child classification")
+		}
+		if mode == Off && c.AccountedIncarnation != 0 || mode != Off && !validAccountingIncarnation(c.AccountedIncarnation) {
+			return fmt.Errorf("invalid child accounting incarnation")
 		}
 		switch c.BoundSections {
 		case 0:
@@ -154,13 +161,54 @@ func verifyPodRow(row *podRow) error {
 				return fmt.Errorf("unattested child owner or generation")
 			}
 		case execSection:
-			if mode == Off || c.Owner == 0 || c.Owner == retired || c.Generation == 0 {
+			if mode == Off || c.Owner == 0 || c.Owner == retired || c.Generation == 0 || c.AccountedIncarnation != c.Owner {
 				return fmt.Errorf("invalid child handover")
 			}
 		default:
 			return fmt.Errorf("unsupported child handover section")
 		}
 		previous = c.CgroupID
+	}
+	for _, unused := range row.Children[row.ChildCount:] {
+		if unused != (podChild{}) {
+			return fmt.Errorf("nonzero unused exec fence child")
+		}
+	}
+	return nil
+}
+
+func validAccountingIncarnation(epoch uint64) bool {
+	return epoch != 0 && epoch != retired
+}
+
+// verifyPodAccounting also rejects provenance newer than the last issued owner.
+// It never repairs or normalizes an incompatible row.
+func verifyPodAccounting(row *podRow, issued uint64) error {
+	if err := verifyPodRow(row); err != nil {
+		return err
+	}
+	if row.FallbackAccountedIncarnation > issued {
+		return fmt.Errorf("future pod accounting incarnation")
+	}
+	for _, child := range row.Children[:row.ChildCount] {
+		if child.AccountedIncarnation > issued {
+			return fmt.Errorf("future child accounting incarnation")
+		}
+	}
+	return nil
+}
+
+func verifyStoredPodAccounting(id uint64, row *podRow, issued uint64) error {
+	if id == 0 {
+		return fmt.Errorf("zero fence pod inventory key")
+	}
+	if err := verifyPodAccounting(row, issued); err != nil {
+		return err
+	}
+	for _, child := range row.Children[:row.ChildCount] {
+		if child.CgroupID == id {
+			return fmt.Errorf("fence pod contains itself as a child")
+		}
 	}
 	return nil
 }
@@ -229,7 +277,11 @@ func podLookup(p *pinnedFence, id uint64) (podRow, bool, error) {
 	if err != nil {
 		return podRow{}, false, err
 	}
-	if err := verifyPodRow(&row); err != nil {
+	owner, err := readOwner(p)
+	if err != nil {
+		return podRow{}, false, err
+	}
+	if err := verifyStoredPodAccounting(id, &row, owner.Incarnation); err != nil {
 		return podRow{}, false, err
 	}
 	return row, true, nil
@@ -249,7 +301,18 @@ func (row *podRow) child(ref ChildRef) (*podChild, error) {
 	return &row.Children[i], nil
 }
 
-func mergeCensus(row *podRow, added []podChild, fallback Mode) error {
+func mergeCensus(row *podRow, added []podChild, fallback Mode, incarnation uint64) error {
+	if !validAccountingIncarnation(incarnation) {
+		return fmt.Errorf("invalid census accounting incarnation")
+	}
+	// Added candidates are newly classified but not handed over. Existing rows
+	// win the merge and retain their own provenance.
+	added = slices.Clone(added)
+	for i := range added {
+		if childMode(added[i]) != Off {
+			added[i].AccountedIncarnation = incarnation
+		}
+	}
 	if fallback != Strict && fallback != Audit {
 		return fmt.Errorf("unsupported pod fallback mode %d", fallback)
 	}
@@ -285,8 +348,11 @@ func mergeCensus(row *podRow, added []podChild, fallback Mode) error {
 	// child or treat possibly Strict unknown children as Audit.
 	for _, child := range result {
 		if fallback == Audit && childMode(child) == Strict {
-			return fmt.Errorf("Audit fallback would hide a retained Strict classification")
+			return fmt.Errorf("audit fallback would hide a retained Strict classification")
 		}
+	}
+	if row.Revision == 0 || row.Flags == podInactive {
+		row.FallbackAccountedIncarnation = incarnation
 	}
 	row.Flags, row.StrictSections, row.AuditSections = 0, 0, 0
 	if fallback == Audit {
@@ -308,7 +374,11 @@ func publishPod(p *pinnedFence, id uint64, previous, row *podRow) (PodRef, error
 		return PodRef{}, fmt.Errorf("exec fence pod revision exhausted")
 	}
 	row.Revision = previous.Revision + 1
-	if err := verifyPodRow(row); err != nil {
+	owner, err := readOwner(p)
+	if err != nil {
+		return PodRef{}, err
+	}
+	if err := verifyStoredPodAccounting(id, row, owner.Incarnation); err != nil {
 		return PodRef{}, err
 	}
 	if err := p.maps["fence_cgroups"].Put(id, row); err != nil {
@@ -348,7 +418,7 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 		}
 		next := old
 		next.UIDHash = uidHash
-		if err := mergeCensus(&next, rows, fallback); err != nil {
+		if err := mergeCensus(&next, rows, fallback, f.incarnation); err != nil {
 			return err
 		}
 		if err := initTotals(p, id); err != nil {
@@ -392,10 +462,7 @@ func (f *Fence) mutateChild(ref PodRef, id ChildRef, operation func(*podChild) e
 
 // RefenceChild must finish before a product operation can weaken protection.
 func (f *Fence) RefenceChild(pod PodRef, child ChildRef) (PodRef, error) {
-	return f.mutateChild(pod, child, func(entry *podChild) error {
-		entry.BoundSections, entry.Owner, entry.Generation = 0, 0, 0
-		return nil
-	})
+	return f.mutateChild(pod, child, refencePodChild)
 }
 
 // MoveChild releases only the given child. The caller must freshly attest the
@@ -406,11 +473,7 @@ func (f *Fence) MoveChild(pod PodRef, child ChildRef, generation uint64) (PodRef
 		return PodRef{}, fmt.Errorf("unattested exec generation")
 	}
 	return f.mutateChild(pod, child, func(entry *podChild) error {
-		if childMode(*entry) == Off {
-			return fmt.Errorf("cannot hand over an unmanaged child")
-		}
-		entry.BoundSections, entry.Owner, entry.Generation = execSection, f.incarnation, generation
-		return nil
+		return movePodChild(entry, f.incarnation, generation)
 	})
 }
 
@@ -418,13 +481,34 @@ func (f *Fence) MoveChild(pod PodRef, child ChildRef, generation uint64) (PodRef
 // route withdrawal already committed; failed or uncertain discovery is not
 // authority. RefenceChild must have preceded removal.
 func (f *Fence) CommitPolicyWithdrawal(pod PodRef, child ChildRef) (PodRef, error) {
-	return f.mutateChild(pod, child, func(entry *podChild) error {
-		if entry.BoundSections != 0 {
-			return fmt.Errorf("cannot publish Off for a handed-over child")
-		}
-		entry.StrictSections, entry.AuditSections, entry.OffSections = 0, 0, execSection
-		return nil
-	})
+	return f.mutateChild(pod, child, withdrawPodChild)
+}
+
+func refencePodChild(entry *podChild) error {
+	entry.BoundSections, entry.Owner, entry.Generation = 0, 0, 0
+	// Keep attribution even when a successor refences an already-unbound row.
+	return nil
+}
+
+func movePodChild(entry *podChild, incarnation, generation uint64) error {
+	if childMode(*entry) == Off {
+		return fmt.Errorf("handover requires a managed child")
+	}
+	if !validAccountingIncarnation(incarnation) || generation == 0 {
+		return fmt.Errorf("unattested exec generation or incarnation")
+	}
+	entry.BoundSections, entry.Owner, entry.Generation = execSection, incarnation, generation
+	entry.AccountedIncarnation = incarnation
+	return nil
+}
+
+func withdrawPodChild(entry *podChild) error {
+	if entry.BoundSections != 0 {
+		return fmt.Errorf("publishing Off requires a refenced child")
+	}
+	entry.StrictSections, entry.AuditSections, entry.OffSections = 0, 0, execSection
+	entry.AccountedIncarnation = 0
+	return nil
 }
 
 // DeactivateExecScope is for authoritative removal of every potentially
@@ -438,9 +522,41 @@ func (f *Fence) DeactivateExecScope(ref PodRef) (PodRef, error) {
 			}
 		}
 		row.Flags, row.StrictSections, row.AuditSections, row.ChildCount = podInactive, 0, 0, 0
+		row.FallbackAccountedIncarnation = 0
 		clear(row.Children[:])
 		return nil
 	})
+}
+
+// AcknowledgePodAccounting attributes fallback observations to the current
+// incarnation only after the caller proves a complete current pod/policy census
+// with no ambiguous identities and settles every retained managed child. The
+// caller serializes that proof with native mutations and uses the returned ref.
+// This changes accounting, never classification or native readiness.
+func (f *Fence) AcknowledgePodAccounting(ref PodRef) (PodRef, error) {
+	return f.mutatePod(ref, func(row *podRow) error {
+		return acknowledgePodAccounting(row, f.incarnation)
+	})
+}
+
+func acknowledgePodAccounting(row *podRow, incarnation uint64) error {
+	if !validAccountingIncarnation(incarnation) {
+		return fmt.Errorf("invalid accounting acknowledgment incarnation")
+	}
+	if err := verifyPodAccounting(row, incarnation); err != nil {
+		return err
+	}
+	if row.Flags == podInactive {
+		return nil
+	}
+	for _, child := range row.Children[:row.ChildCount] {
+		if childMode(child) != Off && (child.BoundSections != execSection ||
+			child.Owner != incarnation || child.Generation == 0 || child.AccountedIncarnation != incarnation) {
+			return fmt.Errorf("pod accounting recovery has unsettled managed children")
+		}
+	}
+	row.FallbackAccountedIncarnation = incarnation
+	return nil
 }
 
 // RemoveExitedChild requires independent proof that this physical host
@@ -530,11 +646,11 @@ func (f *Fence) ReadPod(id uint64) (PodState, bool, error) {
 		if err != nil || !found {
 			return err
 		}
-		result = PodState{PodRef: row.ref(id), Fallback: podFallback(&row), Inactive: row.Flags == podInactive}
+		result = PodState{PodRef: row.ref(id), Fallback: podFallback(&row), Inactive: row.Flags == podInactive, FallbackAccountedIncarnation: row.FallbackAccountedIncarnation}
 		for _, entry := range row.Children[:row.ChildCount] {
 			result.Children = append(result.Children, ChildState{
 				ChildRef: ChildRef{ID: entry.CgroupID, Identity: entry.Identity},
-				Mode:     childMode(entry), Owner: entry.Owner, Generation: entry.Generation,
+				Mode:     childMode(entry), Owner: entry.Owner, Generation: entry.Generation, AccountedIncarnation: entry.AccountedIncarnation,
 			})
 		}
 		return nil

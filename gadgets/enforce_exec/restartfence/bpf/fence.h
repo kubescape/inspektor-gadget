@@ -9,8 +9,6 @@
 #define FENCE_MAX_PODS 4096
 #define FENCE_MAX_CHILDREN 128
 #define FENCE_INACTIVE 1
-/* Refuse when the hierarchy cannot be searched completely. */
-#define FENCE_MAX_LEVEL 64
 
 struct fence_identity {
 	__u64 incarnation;
@@ -35,7 +33,9 @@ struct fence_child {
 	__u32 audit_sections;
 	__u32 off_sections;
 	__u32 bound_sections;
-	__u64 reserved64[2];
+	/* Accounting only; never substitutes for an exact native handover. */
+	__u64 accounted_incarnation;
+	__u64 reserved64[1];
 };
 
 struct fence_binding {
@@ -46,12 +46,21 @@ struct fence_binding {
 	__u32 audit_sections;
 	__u32 child_count;
 	__u32 flags;
-	__u64 reserved64[4];
+	__u64 fallback_accounted_incarnation;
+	__u64 reserved64[3];
 	struct fence_child children[FENCE_MAX_CHILDREN];
 };
 
 _Static_assert(sizeof(struct fence_child) == 64, "fence child ABI");
 _Static_assert(sizeof(struct fence_binding) == 8256, "fence pod ABI");
+_Static_assert(__builtin_offsetof(struct fence_child, accounted_incarnation) ==
+		       48,
+	       "fence child accounting ABI");
+_Static_assert(__builtin_offsetof(struct fence_binding,
+				  fallback_accounted_incarnation) == 32,
+	       "fence pod accounting ABI");
+_Static_assert(__builtin_offsetof(struct fence_binding, children) == 64,
+	       "fence children ABI");
 
 struct fence_totals {
 	__u64 denied;

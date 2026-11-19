@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	fencePinFormat    = 2
+	fencePinFormat    = 3
 	fenceManifestSize = 16384
-	fenceDirectory    = "fence-v2"
+	fenceDirectory    = "fence-v3"
 )
 
 // pinnedFence owns only descriptors. Close NEVER removes a pin, including after
@@ -161,14 +161,8 @@ func openPinsMode(root string, object []byte, allowCreate bool) (_ *pinnedFence,
 		return nil, err
 	}
 	defer unlockPinRoot(parent)
-	entries, err := os.ReadDir(procDirectory(parent))
-	if err != nil {
+	if err := checkFenceSiblings(parent); err != nil {
 		return nil, err
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "fence-") && e.Name() != fenceDirectory {
-			return nil, fmt.Errorf("unreconciled fence ABI or pending set %q (retained)", e.Name())
-		}
 	}
 	fd, err := unix.Openat(int(parent.Fd()), fenceDirectory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err == nil {
@@ -256,6 +250,9 @@ func checkPublishedFence(parent *os.File, p *pinnedFence) error {
 	if p == nil || p.dir == nil {
 		return fmt.Errorf("closed fence pins")
 	}
+	if err := checkFenceSiblings(parent); err != nil {
+		return err
+	}
 	var opened, published unix.Stat_t
 	if err := unix.Fstat(int(p.dir.Fd()), &opened); err != nil {
 		return err
@@ -267,6 +264,21 @@ func checkPublishedFence(parent *os.File, p *pinnedFence) error {
 		return fmt.Errorf("published fence directory changed")
 	}
 	return validateFenceDirectory(int(p.dir.Fd()), true)
+}
+
+// Caller holds the parent lock. Unknown versions and unfinished sets are
+// retained; neither opening nor subsequent mutations may ignore a sibling.
+func checkFenceSiblings(parent *os.File) error {
+	entries, err := os.ReadDir(procDirectory(parent))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "fence-") && entry.Name() != fenceDirectory {
+			return fmt.Errorf("unreconciled fence ABI or pending set %q (retained)", entry.Name())
+		}
+	}
+	return nil
 }
 
 func procDirectory(f *os.File) string             { return fmt.Sprintf("/proc/self/fd/%d", f.Fd()) }
@@ -333,7 +345,75 @@ func validateFenceSpec(s *ebpf.CollectionSpec) error {
 			return fmt.Errorf("invalid/nonempty fence map %q", name)
 		}
 	}
+	if err := validateFencePodSchema(s.Maps["fence_cgroups"].Key, s.Maps["fence_cgroups"].Value); err != nil {
+		return err
+	}
 	return nil
+}
+
+// fencePodSchema spells out the semantic v3 layout. Geometry alone cannot
+// distinguish the same-sized v2 row with formerly reserved accounting words.
+func fencePodSchema() *btf.Struct {
+	u64 := &btf.Int{Size: 8, Encoding: btf.Unsigned}
+	u32 := &btf.Int{Size: 4, Encoding: btf.Unsigned}
+	field := func(name string, offset uint32, typ btf.Type) btf.Member {
+		return btf.Member{Name: name, Offset: btf.Bits(offset * 8), Type: typ}
+	}
+	child := &btf.Struct{Name: "fence_child", Size: 64, Members: []btf.Member{
+		field("cgroup_id", 0, u64), field("binding_identity", 8, u64),
+		field("exec_owner", 16, u64), field("exec_generation", 24, u64),
+		field("strict_sections", 32, u32), field("audit_sections", 36, u32),
+		field("off_sections", 40, u32), field("bound_sections", 44, u32),
+		field("accounted_incarnation", 48, u64),
+		field("reserved64", 56, &btf.Array{Type: u64, Nelems: 1}),
+	}}
+	return &btf.Struct{Name: "fence_binding", Size: 8256, Members: []btf.Member{
+		field("pod_uid_hash", 0, u64), field("revision", 8, u64),
+		field("strict_sections", 16, u32), field("audit_sections", 20, u32),
+		field("child_count", 24, u32), field("flags", 28, u32),
+		field("fallback_accounted_incarnation", 32, u64),
+		field("reserved64", 40, &btf.Array{Type: u64, Nelems: 3}),
+		field("children", 64, &btf.Array{Type: child, Nelems: MaxPodMembers}),
+	}}
+}
+
+func validateFencePodSchema(key, value btf.Type) error {
+	if !sameFenceBTFShape(key, &btf.Int{Size: 8, Encoding: btf.Unsigned}) ||
+		!sameFenceBTFShape(value, fencePodSchema()) {
+		return fmt.Errorf("fence ELF lacks the exact v3 pod accounting schema")
+	}
+	return nil
+}
+
+// Recursion follows only the fixed expected schema, so hostile BTF cycles
+// cannot make this check unbounded. Typedef/qualifier names carry no ABI weight.
+func sameFenceBTFShape(actual, expected btf.Type) bool {
+	if actual == nil {
+		return false
+	}
+	actual = btf.UnderlyingType(actual)
+	switch want := expected.(type) {
+	case *btf.Int:
+		got, ok := actual.(*btf.Int)
+		return ok && got.Size == want.Size && got.Encoding == want.Encoding
+	case *btf.Array:
+		got, ok := actual.(*btf.Array)
+		return ok && got.Nelems == want.Nelems && sameFenceBTFShape(got.Type, want.Type)
+	case *btf.Struct:
+		got, ok := actual.(*btf.Struct)
+		if !ok || got.Name != want.Name || got.Size != want.Size || len(got.Members) != len(want.Members) {
+			return false
+		}
+		for i, field := range want.Members {
+			candidate := got.Members[i]
+			if candidate.Name != field.Name || candidate.Offset != field.Offset || candidate.BitfieldSize != 0 ||
+				!sameFenceBTFShape(candidate.Type, field.Type) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // Traverse without following symlinks. Missing components may only be created
@@ -705,6 +785,9 @@ func reopenFencePins(dir *os.File, spec *ebpf.CollectionSpec, boot, digest strin
 			return nil, fmt.Errorf("fence link %q changed", row.Name)
 		}
 	}
+	if err := validatePinnedPodAccounting(p); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -713,4 +796,31 @@ func equalFenceLink(a, b fencePinnedLink) bool {
 		a.ProgramID == b.ProgramID && a.ProgramType == b.ProgramType &&
 		a.Tag == b.Tag && a.Section == b.Section && a.Attach == b.Attach &&
 		a.TargetBTF == b.TargetBTF && a.TargetName == b.TargetName && slices.Equal(a.MapIDs, b.MapIDs)
+}
+
+// The parent lock excludes all conforming publishers. Kernel hooks never
+// mutate the immutable classification rows. Bound traversal refuses over-cap
+// or unstable inventories instead of claiming complete adoption.
+func validatePinnedPodAccounting(p *pinnedFence) error {
+	owner, err := readOwner(p)
+	if err != nil {
+		return err
+	}
+	iterator := p.maps["fence_cgroups"].Iterate()
+	var id uint64
+	var row podRow
+	seen := make(map[uint64]struct{})
+	for iterator.Next(&id, &row) {
+		if id == 0 || len(seen) >= 4096 {
+			return fmt.Errorf("invalid or unstable fence pod inventory")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("duplicate fence pod inventory key")
+		}
+		seen[id] = struct{}{}
+		if err := verifyStoredPodAccounting(id, &row, owner.Incarnation); err != nil {
+			return fmt.Errorf("fence pod %d accounting: %w", id, err)
+		}
+	}
+	return iterator.Err()
 }

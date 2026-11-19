@@ -48,6 +48,14 @@ func (f *fixture) mixedObserve(name string, policies []samplePolicy) error {
 	return f.event("mixed-phase", map[string]any{"name": name, "starts": starts, "ends": ends, "policies": policies})
 }
 
+// There are no probe batches in flight between these authorization calls and
+// the boundary record. The host can check every preceding raw observation.
+func (f *fixture) mixedOffBoundary(i int) error {
+	return f.event("mixed-off-boundary", map[string]uint64{
+		"probe": uint64(i), "observed": f.pods[i].probe.observed,
+	})
+}
+
 func (f *fixture) mixedState() (*fence.PodState, error) {
 	r, err := f.owner.call(command{Op: "readpod", Pod: f.pods[0].id})
 	if err != nil {
@@ -57,6 +65,41 @@ func (f *fixture) mixedState() (*fence.PodState, error) {
 		return nil, fmt.Errorf("missing pod state")
 	}
 	return r.Pod, nil
+}
+
+// Drive one ordinary probe at a time so pod-wide accounting deltas stay
+// attributable to the exact boundary being tested.
+func (f *fixture) mixedAccounting(name string, i int, outage bool) error {
+	p := f.pods[i]
+	before, err := f.counterSnapshot()
+	if err != nil {
+		return err
+	}
+	const samples = 100
+	if err := p.probe.batch(samples, fencedStrict, nil); err != nil {
+		return err
+	}
+	after, err := f.counterSnapshot()
+	if err != nil {
+		return err
+	}
+	old, had := before.PerCgroup[p.id]
+	now, has := after.PerCgroup[p.id]
+	if !had || !has || before.LiveIncarnation == 0 ||
+		before.LiveIncarnation != after.LiveIncarnation ||
+		now.Denied < old.Denied || now.OutageDenied < old.OutageDenied {
+		return fmt.Errorf("%s: missing or discontinuous accounting samples", name)
+	}
+	denied, outageDenied := now.Denied-old.Denied, now.OutageDenied-old.OutageDenied
+	// The native hook can reject the forbidden member of each pair before
+	// the fence sees it. Every allowed member still reaches the fence.
+	if denied < samples || (outage && outageDenied != denied) || (!outage && outageDenied != 0) {
+		return fmt.Errorf("%s: denied=%d outage=%d wantOutage=%t", name, denied, outageDenied, outage)
+	}
+	return f.event("mixed-accounting", map[string]any{
+		"name": name, "probe": i, "incarnation": after.LiveIncarnation,
+		"before": old, "after": now,
+	})
 }
 
 func (f *fixture) mixedScenario() error {
@@ -77,6 +120,12 @@ func (f *fixture) mixedScenario() error {
 	if err := f.mixedObserve("omitted-retained", live); err != nil {
 		return err
 	}
+	if _, err := f.owner.call(f.mixedCommand("refence", 1)); err != nil {
+		return err
+	}
+	if err := f.mixedAccounting("same-owner-unbound", 1, false); err != nil {
+		return err
+	}
 	if err := f.transition(f.owner.kill); err != nil {
 		return err
 	}
@@ -89,7 +138,13 @@ func (f *fixture) mixedScenario() error {
 	if err := f.start(); err != nil {
 		return err
 	}
+	if err := f.mixedAccounting("inherited-unbound", 1, true); err != nil {
+		return err
+	}
 	if err := f.protect(0); err != nil {
+		return err
+	}
+	if err := f.mixedAccounting("unreconciled-fallback-after-one-move", 4, true); err != nil {
 		return err
 	}
 	partial := append([]samplePolicy(nil), down...)
@@ -101,6 +156,12 @@ func (f *fixture) mixedScenario() error {
 		if err := f.protect(i); err != nil {
 			return err
 		}
+	}
+	if _, err := f.owner.call(f.mixedCommand("acknowledge-accounting", 0)); err != nil {
+		return err
+	}
+	if err := f.mixedAccounting("acknowledged-fallback-remains-fenced", 4, false); err != nil {
+		return err
 	}
 	if err := f.mixedObserve("recovered-mixed", live); err != nil {
 		return err
@@ -138,6 +199,9 @@ func (f *fixture) mixedScenario() error {
 	if _, err := f.owner.call(f.mixedCommand("commit-withdrawal", 0)); err != nil {
 		return err
 	}
+	if err := f.mixedOffBoundary(0); err != nil {
+		return err
+	}
 	withdrawal[0] = allowAll
 	if err := f.mixedObserve("authorized-child-off", withdrawal); err != nil {
 		return err
@@ -148,12 +212,20 @@ func (f *fixture) mixedScenario() error {
 				return err
 			}
 		}
+		if i == 1 {
+			if err := f.mixedOffBoundary(i); err != nil {
+				return err
+			}
+		}
 		withdrawal[i] = allowAll
 	}
 	if err := f.mixedObserve("all-known-off-unknown-fenced", withdrawal); err != nil {
 		return err
 	}
 	if _, err := f.owner.call(f.mixedCommand("deactivate", 0)); err != nil {
+		return err
+	}
+	if err := f.mixedOffBoundary(4); err != nil {
 		return err
 	}
 	withdrawal[4] = allowAll

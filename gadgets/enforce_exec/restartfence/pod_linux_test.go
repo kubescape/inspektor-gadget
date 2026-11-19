@@ -17,23 +17,26 @@ func testPodChild(t *testing.T, id uint64, mode Mode) podChild {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if mode != Off {
+		c.AccountedIncarnation = 3
+	}
 	return c
 }
 
 func TestMixedPodRowABI(t *testing.T) {
 	if binary.Size(podRow{}) != 8256 || binary.Size(podChild{}) != 64 || binary.Size(Totals{}) != 48 {
-		t.Fatal("Go pod/child/counter size does not match v2 BPF ABI")
+		t.Fatal("Go pod/child/counter size does not match v3 BPF ABI")
 	}
-	row := podRow{UIDHash: 1, Revision: 2, StrictSections: 3, AuditSections: 4, ChildCount: 5, Flags: 6}
+	row := podRow{UIDHash: 1, Revision: 2, StrictSections: 3, AuditSections: 4, ChildCount: 5, Flags: 6, FallbackAccountedIncarnation: 7}
 	row.Children[0] = podChild{
 		CgroupID: 11, Identity: 12, Owner: 13, Generation: 14,
-		StrictSections: 15, AuditSections: 16, OffSections: 17, BoundSections: 18,
+		StrictSections: 15, AuditSections: 16, OffSections: 17, BoundSections: 18, AccountedIncarnation: 19,
 	}
 	raw, err := binary.Append(nil, binary.LittleEndian, row)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for offset, want := range map[int]uint64{0: 1, 8: 2, 64: 11, 72: 12, 80: 13, 88: 14} {
+	for offset, want := range map[int]uint64{0: 1, 8: 2, 32: 7, 112: 19, 64: 11, 72: 12, 80: 13, 88: 14} {
 		if got := binary.LittleEndian.Uint64(raw[offset:]); got != want {
 			t.Errorf("u64 offset %d = %d, want %d", offset, got, want)
 		}
@@ -48,9 +51,9 @@ func TestMixedPodRowABI(t *testing.T) {
 func TestCensusDoesNotUnbindOrReleaseSiblings(t *testing.T) {
 	strict, audit, off := testPodChild(t, 10, Strict), testPodChild(t, 20, Audit), testPodChild(t, 30, Off)
 	strict.Owner, strict.Generation, strict.BoundSections = 3, 8, execSection
-	row := podRow{UIDHash: 2, Revision: 6, ChildCount: 2, StrictSections: execSection}
+	row := podRow{UIDHash: 2, Revision: 6, ChildCount: 2, StrictSections: execSection, FallbackAccountedIncarnation: 3}
 	row.Children[0], row.Children[1] = strict, audit
-	if err := mergeCensus(&row, []podChild{off}, Strict); err != nil {
+	if err := mergeCensus(&row, []podChild{off}, Strict, 4); err != nil {
 		t.Fatal(err)
 	}
 	if err := verifyPodRow(&row); err != nil {
@@ -63,7 +66,7 @@ func TestCensusDoesNotUnbindOrReleaseSiblings(t *testing.T) {
 
 func TestCensusCannotSilentlyReclassifyOrOverflow(t *testing.T) {
 	strict := testPodChild(t, 10, Strict)
-	row := podRow{UIDHash: 2, Revision: 3, ChildCount: 1, StrictSections: execSection}
+	row := podRow{UIDHash: 2, Revision: 3, ChildCount: 1, StrictSections: execSection, FallbackAccountedIncarnation: 3}
 	row.Children[0] = strict
 	for _, variant := range []struct {
 		name     string
@@ -74,11 +77,11 @@ func TestCensusCannotSilentlyReclassifyOrOverflow(t *testing.T) {
 		{"strict to off", []podChild{testPodChild(t, 10, Off)}, Strict},
 		{"audit fallback with retained strict", nil, Audit},
 		{"unknown fallback", nil, 0},
-		{"stale identity", []podChild{{CgroupID: 10, Identity: 999, StrictSections: execSection}}, Strict},
+		{"stale identity", []podChild{{CgroupID: 10, Identity: 999, StrictSections: execSection, AccountedIncarnation: 3}}, Strict},
 	} {
 		t.Run(variant.name, func(t *testing.T) {
 			next := row
-			if err := mergeCensus(&next, variant.added, variant.fallback); err == nil || next != row {
+			if err := mergeCensus(&next, variant.added, variant.fallback, 4); err == nil || next != row {
 				t.Fatalf("unsafe candidate published: %v", err)
 			}
 		})
@@ -88,13 +91,13 @@ func TestCensusCannotSilentlyReclassifyOrOverflow(t *testing.T) {
 		full[i] = testPodChild(t, uint64(i)+1000, Audit)
 	}
 	next := row
-	if err := mergeCensus(&next, full, Strict); err == nil || next != row {
+	if err := mergeCensus(&next, full, Strict, 4); err == nil || next != row {
 		t.Fatalf("oversize child census changed last-good row: %v", err)
 	}
 }
 
 func TestPodRowRejectsCorruptChildAndTombstone(t *testing.T) {
-	row := podRow{UIDHash: 1, Revision: 1, StrictSections: execSection, ChildCount: 1}
+	row := podRow{UIDHash: 1, Revision: 1, StrictSections: execSection, ChildCount: 1, FallbackAccountedIncarnation: 3}
 	row.Children[0] = testPodChild(t, 9, Audit)
 	for _, corrupt := range []func(*podRow){
 		func(r *podRow) { r.Flags = 7 },

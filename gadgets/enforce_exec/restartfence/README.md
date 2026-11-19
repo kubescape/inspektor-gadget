@@ -40,13 +40,16 @@ threads must not unshare their FD table.
 
 ## Pins and uninstall
 
-The standard path is `/sys/fs/bpf/kubescape/fence-v2/` (owner-only 0700
+The standard path is `/sys/fs/bpf/kubescape/fence-v3/` (owner-only 0700
 directories; use the host bpffs mount). The frozen manifest is published
 last, and load verifies current boot, expected object, attached
 links/programs and map identities. Pending or incompatible pins remain
 in place; do not infer that an unknown set protects anything, or detach
-it on an adoption refusal. V1 is therefore refused and retained, not
-replaced or run alongside v2. Hot v1-to-v2 migration is not implemented.
+it on an adoption refusal. V1 and v2 are refused and retained, not
+replaced or run alongside v3. Hot version migration is not implemented.
+The loader checks the named v3 BTF accounting layout before any attach,
+not only the same-sized map geometry, and scans pinned rows against the
+last issued incarnation before adoption.
 
 `Lift` is reserved for an explicitly authorized Helm pre-delete hook.
 It latches retirement in the pinned state even if the running agent still
@@ -54,6 +57,40 @@ has open link FDs; the normal start/restart path cannot undo that decision.
 The retired graph stays pinned as a tombstone. A subsequent installation
 needs an explicit, separate retired-graph recovery procedure; normal
 `Open` never treats retirement as permission to replace a pin set.
+
+## V3 accounting provenance
+
+V3 keeps the 8,256-byte pod snapshot and 64-byte child slots, but assigns
+one formerly reserved header word to the fallback accounting incarnation
+(offset 32) and one child word to its accounting incarnation (offset 48).
+All remaining reserved words stay zero. The new pin format, path, BTF
+field schema, and exact object digest are incompatible with v2. There is
+no automatic migration, pin replacement, or change to the native product ELF.
+
+Registration and ordinary census publication preserve inherited provenance;
+refencing clears native readiness but keeps its accounting epoch. A fresh
+exact Move updates only that child. Thus same-owner reconciliation is
+distinguished from successor recovery even while the child is unbound.
+Authorized Off and inactive-scope publication clear the corresponding epoch.
+Cumulative counters are not reset.
+
+After a complete authoritative census and policy snapshot, with no
+ambiguous identities and all retained managed children freshly handed over
+or authoritatively removed, the caller may invoke
+`AcknowledgePodAccounting`. Serialize the proof with native mutations and
+use its returned PodRef. The API verifies the current exact revision and
+all retained managed child handovers before acknowledging fallback
+accounting. Neither registration, a partial census, nor one child's Move
+acknowledges other children or the fallback. An empty child list alone is
+not caller authority. This API changes telemetry only: unknown descendants
+still have no native readiness and retain the same fallback verdict.
+
+Accounting fields never authorize an exec or establish protection.
+Missing/incoherent attribution is reported as lost/unattributed observation,
+not an invented normal/outage count; malformed classification still fails
+closed. Loss counters count observation/attribution failures and need not
+equal distinct execs. Userspace refuses malformed or future provenance
+without rewriting it.
 
 ## Build and qualification
 

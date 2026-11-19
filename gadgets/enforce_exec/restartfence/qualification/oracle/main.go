@@ -392,7 +392,8 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err != nil {
 		return nil, err
 	}
-	f := &fixture{ctx: ctx, out: out, work: work, object: object, backend: backend, mutant: mutant, events: events, root: "/sys/fs/bpf/ig-fence-qualification-" + name + "/fence-v2"}
+	root := filepath.Join("/sys/fs/bpf", "ig-fence-qualification-"+name, filepath.Base(fence.InstallRoot))
+	f := &fixture{ctx: ctx, out: out, work: work, object: object, backend: backend, mutant: mutant, events: events, root: root}
 	raw, err := os.ReadFile(helper)
 	if err != nil {
 		return nil, err
@@ -605,7 +606,7 @@ func (f *fixture) scenario(name string) error {
 			return err
 		}
 	case "abi-skew":
-		skew := filepath.Join(filepath.Dir(f.root), "fence-v1")
+		skew := filepath.Join(filepath.Dir(f.root), "fence-v2")
 		// Move the complete pinned graph to an unknown version, rather than
 		// merely creating an empty sibling. Attached enforcement stays live.
 		if err := os.Rename(f.root, skew); err != nil {
@@ -749,7 +750,7 @@ func run() error {
 		if name == "load-failure" {
 			// Refusal before any fence/engine publication, distinct from the
 			// successor's refusal while old bindings already exist below.
-			initialRoot := "/sys/fs/bpf/ig-fence-initial-load-refusal/fence-v2"
+			initialRoot := filepath.Join("/sys/fs/bpf/ig-fence-initial-load-refusal", filepath.Base(fence.InstallRoot))
 			held, loadErr := fence.Open(initialRoot, []byte("not an ELF"))
 			if held != nil {
 				held.Close()
