@@ -29,7 +29,7 @@ cat "$UK_OUT/oracle.log"
 if [[ $rc != 0 ]]; then exit "$rc"; fi
 if grep -Eq '(^|[[:space:]])(FAIL|SKIP)([[:space:]]|:)' "$UK_OUT/oracle.log"; then exit 1; fi
 if [[ $scenario == all ]]; then
- for expected in graceful sigkill partial-move abi-skew cgroup-exit selfexec thread-selfexec failed-selfexec uninstall load-failure nonce; do
+ for expected in graceful sigkill partial-move abi-skew cgroup-exit selfexec thread-selfexec failed-selfexec uninstall load-failure nonce mixed-mode; do
   [[ $(grep -cx "PASS $expected" "$UK_OUT/oracle.log") == 1 ]] || { echo "FAIL missing/duplicate $expected"; exit 1; }
  done
 else

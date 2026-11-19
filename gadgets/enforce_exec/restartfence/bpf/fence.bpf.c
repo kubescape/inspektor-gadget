@@ -39,6 +39,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, FENCE_MAX_PODS);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, __u64);
 	__type(value, struct fence_binding);
 } fence_cgroups SEC(".maps");
@@ -191,19 +192,28 @@ static __always_inline long lookup_fault(void)
 	return -EPERM;
 }
 
-static __always_inline void account(__u64 cgid, __u64 pod_uid_hash, __u32 mode)
+static __always_inline void account(__u64 cgid, __u64 pod_uid_hash, __u32 mode, bool outage)
 {
 	struct fence_totals *totals = bpf_map_lookup_elem(&fence_counts, &cgid);
 	if (!totals) {
 		totals = infra_counts();
-		if (totals)
+		if (totals) {
 			__sync_fetch_and_add(&totals->lost, 1);
+			if (outage)
+				__sync_fetch_and_add(&totals->outage_lost, 1);
+		}
 	}
 	if (totals) {
 		if (mode == FENCE_AUDIT)
 			__sync_fetch_and_add(&totals->audit, 1);
 		else
 			__sync_fetch_and_add(&totals->denied, 1);
+		if (outage) {
+			if (mode == FENCE_AUDIT)
+				__sync_fetch_and_add(&totals->outage_audit, 1);
+			else
+				__sync_fetch_and_add(&totals->outage_denied, 1);
+		}
 	}
 
 	struct fence_event event = {
@@ -213,8 +223,166 @@ static __always_inline void account(__u64 cgid, __u64 pod_uid_hash, __u32 mode)
 		.tgid = bpf_get_current_pid_tgid() >> 32,
 		.mode = mode,
 	};
-	if (bpf_ringbuf_output(&fence_events, &event, sizeof(event), 0) && totals)
+	if (bpf_ringbuf_output(&fence_events, &event, sizeof(event), 0) && totals) {
 		__sync_fetch_and_add(&totals->lost, 1);
+		if (outage)
+			__sync_fetch_and_add(&totals->outage_lost, 1);
+	}
+}
+
+/* Fail before classification if the snapshot cannot express a coherent policy.
+ * Only Exec is implemented in this ABI version; reserved bits are not readiness.
+ */
+static __always_inline bool valid_header(struct fence_binding *binding)
+{
+	__u32 strict = binding->strict_sections;
+	__u32 audit = binding->audit_sections;
+	if (!binding->pod_uid_hash || !binding->revision ||
+	    binding->reserved64[0] || binding->reserved64[1] ||
+	    binding->reserved64[2] || binding->reserved64[3] ||
+	    binding->child_count > FENCE_MAX_CHILDREN)
+		return false;
+	if (binding->flags == FENCE_INACTIVE)
+		return !(strict | audit | binding->child_count);
+	return !binding->flags && (strict | audit) == FENCE_SECTION_EXEC && !(strict & audit);
+}
+
+/* The authenticated publisher validates the complete immutable snapshot.
+ * The exec path validates every selected row, not 128 unrelated siblings.
+ */
+static __always_inline bool valid_child(struct fence_child *child, __u32 strict, __u64 pod)
+{
+	__u32 s = child->strict_sections;
+	__u32 a = child->audit_sections;
+	__u32 off = child->off_sections;
+	__u32 bound = child->bound_sections;
+	return child->cgroup_id && child->cgroup_id != pod &&
+		child->binding_identity && !child->reserved64[0] && !child->reserved64[1] &&
+		(s | a | off) == FENCE_SECTION_EXEC && !(s & a) && !(s & off) && !(a & off) &&
+		!(bound & ~(s | a)) &&
+		(!bound || (child->exec_owner && child->exec_owner != FENCE_RETIRED &&
+			    child->exec_generation)) &&
+		(bound || !(child->exec_owner | child->exec_generation)) && (!s || strict);
+}
+
+/* -1 means absent; -2 means a malformed search path, never an Audit fallback. */
+static __noinline int find_child(struct fence_binding *binding, __u64 id, __u64 pod)
+{
+	__u32 lo = 0, hi = binding->child_count;
+	__u64 lower = 0, upper = ~(__u64)0;
+	if (hi > FENCE_MAX_CHILDREN)
+		return -2;
+#pragma clang loop unroll(disable)
+	for (int step = 0; step < 8; step++) {
+		if (lo >= hi)
+			return -1;
+		__u32 mid = lo + (hi - lo) / 2;
+		if (mid >= FENCE_MAX_CHILDREN)
+			return -2;
+		struct fence_child *child = &binding->children[mid];
+		__u64 cgid = child->cgroup_id;
+		if (cgid <= lower || cgid > upper || cgid == pod)
+			return -2;
+		if (cgid == id) {
+			if (!valid_child(child, binding->strict_sections, pod))
+				return -2;
+			if (mid) {
+				__u64 previous = mid - 1;
+				/* Keep the access bound explicit for the 6.1 verifier;
+				 * it cannot infer it through a 32-bit decrement.
+				 */
+				asm volatile("" : "+r"(previous));
+				if (previous >= FENCE_MAX_CHILDREN ||
+				    binding->children[previous].cgroup_id >= cgid)
+					return -2;
+			}
+			__u64 next = mid + 1;
+			asm volatile("" : "+r"(next));
+			if (next < binding->child_count) {
+				if (next >= FENCE_MAX_CHILDREN ||
+				    binding->children[next].cgroup_id <= cgid)
+					return -2;
+			}
+			return mid;
+		}
+		if (cgid < id) {
+			lo = mid + 1;
+			lower = cgid;
+		} else {
+			hi = mid;
+			upper = cgid - 1;
+		}
+	}
+	return lo >= hi ? -1 : -2;
+}
+
+struct pod_walk {
+	__u64 leaf;
+	__u64 cgid;
+	__u32 pod_level;
+	bool complete;
+	bool fault;
+};
+
+/* bpf_loop bounds verifier exploration independently of hierarchy depth. */
+static long walk_pods(__u32 level, void *data)
+{
+	struct pod_walk *walk = data;
+	__u64 id = bpf_get_current_ancestor_cgroup_id(level);
+	if (!id) {
+		walk->fault = true;
+		return 1;
+	}
+	struct fence_binding *candidate = bpf_map_lookup_elem(&fence_cgroups, &id);
+	if (candidate && !valid_header(candidate)) {
+		walk->fault = true;
+		return 1;
+	}
+	if (candidate && !candidate->flags) {
+		walk->cgid = id;
+		walk->pod_level = level;
+	}
+	if (id == walk->leaf) {
+		walk->complete = true;
+		return 1;
+	}
+	return 0;
+}
+
+struct child_walk {
+	struct fence_binding *binding;
+	__u64 leaf;
+	__u64 cgid;
+	__u32 pod_level;
+	int child_index;
+	bool complete;
+	bool fault;
+};
+
+static long walk_children(__u32 level, void *data)
+{
+	struct child_walk *walk = data;
+	if (level < walk->pod_level)
+		return 0;
+	__u64 id = bpf_get_current_ancestor_cgroup_id(level);
+	if (!id || (level == walk->pod_level && id != walk->cgid)) {
+		walk->fault = true;
+		return 1;
+	}
+	if (level > walk->pod_level) {
+		int index = find_child(walk->binding, id, walk->cgid);
+		if (index == -2) {
+			walk->fault = true;
+			return 1;
+		}
+		if (index >= 0)
+			walk->child_index = index;
+	}
+	if (id == walk->leaf) {
+		walk->complete = true;
+		return 1;
+	}
+	return 0;
 }
 
 SEC("lsm/bprm_check_security")
@@ -241,46 +409,57 @@ long BPF_PROG(fence_exec, struct linux_binprm *bprm, int prior)
 	if (!leaf)
 		return lookup_fault();
 
-	/* The helper's level is absolute (root is level 0). Keep the nearest
-	 * binding, but don't mistake a partial ancestor walk for no binding.
+	/* Both walks must reach the leaf: partial traversal cannot classify an
+	 * exec as unmarked, Audit or Off. The first chooses the nearest active
+	 * pod; the second searches only its immutable child snapshot.
 	 */
-	struct fence_binding *binding = 0;
-	__u64 cgid = 0;
-	bool complete = false;
-#pragma clang loop unroll(disable)
-	for (int level = 0; level <= FENCE_MAX_LEVEL; level++) {
-		__u64 id = bpf_get_current_ancestor_cgroup_id(level);
-		if (!id)
-			break;
-		struct fence_binding *candidate = bpf_map_lookup_elem(&fence_cgroups, &id);
-		if (candidate && ((candidate->strict_sections | candidate->audit_sections) & FENCE_SECTION_EXEC)) {
-			binding = candidate;
-			cgid = id;
-		}
-		if (id == leaf) {
-			complete = true;
-			break;
-		}
-	}
-	if (!complete)
+	struct pod_walk pod = { .leaf = leaf };
+	long walked = bpf_loop(FENCE_MAX_LEVEL + 1, walk_pods, &pod, 0);
+	if (walked < 0 || pod.fault || !pod.complete)
 		return lookup_fault();
-	if (!binding)
+	if (!pod.cgid)
 		return 0;
-	bool strict = (binding->strict_sections & FENCE_SECTION_EXEC) != 0;
-	bool audit = (binding->audit_sections & FENCE_SECTION_EXEC) != 0;
-	if (strict == audit || !binding->pod_uid_hash || binding->reserved)
+	__u64 cgid = pod.cgid;
+	struct fence_binding *binding = bpf_map_lookup_elem(&fence_cgroups, &cgid);
+	/* Concurrent retirement/replacement is not evidence of readiness. */
+	if (!binding || !valid_header(binding) || binding->flags)
 		return lookup_fault();
-	__u32 mode = audit ? FENCE_AUDIT : FENCE_STRICT;
+	struct child_walk descendants = {
+		.binding = binding,
+		.leaf = leaf,
+		.cgid = cgid,
+		.pod_level = pod.pod_level,
+		.child_index = -1,
+	};
+	walked = bpf_loop(FENCE_MAX_LEVEL + 1, walk_children, &descendants, 0);
+	if (walked < 0 || descendants.fault || !descendants.complete)
+		return lookup_fault();
+	struct fence_child *child = 0;
+	int index = descendants.child_index;
+	if (index >= 0) {
+		if (index >= FENCE_MAX_CHILDREN || (__u32)index >= binding->child_count)
+			return lookup_fault();
+		child = &binding->children[index];
+	}
+
+	/* Only an explicit, valid descendant row can classify Exec as Off. */
+	if (child && (child->off_sections & FENCE_SECTION_EXEC))
+		return 0;
+	__u32 audit = child ? child->audit_sections : binding->audit_sections;
+	__u32 mode = audit & FENCE_SECTION_EXEC ? FENCE_AUDIT : FENCE_STRICT;
 
 	__u64 live = state ? FENCE_READ(*state) : 0;
 	if (live == FENCE_RETIRED)
 		return 0;
 	struct fence_identity *owner = bpf_map_lookup_elem(&fence_owner, &zero);
-	if (live && (binding->bound_sections & FENCE_SECTION_EXEC) &&
-	    binding->owner == live && owner && owner->incarnation == live)
+	if (live && child && (child->bound_sections & FENCE_SECTION_EXEC) &&
+	    child->exec_owner == live && child->exec_generation &&
+	    owner && owner->incarnation == live)
 		return 0;
 
-	account(cgid, binding->pod_uid_hash, mode);
+	bool outage = !live || (child && (child->bound_sections & FENCE_SECTION_EXEC) &&
+			       child->exec_owner && child->exec_owner != live);
+	account(cgid, binding->pod_uid_hash, mode, outage);
 	return mode == FENCE_AUDIT ? 0 : -EPERM;
 }
 

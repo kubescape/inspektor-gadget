@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	fencePinFormat    = 1
+	fencePinFormat    = 2
 	fenceManifestSize = 16384
-	fenceDirectory    = "fence-v1"
+	fenceDirectory    = "fence-v2"
 )
 
 // pinnedFence owns only descriptors. Close NEVER removes a pin, including after
@@ -300,8 +300,8 @@ func validateFenceSpec(s *ebpf.CollectionSpec) error {
 		"fence_state":   {Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1},
 		"fence_owner":   {Type: ebpf.Hash, KeySize: 4, ValueSize: 24, MaxEntries: 1},
 		"fence_nonce":   {Type: ebpf.Hash, KeySize: 4, ValueSize: 24, MaxEntries: 1},
-		"fence_cgroups": {Type: ebpf.Hash, KeySize: 8, ValueSize: 32, MaxEntries: 4096},
-		"fence_counts":  {Type: ebpf.PerCPUHash, KeySize: 8, ValueSize: 24, MaxEntries: 4097},
+		"fence_cgroups": {Type: ebpf.Hash, KeySize: 8, ValueSize: 8256, MaxEntries: 4096, Flags: unix.BPF_F_NO_PREALLOC},
+		"fence_counts":  {Type: ebpf.PerCPUHash, KeySize: 8, ValueSize: 48, MaxEntries: 4097},
 		"fence_events":  {Type: ebpf.RingBuf, KeySize: 0, ValueSize: 0, MaxEntries: 1048576},
 	}
 	sections := map[string]bool{}
@@ -328,7 +328,7 @@ func validateFenceSpec(s *ebpf.CollectionSpec) error {
 	}
 	for name, m := range s.Maps {
 		want, known := expectedMaps[name]
-		if !known || !fenceSafeName(name) || m == nil || m.Pinning != ebpf.PinNone || m.InnerMap != nil || len(m.Contents) != 0 || m.Flags != 0 ||
+		if !known || !fenceSafeName(name) || m == nil || m.Pinning != ebpf.PinNone || m.InnerMap != nil || len(m.Contents) != 0 || m.Flags != want.Flags ||
 			m.Type != want.Type || m.KeySize != want.KeySize || m.ValueSize != want.ValueSize || m.MaxEntries != want.MaxEntries {
 			return fmt.Errorf("invalid/nonempty fence map %q", name)
 		}

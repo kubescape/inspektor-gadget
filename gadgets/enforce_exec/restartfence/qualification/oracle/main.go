@@ -232,7 +232,7 @@ func (f *fixture) policies(strict samplePolicy) []samplePolicy {
 	out := make([]samplePolicy, len(f.pods))
 	for i, p := range f.pods {
 		out[i] = strict
-		if p.mode == 1 {
+		if p.mode == 1 || p.mode == 3 {
 			out[i] = allowAll
 		}
 	}
@@ -266,7 +266,7 @@ func (f *fixture) transition(action func() error) error {
 		go func(p pod) {
 			defer wg.Done()
 			policy := transitionStrict
-			if p.mode == 1 {
+			if p.mode == 1 || p.mode == 3 {
 				policy = allowAll
 			}
 			before := p.probe.observed
@@ -353,7 +353,7 @@ func (f *fixture) cleanup() error {
 	if f.owner != nil {
 		err = errors.Join(err, f.owner.kill())
 	}
-	for i := range f.pods {
+	for i := len(f.pods) - 1; i >= 0; i-- {
 		p := &f.pods[i]
 		if p.probe != nil {
 			err = errors.Join(err, p.probe.close())
@@ -362,6 +362,8 @@ func (f *fixture) cleanup() error {
 		if _, e := os.Stat(p.child); e == nil {
 			err = errors.Join(err, os.Remove(p.child))
 		}
+	}
+	for _, p := range f.pods {
 		if _, e := os.Stat(p.root); e == nil {
 			err = errors.Join(err, os.Remove(p.root))
 		}
@@ -390,7 +392,7 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err != nil {
 		return nil, err
 	}
-	f := &fixture{ctx: ctx, out: out, work: work, object: object, backend: backend, mutant: mutant, events: events, root: "/sys/fs/bpf/ig-fence-qualification-" + name + "/fence-v1"}
+	f := &fixture{ctx: ctx, out: out, work: work, object: object, backend: backend, mutant: mutant, events: events, root: "/sys/fs/bpf/ig-fence-qualification-" + name + "/fence-v2"}
 	raw, err := os.ReadFile(helper)
 	if err != nil {
 		return nil, err
@@ -406,13 +408,25 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < 4; i++ {
+	count := 4
+	if name == "mixed-mode" {
+		count = 6
+	}
+	for i := 0; i < count; i++ {
 		p := pod{root: fmt.Sprintf("/sys/fs/cgroup/ig-fence-qualification-%s-%d", name, i), mode: 2}
 		if i == 3 {
 			p.mode = 1
 		}
 		p.child = p.root + "/container"
-		if err := os.Mkdir(p.root, 0o755); err != nil {
+		if name == "mixed-mode" {
+			p.root = "/sys/fs/cgroup/ig-fence-qualification-mixed-mode"
+			p.mode = []uint32{2, 2, 1, 3, 2, 1}[i]
+			p.child = fmt.Sprintf("%s/container-%d", p.root, i)
+			if i == 5 {
+				p.child = p.root + "/container-2/nested"
+			}
+		}
+		if err := os.Mkdir(p.root, 0o755); err != nil && (name != "mixed-mode" || !os.IsExist(err)) {
 			return nil, err
 		}
 		if err := os.Mkdir(p.child, 0o755); err != nil {
@@ -435,8 +449,11 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err := f.start(); err != nil {
 		return f, err
 	}
+	if name == "mixed-mode" {
+		return f, f.bindMixed()
+	}
 	for i, p := range f.pods {
-		if _, err := f.owner.call(command{Op: "bind", Pod: p.id, Mode: p.mode, Hash: uint64(i + 1), Path: p.root}); err != nil {
+		if _, err := f.owner.call(command{Op: "bind", Pod: p.id, Mode: p.mode, Hash: uint64(i + 1), Path: p.root, ChildPath: p.child, Identity: p.childID}); err != nil {
 			return f, err
 		}
 		if err := f.protect(i); err != nil {
@@ -483,7 +500,7 @@ func (f *fixture) checkOutageTotals(before fence.Snapshot) error {
 			return fmt.Errorf("outage counters regressed for %d", p.id)
 		}
 		delta := fence.Totals{Denied: totals.Denied - prev.Denied, Audit: totals.Audit - prev.Audit, Lost: totals.Lost - prev.Lost}
-		if p.mode == 1 {
+		if p.mode == 1 || p.mode == 3 {
 			if delta.Audit < 200 || delta.Denied != 0 {
 				return fmt.Errorf("invalid Audit outage counters: %+v", totals)
 			}
@@ -495,6 +512,9 @@ func (f *fixture) checkOutageTotals(before fence.Snapshot) error {
 }
 
 func (f *fixture) scenario(name string) error {
+	if name == "mixed-mode" {
+		return f.mixedScenario()
+	}
 	switch name {
 	case "graceful":
 		if err := f.transition(func() error {
@@ -585,7 +605,7 @@ func (f *fixture) scenario(name string) error {
 			return err
 		}
 	case "abi-skew":
-		skew := filepath.Join(filepath.Dir(f.root), "fence-v2")
+		skew := filepath.Join(filepath.Dir(f.root), "fence-v1")
 		// Move the complete pinned graph to an unknown version, rather than
 		// merely creating an empty sibling. Attached enforcement stays live.
 		if err := os.Rename(f.root, skew); err != nil {
@@ -721,7 +741,7 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	cases := []string{"graceful", "sigkill", "partial-move", "abi-skew", "cgroup-exit", "selfexec", "thread-selfexec", "failed-selfexec", "uninstall", "load-failure", "nonce"}
+	cases := []string{"graceful", "sigkill", "partial-move", "abi-skew", "cgroup-exit", "selfexec", "thread-selfexec", "failed-selfexec", "uninstall", "load-failure", "nonce", "mixed-mode"}
 	if selected := os.Getenv("FENCE_CASE"); selected != "" {
 		cases = []string{selected}
 	}
@@ -729,7 +749,7 @@ func run() error {
 		if name == "load-failure" {
 			// Refusal before any fence/engine publication, distinct from the
 			// successor's refusal while old bindings already exist below.
-			initialRoot := "/sys/fs/bpf/ig-fence-initial-load-refusal/fence-v1"
+			initialRoot := "/sys/fs/bpf/ig-fence-initial-load-refusal/fence-v2"
 			held, loadErr := fence.Open(initialRoot, []byte("not an ELF"))
 			if held != nil {
 				held.Close()

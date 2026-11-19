@@ -23,7 +23,7 @@ import (
 
 // InstallRoot is the default path on the node. In a container use the same
 // directory below the host bpffs mount.
-const InstallRoot = "/sys/fs/bpf/kubescape/fence-v1"
+const InstallRoot = "/sys/fs/bpf/kubescape/fence-v2"
 
 const (
 	execSection = 1
@@ -41,6 +41,7 @@ type Mode uint32
 const (
 	Strict Mode = 1
 	Audit  Mode = 2
+	Off    Mode = 3
 )
 
 type identity struct {
@@ -56,21 +57,15 @@ type challenge struct {
 	Hi          uint64
 }
 
-type binding struct {
-	Owner          uint64
-	PodUIDHash     uint64
-	StrictSections uint32
-	AuditSections  uint32
-	BoundSections  uint32
-	Reserved       uint32
-}
-
 // Totals are cumulative while a pod row exists. Lost covers observation
 // failures and is never part of a verdict.
 type Totals struct {
-	Denied uint64
-	Audit  uint64
-	Lost   uint64
+	Denied       uint64
+	Audit        uint64
+	Lost         uint64
+	OutageDenied uint64
+	OutageAudit  uint64
+	OutageLost   uint64
 }
 
 // Snapshot is a point-in-time fence observation, not attestation that any
@@ -293,29 +288,6 @@ func (f *Fence) ownerAction(action func(*pinnedFence) error) error {
 	})
 }
 
-func makeBinding(mode Mode, podUIDHash uint64) (binding, error) {
-	b := binding{PodUIDHash: podUIDHash}
-	if podUIDHash == 0 {
-		return binding{}, fmt.Errorf("zero pod UID fingerprint")
-	}
-	switch mode {
-	case Strict:
-		b.StrictSections = execSection
-	case Audit:
-		b.AuditSections = execSection
-	default:
-		return binding{}, fmt.Errorf("unknown exec fence mode %d", mode)
-	}
-	return b, nil
-}
-
-func f1Binding(b binding) bool {
-	return b.PodUIDHash != 0 && b.Reserved == 0 &&
-		b.StrictSections|b.AuditSections == execSection &&
-		b.StrictSections&b.AuditSections == 0 && b.BoundSections&^execSection == 0 &&
-		((b.Owner == 0) == (b.BoundSections == 0))
-}
-
 func initTotals(p *pinnedFence, cgroupID uint64) error {
 	nCPU, err := ebpf.PossibleCPU()
 	if err != nil {
@@ -331,13 +303,18 @@ func initTotals(p *pinnedFence, cgroupID uint64) error {
 // PodCgroupID resolves a cgroup-v2 directory descriptor to its full kernel
 // ID. The caller must resolve the actual host pod directory, not a container
 // leaf, namespaced PID, root or textual cgroup basename.
-func PodCgroupID(podCgroup *os.File) (id uint64, err error) {
+func PodCgroupID(podCgroup *os.File) (uint64, error) {
+	id, _, err := hostCgroupID(podCgroup)
+	return id, err
+}
+
+func hostCgroupID(podCgroup *os.File) (id uint64, mountID int, err error) {
 	if podCgroup == nil {
-		return 0, fmt.Errorf("missing pod cgroup directory")
+		return 0, 0, fmt.Errorf("missing pod cgroup directory")
 	}
 	conn, err := podCgroup.SyscallConn()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var opErr error
 	err = conn.Control(func(raw uintptr) {
@@ -354,7 +331,7 @@ func PodCgroupID(podCgroup *os.File) (id uint64, err error) {
 			opErr = fmt.Errorf("pod cgroup must be a host cgroup v2 directory")
 			return
 		}
-		handle, _, handleErr := unix.NameToHandleAt(fd, "", unix.AT_EMPTY_PATH)
+		handle, mount, handleErr := unix.NameToHandleAt(fd, "", unix.AT_EMPTY_PATH)
 		if handleErr != nil {
 			opErr = fmt.Errorf("get cgroup v2 file handle: %w", handleErr)
 			return
@@ -364,11 +341,12 @@ func PodCgroupID(podCgroup *os.File) (id uint64, err error) {
 			return
 		}
 		id = binary.NativeEndian.Uint64(handle.Bytes())
+		mountID = mount
 		if id == 0 {
 			opErr = fmt.Errorf("zero kernel cgroup ID")
 		}
 	})
-	return id, errors.Join(err, opErr)
+	return id, mountID, errors.Join(err, opErr)
 }
 
 func unifiedCgroupEntry(contents string) bool {
@@ -394,87 +372,6 @@ func checkCgroupV2() error {
 	return nil
 }
 
-// Bind marks the actual pre-resolved host pod cgroup. New and mode-changed
-// rows are fenced until Move. Rebinding that same pod retains its counters.
-func (f *Fence) Bind(podCgroup *os.File, mode Mode, podUIDHash uint64) error {
-	cgroupID, err := PodCgroupID(podCgroup)
-	if err != nil {
-		return err
-	}
-	next, err := makeBinding(mode, podUIDHash)
-	if err != nil {
-		return err
-	}
-	return f.ownerAction(func(p *pinnedFence) error {
-		m := p.maps["fence_cgroups"]
-		var current binding
-		err := m.Lookup(cgroupID, &current)
-		switch {
-		case err == nil:
-			if !f1Binding(current) || current.PodUIDHash != podUIDHash {
-				return fmt.Errorf("refusing to replace a different or non-exec-only pod record")
-			}
-			if current.StrictSections == next.StrictSections && current.AuditSections == next.AuditSections {
-				return nil
-			}
-		case !errors.Is(err, ebpf.ErrKeyNotExist):
-			return err
-		}
-		if err := initTotals(p, cgroupID); err != nil {
-			return err
-		}
-		return m.Put(cgroupID, next)
-	})
-}
-
-// Move hands exec back to the registered owner. The caller MUST have attested
-// that the product backend protects this exact pod and committed generation,
-// and must serialize engine publication/withdrawal against this transition.
-func (f *Fence) Move(cgroupID uint64) error {
-	return f.ownerAction(func(p *pinnedFence) error {
-		m := p.maps["fence_cgroups"]
-		var b binding
-		if err := m.Lookup(cgroupID, &b); err != nil {
-			return err
-		}
-		if !f1Binding(b) {
-			return fmt.Errorf("invalid/non-exec-only pod record")
-		}
-		b.Owner = f.incarnation
-		b.BoundSections = execSection
-		return m.Update(cgroupID, b, ebpf.UpdateExist)
-	})
-}
-
-// RemoveExited drops a stale exec-only row. The caller MUST prove that this
-// host cgroup no longer exists; do not infer exit from a stale container row,
-// policy change, process exit, or a failed protection/adoption attempt.
-func (f *Fence) RemoveExited(cgroupID uint64) error {
-	if cgroupID == 0 {
-		return fmt.Errorf("zero pod cgroup ID")
-	}
-	return f.ownerAction(func(p *pinnedFence) error {
-		m := p.maps["fence_cgroups"]
-		var b binding
-		err := m.Lookup(cgroupID, &b)
-		if err == nil {
-			if !f1Binding(b) {
-				return fmt.Errorf("refusing to delete a shared/non-exec-only pod record")
-			}
-			if err := m.Delete(cgroupID); err != nil {
-				return err
-			}
-		} else if !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return err
-		}
-		err = p.maps["fence_counts"].Delete(cgroupID)
-		if errors.Is(err, ebpf.ErrKeyNotExist) {
-			return nil
-		}
-		return err
-	})
-}
-
 func (f *Fence) Snapshot() (Snapshot, error) {
 	result := Snapshot{PerCgroup: make(map[uint64]Totals)}
 	err := f.locked(func(p *pinnedFence) error {
@@ -489,7 +386,12 @@ func (f *Fence) Snapshot() (Snapshot, error) {
 		for it.Next(&cgroupID, &counts) {
 			var sum Totals
 			for _, cpu := range counts {
-				sum = Totals{sum.Denied + cpu.Denied, sum.Audit + cpu.Audit, sum.Lost + cpu.Lost}
+				sum.Denied += cpu.Denied
+				sum.Audit += cpu.Audit
+				sum.Lost += cpu.Lost
+				sum.OutageDenied += cpu.OutageDenied
+				sum.OutageAudit += cpu.OutageAudit
+				sum.OutageLost += cpu.OutageLost
 			}
 			result.PerCgroup[cgroupID] = sum
 		}

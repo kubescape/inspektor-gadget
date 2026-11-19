@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 )
 
 func pinTestSpec() *ebpf.CollectionSpec {
@@ -20,8 +21,8 @@ func pinTestSpec() *ebpf.CollectionSpec {
 		"fence_state":   {Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1},
 		"fence_owner":   {Type: ebpf.Hash, KeySize: 4, ValueSize: 24, MaxEntries: 1},
 		"fence_nonce":   {Type: ebpf.Hash, KeySize: 4, ValueSize: 24, MaxEntries: 1},
-		"fence_cgroups": {Type: ebpf.Hash, KeySize: 8, ValueSize: 32, MaxEntries: 4096},
-		"fence_counts":  {Type: ebpf.PerCPUHash, KeySize: 8, ValueSize: 24, MaxEntries: 4097},
+		"fence_cgroups": {Type: ebpf.Hash, KeySize: 8, ValueSize: 8256, MaxEntries: 4096, Flags: unix.BPF_F_NO_PREALLOC},
+		"fence_counts":  {Type: ebpf.PerCPUHash, KeySize: 8, ValueSize: 48, MaxEntries: 4097},
 		"fence_events":  {Type: ebpf.RingBuf, KeySize: 0, ValueSize: 0, MaxEntries: 1048576},
 	}
 	for name, section := range map[string]string{"fence_exec": "lsm/bprm_check_security", "fence_reg": "tp_btf/sys_enter", "fence_exit": "tp_btf/sched_process_exit", "fence_selfexec": "tp_btf/sched_process_exec"} {
@@ -170,7 +171,7 @@ func TestFenceParentRejectsNonBPFFSWithoutCreating(t *testing.T) {
 	if _, err := os.Lstat(filepath.Dir(root)); !os.IsNotExist(err) {
 		t.Fatalf("created parent outside bpffs: %v", err)
 	}
-	for _, root := range []string{"relative/fence-v1", "/sys/fs/bpf/../bpf/fence-v1", "/sys/fs/bpf/fence-v2"} {
+	for _, root := range []string{"relative/fence-v2", "/sys/fs/bpf/../bpf/fence-v2", "/sys/fs/bpf/fence-v2"} {
 		if p, err := lockPinRoot(root); err == nil {
 			unlockPinRoot(p)
 			t.Fatalf("accepted %q", root)

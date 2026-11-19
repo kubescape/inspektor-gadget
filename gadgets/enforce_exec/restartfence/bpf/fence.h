@@ -7,6 +7,8 @@
 #define FENCE_AUDIT 2
 #define FENCE_SECTION_EXEC (1U << 0)
 #define FENCE_MAX_PODS 4096
+#define FENCE_MAX_CHILDREN 128
+#define FENCE_INACTIVE 1
 /* Refuse when the hierarchy cannot be searched completely. */
 #define FENCE_MAX_LEVEL 64
 
@@ -23,19 +25,41 @@ struct fence_challenge {
 	__u64 hi;
 };
 
-struct fence_binding {
-	__u64 owner;
-	__u64 pod_uid_hash;
+/* One immutable HASH replacement publishes the entire pod and its children. */
+struct fence_child {
+	__u64 cgroup_id;
+	__u64 binding_identity;
+	__u64 exec_owner;
+	__u64 exec_generation;
 	__u32 strict_sections;
 	__u32 audit_sections;
+	__u32 off_sections;
 	__u32 bound_sections;
-	__u32 reserved;
+	__u64 reserved64[2];
 };
+
+struct fence_binding {
+	__u64 pod_uid_hash;
+	__u64 revision;
+	/* Fallback for an unknown child, not readiness shared by siblings. */
+	__u32 strict_sections;
+	__u32 audit_sections;
+	__u32 child_count;
+	__u32 flags;
+	__u64 reserved64[4];
+	struct fence_child children[FENCE_MAX_CHILDREN];
+};
+
+_Static_assert(sizeof(struct fence_child) == 64, "fence child ABI");
+_Static_assert(sizeof(struct fence_binding) == 8256, "fence pod ABI");
 
 struct fence_totals {
 	__u64 denied;
 	__u64 audit;
 	__u64 lost;
+	__u64 outage_denied;
+	__u64 outage_audit;
+	__u64 outage_lost;
 };
 
 struct fence_event {

@@ -11,21 +11,23 @@ by this guard and are counted. No timeout releases the fence.
    embedded ELF from `Object` on a supported target. An unavailable object,
    missing/unsupported hook, pin mismatch, or failed registration is a
    readiness refusal, not a signal to continue without the fence.
-2. Register the agent with a one-use kernel challenge. A new incarnation
-   does not un-fence existing pods. Resolve the real host pod cgroup
-   directory; `Bind` derives its kernel ID from the cgroup-v2 descriptor
-   instead of accepting a numeric ID from the caller.
-3. Move each bound pod only after the product backend has attested
-   protection for that exact pod and committed generation. The caller
-   serializes engine publication/withdrawal with this handover. A snapshot
-   of the live incarnation alone does not attest product protection.
-4. Arm and verify the fence **before** withdrawing any product route, not
-   just before closing its links. The product hook must attach after the
-   fence hook so that it evaluates first on the supported kernels. Close
-   agent descriptors after teardown; close is not an uninstall.
-5. Report cumulative per-pod outage counters and ring-buffer loss; reading
-   them does not clear counters. Remove an exec-only row only after proving
-   the pod cgroup ceased to exist. A stale container is not that proof.
+2. Register with a one-use kernel challenge. A new incarnation does not
+   un-fence existing workloads. Resolve trusted host pod and container
+   cgroup-v2 descriptors; PublishCensus publishes the pod mark and known
+   sibling classes in one immutable row.
+3. MoveChild releases only an exact Strict or Audit child after its
+   committed product generation has been attested. Unknown descendants
+   cannot inherit another child's handover. Mixed scopes use a Strict
+   fallback; Audit fallback requires evidence that Strict is impossible.
+4. RefenceChild before potentially destructive live product operations.
+   CommitPolicyWithdrawal may set a child Off only after authoritative
+   policy removal and native route withdrawal. Discovery loss does not
+   authorize Off. Serialize attestation with native mutation.
+5. Arm and verify before withdrawing any product route on shutdown. The
+   product hook attaches after this guard so it evaluates first on the
+   supported kernels. Close is not an uninstall.
+6. Report cumulative outage separately from same-owner reconciliation.
+   Remove a child or pod only after proving the physical cgroup is gone.
 
 The pinned exit hook arms on the authenticated process's last thread
 (`signal->live == 0`), ahead of descriptor release. The LSM hook also
@@ -38,12 +40,13 @@ threads must not unshare their FD table.
 
 ## Pins and uninstall
 
-The standard path is `/sys/fs/bpf/kubescape/fence-v1/` (owner-only 0700
+The standard path is `/sys/fs/bpf/kubescape/fence-v2/` (owner-only 0700
 directories; use the host bpffs mount). The frozen manifest is published
 last, and load verifies current boot, expected object, attached
 links/programs and map identities. Pending or incompatible pins remain
 in place; do not infer that an unknown set protects anything, or detach
-it on an adoption refusal.
+it on an adoption refusal. V1 is therefore refused and retained, not
+replaced or run alongside v2. Hot v1-to-v2 migration is not implemented.
 
 `Lift` is reserved for an explicitly authorized Helm pre-delete hook.
 It latches retirement in the pinned state even if the running agent still
