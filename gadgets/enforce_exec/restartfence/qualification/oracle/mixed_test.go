@@ -41,37 +41,55 @@ func TestMixedCommandUsesExactChildIdentity(t *testing.T) {
 
 func TestMixedAccountingRequiresExactPhaseDeltas(t *testing.T) {
 	for _, phase := range []struct {
-		name   string
-		want   uint64
-		outage bool
+		name          string
+		want          uint64
+		outage, audit bool
 	}{
-		{"same-owner-unbound", 100, false},
-		{"inherited-unbound", 200, true},
-		{"unreconciled-fallback-after-one-move", 200, true},
-		{"acknowledged-fallback-remains-fenced", 200, false},
+		{"same-owner-unbound", 100, false, false},
+		{"inherited-unbound", 200, true, false},
+		{"unreconciled-fallback-after-one-move", 200, true, false},
+		{"acknowledged-fallback-remains-fenced", 200, false, false},
+		{"owner-down-audit", 200, true, true},
+		{"owner-down-nested-audit", 200, true, true},
 	} {
 		t.Run(phase.name, func(t *testing.T) {
-			wantOutage := uint64(0)
-			if phase.outage {
-				wantOutage = phase.want
+			before := fence.Totals{Denied: 412, Audit: 201, Lost: 3, OutageDenied: 251, OutageAudit: 103, OutageLost: 2}
+			after := before
+			if phase.audit {
+				after.Audit += phase.want
+				if phase.outage {
+					after.OutageAudit += phase.want
+				}
+			} else {
+				after.Denied += phase.want
+				if phase.outage {
+					after.OutageDenied += phase.want
+				}
 			}
-			if err := checkMixedAccounting(phase.want, wantOutage, phase.want, phase.outage); err != nil {
+			check := func(got fence.Totals) error {
+				return checkMixedCounterDeltas(before, got, phase.audit, phase.want, phase.outage)
+			}
+			if err := check(after); err != nil {
 				t.Fatal(err)
 			}
-			for _, denied := range []uint64{0, phase.want / 2, phase.want - 1, phase.want + 1} {
-				outage := uint64(0)
-				if phase.outage {
-					outage = denied
-				}
-				if err := checkMixedAccounting(denied, outage, phase.want, phase.outage); err == nil {
-					t.Fatalf("accepted denied=%d outage=%d wantDenied=%d", denied, outage, phase.want)
-				}
+			// Off, wrong verdict families, lost attribution, excess/missing
+			// observations, and regressed counters must never attest this batch.
+			if err := check(before); err == nil {
+				t.Fatal("accepted no accounting delta")
 			}
-			if err := checkMixedAccounting(phase.want, wantOutage+1, phase.want, phase.outage); err == nil {
-				t.Fatal("accepted excess outage count")
-			}
-			if phase.outage && checkMixedAccounting(phase.want, wantOutage-1, phase.want, true) == nil {
-				t.Fatal("accepted missing outage count")
+			for field := 0; field < 6; field++ {
+				for _, increment := range []bool{false, true} {
+					bad := after
+					fields := []*uint64{&bad.Denied, &bad.Audit, &bad.Lost, &bad.OutageDenied, &bad.OutageAudit, &bad.OutageLost}
+					if increment {
+						*fields[field]++
+					} else {
+						*fields[field]--
+					}
+					if err := check(bad); err == nil {
+						t.Fatalf("accepted field=%d increment=%v", field, increment)
+					}
+				}
 			}
 		})
 	}

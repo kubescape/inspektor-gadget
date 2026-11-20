@@ -213,6 +213,13 @@ static __always_inline long lookup_fault(void)
 	return -EPERM;
 }
 
+static __always_inline bool valid_epoch(__u64 live, __u64 issued, __u64 epoch)
+{
+	/* The retained identity is the last issued owner even when fenced. */
+	return issued && issued != FENCE_RETIRED && (!live || live == issued) &&
+	       epoch && epoch <= issued;
+}
+
 static __always_inline void account(__u64 cgid, __u64 pod_uid_hash, __u32 mode,
 				    bool outage, bool unattributed)
 {
@@ -558,13 +565,12 @@ long BPF_PROG(fence_exec, struct linux_binprm *bprm, int prior)
 	if (live == FENCE_RETIRED)
 		return 0;
 	struct fence_identity *owner = bpf_map_lookup_elem(&fence_owner, &zero);
-	if (live && handover_owner == live && owner &&
-	    owner->incarnation == live)
+	__u64 issued = owner ? owner->incarnation : 0;
+	if (live && handover_owner == live && issued == live)
 		return 0;
 
 	/* Provenance does not participate in the verdict. */
-	bool unattributed = live && (!owner || owner->incarnation != live ||
-				     !epoch || epoch > live);
+	bool unattributed = !valid_epoch(live, issued, epoch);
 	bool outage = !live || (!unattributed && epoch != live);
 	account(cgid, binding->pod_uid_hash, mode, outage, unattributed);
 	return mode == FENCE_AUDIT ? 0 : -EPERM;

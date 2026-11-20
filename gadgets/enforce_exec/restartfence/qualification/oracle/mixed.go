@@ -69,47 +69,77 @@ func (f *fixture) mixedState() (*fence.PodState, error) {
 
 // Drive one ordinary probe at a time so pod-wide accounting deltas stay
 // attributable to the exact boundary being tested.
+// Same-owner-unbound retains a native route, so only 100 allowed targets
+// reach the fence. Other Strict batches count both targets in all 100 pairs.
 func (f *fixture) mixedAccounting(name string, i int, outage bool, expectedDenied uint64) error {
+	return f.mixedAccountingBatch(name, i, fencedStrict, f.owner.inc, expectedDenied, outage)
+}
+
+func (f *fixture) mixedAccountingBatch(name string, i int, policy samplePolicy, live, expected uint64, outage bool) error {
 	p := f.pods[i]
+	beforeStart := monotonicNS()
 	before, err := f.counterSnapshot()
 	if err != nil {
 		return err
 	}
+	beforeEnd := monotonicNS()
+	startIndex := p.probe.observed
 	const samples = 100
-	if err := p.probe.batch(samples, fencedStrict, nil); err != nil {
+	if err := p.probe.batch(samples, policy, nil); err != nil {
 		return err
 	}
+	endIndex := p.probe.observed
+	afterStart := monotonicNS()
 	after, err := f.counterSnapshot()
 	if err != nil {
 		return err
 	}
+	afterEnd := monotonicNS()
 	old, had := before.PerCgroup[p.id]
 	now, has := after.PerCgroup[p.id]
-	if !had || !has || before.LiveIncarnation == 0 ||
-		before.LiveIncarnation != after.LiveIncarnation ||
-		now.Denied < old.Denied || now.OutageDenied < old.OutageDenied {
+	if !had || !has || before.LiveIncarnation != live || after.LiveIncarnation != live ||
+		before.Retired || after.Retired || endIndex-startIndex != 2*samples {
 		return fmt.Errorf("%s: missing or discontinuous accounting samples", name)
 	}
-	denied, outageDenied := now.Denied-old.Denied, now.OutageDenied-old.OutageDenied
-	if err := checkMixedAccounting(denied, outageDenied, expectedDenied, outage); err != nil {
+	if err := checkMixedCounterDeltas(old, now, policy == allowAll, expected, outage); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return f.event("mixed-accounting", map[string]any{
 		"name": name, "probe": i, "incarnation": after.LiveIncarnation,
-		"before": old, "after": now,
+		"before_incarnation": before.LiveIncarnation,
+		"before":             old, "after": now,
+		"before_snapshot_start_ns": beforeStart, "before_snapshot_end_ns": beforeEnd,
+		"after_snapshot_start_ns": afterStart, "after_snapshot_end_ns": afterEnd,
+		"start_index": startIndex, "end_index": endIndex,
 	})
 }
 
-// Only same-owner-unbound retains a native route, intercepting 100 denied
-// targets before the fence. After owner death, or for the unknown fallback
-// child, both targets in all 100 pairs must be counted by the fence.
-func checkMixedAccounting(denied, outageDenied, expectedDenied uint64, outage bool) error {
-	wantOutage := uint64(0)
-	if outage {
-		wantOutage = expectedDenied
+// Isolated batches must increment only the expected verdict family. Lost or
+// unrelated deltas cannot stand in for positively classified Audit observations.
+func checkMixedCounterDeltas(before, after fence.Totals, audit bool, expected uint64, outage bool) error {
+	want := fence.Totals{}
+	if audit {
+		want.Audit = expected
+		if outage {
+			want.OutageAudit = expected
+		}
+	} else {
+		want.Denied = expected
+		if outage {
+			want.OutageDenied = expected
+		}
 	}
-	if denied != expectedDenied || outageDenied != wantOutage {
-		return fmt.Errorf("denied=%d outage=%d wantDenied=%d wantOutage=%d", denied, outageDenied, expectedDenied, wantOutage)
+	if after.Denied < before.Denied || after.Audit < before.Audit || after.Lost < before.Lost ||
+		after.OutageDenied < before.OutageDenied || after.OutageAudit < before.OutageAudit || after.OutageLost < before.OutageLost {
+		return fmt.Errorf("counter regression")
+	}
+	got := fence.Totals{
+		Denied: after.Denied - before.Denied, Audit: after.Audit - before.Audit,
+		Lost: after.Lost - before.Lost, OutageDenied: after.OutageDenied - before.OutageDenied,
+		OutageAudit: after.OutageAudit - before.OutageAudit, OutageLost: after.OutageLost - before.OutageLost,
+	}
+	if got != want {
+		return fmt.Errorf("counter delta=%+v want=%+v", got, want)
 	}
 	return nil
 }
@@ -135,6 +165,9 @@ func (f *fixture) mixedScenario() error {
 	if _, err := f.owner.call(f.mixedCommand("refence", 1)); err != nil {
 		return err
 	}
+	if err := f.event("mixed-refenced", 1); err != nil {
+		return err
+	}
 	if err := f.mixedAccounting("same-owner-unbound", 1, false, 100); err != nil {
 		return err
 	}
@@ -146,6 +179,16 @@ func (f *fixture) mixedScenario() error {
 	}
 	if err := f.mixedObserve("owner-down", down); err != nil {
 		return err
+	}
+	for _, batch := range []struct {
+		name  string
+		probe int
+	}{
+		{"owner-down-audit", 2}, {"owner-down-nested-audit", 5},
+	} {
+		if err := f.mixedAccountingBatch(batch.name, batch.probe, allowAll, 0, 200, true); err != nil {
+			return err
+		}
 	}
 	if err := f.start(); err != nil {
 		return err
@@ -170,6 +213,9 @@ func (f *fixture) mixedScenario() error {
 		}
 	}
 	if _, err := f.owner.call(f.mixedCommand("acknowledge-accounting", 0)); err != nil {
+		return err
+	}
+	if err := f.event("mixed-accounting-acknowledged", 0); err != nil {
 		return err
 	}
 	if err := f.mixedAccounting("acknowledged-fallback-remains-fenced", 4, false, 200); err != nil {

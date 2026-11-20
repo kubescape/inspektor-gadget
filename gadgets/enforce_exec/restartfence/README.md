@@ -94,7 +94,9 @@ Missing/incoherent attribution is reported as lost/unattributed observation,
 not an invented normal/outage count; malformed classification still fails
 closed. Loss counters count observation/attribution failures and need not
 equal distinct execs. Userspace refuses malformed or future provenance
-without rewriting it.
+without rewriting it. While fenced, the retained last issued incarnation
+still bounds attribution; a missing, zero, retired, or future epoch does
+not earn a normal or outage verdict count.
 
 ## Build and qualification
 

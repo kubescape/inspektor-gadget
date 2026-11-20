@@ -71,11 +71,82 @@ def verify_transition_coverage(events, probe_rows, expected_transitions, expecte
                 "transition observations outside their mixed lifecycle phases"
             )
         assert any(
-            0 < row["start_ns"] < row["end_ns"] and row["start_ns"] < end and start < row["end_ns"]
+            0 < start <= row["start_ns"] < row["end_ns"] <= end
             for row in rows[start_idx:end_idx]
-        ), f"no raw observation overlaps transition {t} for probe {c['probe']}"
+        ), f"no raw observation contained in transition {t} for probe {c['probe']}"
     assert seen == expected_keys, "missing transition coverage"
     return len(covers)
+
+
+def validate_mixed_accounting(events, probe_rows, phases):
+    owners = [(i, e) for i, e in enumerate(events) if e["event"] == "owner-start"]
+    incarnations = [e["value"]["incarnation"] for _, e in owners]
+    assert len(owners) == 2 and 0 < incarnations[0] < incarnations[1], "missing successor proof"
+    assert (owners[0][0] < phases["live-mixed"][0]
+            < phases["owner-down"][0] < owners[1][0] < phases["partial-child-move"][0]), "owner outside mixed lifecycle"
+
+    def one(name, value):
+        matches = [(i, e) for i, e in enumerate(events) if e["event"] == name and e["value"] == value]
+        assert len(matches) == 1, f"missing or duplicate {name}"
+        return matches[0]
+
+    refenced = one("mixed-refenced", 1)
+    acknowledged = one("mixed-accounting-acknowledged", 0)
+    moves = [(i, e) for i, e in enumerate(events) if e["event"] == "protected-moved" and i > owners[1][0]]
+    assert [e["value"] for _, e in moves] == [0, 1, 2], "invalid successor move ordering"
+    assert (phases["partial-child-move"][0] < moves[1][0] < moves[2][0]
+            < acknowledged[0] < phases["recovered-mixed"][0]), "acknowledgment outside recovery"
+    assert moves[1][1]["monotonic_ns"] <= moves[2][1]["monotonic_ns"] <= acknowledged[1]["monotonic_ns"]
+    transition = next((i, {"monotonic_ns": e["value"]}) for i, e in enumerate(events)
+                      if e["event"] == "transition-start")
+    # (batch, probe, live owner, Audit, lower event, upper event, bounding phases)
+    expected = (
+        ("same-owner-unbound", 1, incarnations[0], False, refenced, transition, "omitted-retained", "owner-down", 100, 0),
+        ("owner-down-audit", 2, 0, True, phases["owner-down"], owners[1], "owner-down", "partial-child-move", 200, 200),
+        ("owner-down-nested-audit", 5, 0, True, phases["owner-down"], owners[1], "owner-down", "partial-child-move", 200, 200),
+        ("inherited-unbound", 1, incarnations[1], False, owners[1], moves[0], "owner-down", "partial-child-move", 200, 200),
+        ("unreconciled-fallback-after-one-move", 4, incarnations[1], False, moves[0], phases["partial-child-move"], "owner-down", "partial-child-move", 200, 200),
+        ("acknowledged-fallback-remains-fenced", 4, incarnations[1], False, acknowledged, phases["recovered-mixed"], "partial-child-move", "recovered-mixed", 200, 0),
+    )
+    assert (phases["omitted-retained"][0] < refenced[0] < transition[0]
+            and phases["omitted-retained"][1]["monotonic_ns"] <= refenced[1]["monotonic_ns"]), "refence outside same-owner phase"
+    accounting = [(i, e) for i, e in enumerate(events) if e["event"] == "mixed-accounting"]
+    assert len(accounting) == len(expected), "missing mixed accounting proof"
+    fields = ("Denied", "Audit", "Lost", "OutageDenied", "OutageAudit", "OutageLost")
+    last_end = 0
+    for (pos, event), (name, probe, incarnation, audit, lower, upper, before_phase, after_phase, count, outage) in zip(accounting, expected):
+        value = event["value"]
+        assert (value["name"], value["probe"], value["before_incarnation"], value["incarnation"]) == (name, probe, incarnation, incarnation), "accounting owner changed"
+        bs, be, a_s, ae = (value[k] for k in ("before_snapshot_start_ns", "before_snapshot_end_ns",
+                                               "after_snapshot_start_ns", "after_snapshot_end_ns"))
+        assert (lower[0] < pos < upper[0]
+                and 0 < lower[1]["monotonic_ns"] <= bs <= be < a_s <= ae <= event["monotonic_ns"]
+                <= upper[1]["monotonic_ns"] and last_end <= bs), f"accounting outside lifecycle bounds for {name}"
+        last_end = ae
+        rows = probe_rows[probe]
+        start, end = value["start_index"], value["end_index"]
+        assert (0 <= start < end <= len(rows) and end-start == 200
+                and phases[before_phase][1]["value"]["ends"][probe] <= start
+                and end <= phases[after_phase][1]["value"]["starts"][probe]), f"accounting probe bounds for {name}"
+        batch = rows[start:end]
+        assert be <= batch[0]["start_ns"] < batch[-1]["end_ns"] <= a_s, f"accounting snapshot bounds for {name}"
+        batch_id = batch[0]["batch"]
+        assert type(batch_id) is int and batch_id > 0, f"invalid accounting batch identity for {name}"
+        for j, row in enumerate(batch):
+            assert (row["batch"] == batch_id and type(row["sample"]) is int and row["sample"] == j // 2
+                    and 0 < row["start_ns"] < row["end_ns"]), f"accounting batch identity for {name}"
+            assert row["target"] == ("denied" if j % 2 == 0 else "allowed"), f"accounting targets for {name}"
+            assert row["errno"] == (0 if audit else 1), f"accounting verdict for {name}"
+        for other, stream in enumerate(probe_rows):
+            outside = stream[:start] + stream[end:] if other == probe else stream
+            assert all(r["end_ns"] <= bs or ae <= r["start_ns"] for r in outside), f"nonisolated accounting batch {name}"
+        before, after = value["before"], value["after"]
+        assert all(type(v[k]) is int and v[k] >= 0 for v in (before, after) for k in fields)
+        delta = {k: after[k] - before[k] for k in fields}
+        want = dict.fromkeys(fields, 0)
+        want["Audit" if audit else "Denied"] = count
+        want["OutageAudit" if audit else "OutageDenied"] = outage
+        assert delta == want, f"incorrect counter deltas for {name}"
 
 
 def validate_mixed(root, events):
@@ -104,22 +175,7 @@ def validate_mixed(root, events):
     phase_index = {e["value"]["name"]: (i, e) for i, e in indexed_phases}
     phase_pairs = [(phase_index[before], phase_index[after]) for before, after in MIXED_TRANSITIONS]
     verify_transition_coverage(events, probe_rows, len(MIXED_TRANSITIONS), range(6), phase_pairs)
-    incarnations = [e["value"]["incarnation"] for e in events if e["event"] == "owner-start"]
-    assert len(incarnations) == 2 and 0 < incarnations[0] < incarnations[1], "missing successor proof"
-    accounting = [e["value"] for e in events if e["event"] == "mixed-accounting"]
-    expected_accounting = (
-        ("same-owner-unbound", 1, incarnations[0], 100, 0),
-        ("inherited-unbound", 1, incarnations[1], 200, 200),
-        ("unreconciled-fallback-after-one-move", 4, incarnations[1], 200, 200),
-        ("acknowledged-fallback-remains-fenced", 4, incarnations[1], 200, 0),
-    )
-    assert len(accounting) == len(expected_accounting), "missing mixed accounting proof"
-    for value, (name, probe, incarnation, want_denied, want_outage) in zip(accounting, expected_accounting):
-        assert (value["name"], value["probe"], value["incarnation"]) == (name, probe, incarnation)
-        before, after = value["before"], value["after"]
-        denied = after["Denied"] - before["Denied"]
-        outage_denied = after["OutageDenied"] - before["OutageDenied"]
-        assert (denied, outage_denied) == (want_denied, want_outage), f"incorrect counter deltas for {name}"
+    validate_mixed_accounting(events, probe_rows, phase_index)
     boundaries = [e for e in events if e["event"] == "mixed-off-boundary"]
     strict_probes = (0, 1, 4)
     assert [e["value"]["probe"] for e in boundaries] == list(strict_probes), (
