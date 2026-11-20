@@ -271,6 +271,8 @@ func (f *fixture) transition(action func() error) error {
 			policy := transitionStrict
 			if p.mode == 1 || p.mode == 3 {
 				policy = allowAll
+			} else if len(f.pods) == 6 && probeIndex == 4 {
+				policy = fencedStrict
 			}
 			before := p.probe.observed
 			result := observed{probe: uint64(probeIndex), pod: p.id, startIndex: before}
