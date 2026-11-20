@@ -21,36 +21,66 @@ KILLS = {
     "never-move": r"FAIL graceful: target=allowed errno=1 want=0 policy=0",
     "restart-lift": r"FAIL graceful: .*target=denied errno=0 want=1",
 }
+MIXED_TRANSITIONS = (
+    ("omitted-retained", "owner-down"),
+    ("recovered-mixed", "refenced-before-backend-withdraw"),
+    ("refenced-before-backend-withdraw", "backend-withdrawn-still-fenced"),
+)
 
 
-def verify_transition_coverage(events, probe_rows, expected_transitions, expected_probes):
-    starts = [e["value"] for e in events if e["event"] == "transition-start"]
-    ends = [e["value"] for e in events if e["event"] == "transition-end"]
+def verify_transition_coverage(events, probe_rows, expected_transitions, expected_probes, phase_pairs=()):
+    starts = [(i, e["value"]) for i, e in enumerate(events) if e["event"] == "transition-start"]
+    ends = [(i, e["value"]) for i, e in enumerate(events) if e["event"] == "transition-end"]
     assert len(starts) == len(ends) == expected_transitions, "missing transition lifecycle bounds"
-    covers = [e["value"] for e in events if e["event"] == "transition-coverage"]
+    previous_pos, previous_time = -1, 0
+    for t, ((start_pos, start), (end_pos, end)) in enumerate(zip(starts, ends)):
+        assert previous_pos < start_pos < end_pos, "out-of-order transition lifecycle events"
+        assert 0 < start < end and previous_time <= start, "invalid transition action interval"
+        previous_pos, previous_time = end_pos, end
+        if phase_pairs:
+            (before_pos, before), (after_pos, after) = phase_pairs[t]
+            assert (before_pos < start_pos < end_pos < after_pos
+                    and before["monotonic_ns"] <= start < end <= after["monotonic_ns"]), (
+                "transition outside its mixed lifecycle phases"
+            )
+    covers = [(i, e["value"]) for i, e in enumerate(events) if e["event"] == "transition-coverage"]
     expected_keys = {(t, p) for t in range(expected_transitions) for p in expected_probes}
     assert len(covers) == len(expected_keys), "missing or extra transition coverage"
     seen = set()
-    for c in covers:
+    for pos, c in covers:
         key = (c["transition"], c["probe"])
         assert key in expected_keys and key not in seen, f"unexpected or duplicate coverage {key}"
         seen.add(key)
         t = c["transition"]
+        start_pos, start = starts[t]
+        end_pos, end = ends[t]
+        assert start_pos < pos < end_pos, "coverage outside its transition lifecycle events"
         rows = probe_rows[c["probe"]]
         start_idx, end_idx = c["start_index"], c["end_index"]
         assert 0 <= start_idx < end_idx <= len(rows), "coverage index out of range"
         assert end_idx - start_idx == c["samples"] >= 400, "insufficient transition observations"
         assert rows[start_idx]["start_ns"] == c["first_ns"], "coverage start_ns mismatch"
         assert rows[end_idx - 1]["end_ns"] == c["last_ns"], "coverage last_ns mismatch"
-        assert c["action_start_ns"] == starts[t], "coverage action_start_ns mismatch"
-        assert c["action_end_ns"] == ends[t], "coverage action_end_ns mismatch"
-        assert c["first_ns"] < c["action_start_ns"] <= c["action_end_ns"] < c["last_ns"], "no observed overlap"
+        assert c["action_start_ns"] == start, "coverage action_start_ns mismatch"
+        assert c["action_end_ns"] == end, "coverage action_end_ns mismatch"
+        assert c["first_ns"] < start < end < c["last_ns"], "observations do not bracket the action"
+        if phase_pairs:
+            (_, before), (_, after) = phase_pairs[t]
+            i = c["probe"]
+            assert before["value"]["ends"][i] <= start_idx < end_idx <= after["value"]["starts"][i], (
+                "transition observations outside their mixed lifecycle phases"
+            )
+        assert any(
+            0 < row["start_ns"] < row["end_ns"] and row["start_ns"] < end and start < row["end_ns"]
+            for row in rows[start_idx:end_idx]
+        ), f"no raw observation overlaps transition {t} for probe {c['probe']}"
     assert seen == expected_keys, "missing transition coverage"
     return len(covers)
 
 
 def validate_mixed(root, events):
-    phases = [e for e in events if e["event"] == "mixed-phase"]
+    indexed_phases = [(i, e) for i, e in enumerate(events) if e["event"] == "mixed-phase"]
+    phases = [e for _, e in indexed_phases]
     expected = {
         "live-mixed": [0, 0, 3, 3, 1, 3],
         "omitted-retained": [0, 0, 3, 3, 1, 3],
@@ -71,24 +101,25 @@ def validate_mixed(root, events):
         raw = [json.loads(line) for line in (root / f"probe-{i}.jsonl").read_text().splitlines()]
         assert raw[0]["ready_pid"] > 0
         probe_rows.append(raw[1:])
-    verify_transition_coverage(events, probe_rows, 3, range(6))
+    phase_index = {e["value"]["name"]: (i, e) for i, e in indexed_phases}
+    phase_pairs = [(phase_index[before], phase_index[after]) for before, after in MIXED_TRANSITIONS]
+    verify_transition_coverage(events, probe_rows, len(MIXED_TRANSITIONS), range(6), phase_pairs)
     incarnations = [e["value"]["incarnation"] for e in events if e["event"] == "owner-start"]
     assert len(incarnations) == 2 and 0 < incarnations[0] < incarnations[1], "missing successor proof"
     accounting = [e["value"] for e in events if e["event"] == "mixed-accounting"]
     expected_accounting = (
-        ("same-owner-unbound", 1, incarnations[0], False),
-        ("inherited-unbound", 1, incarnations[1], True),
-        ("unreconciled-fallback-after-one-move", 4, incarnations[1], True),
-        ("acknowledged-fallback-remains-fenced", 4, incarnations[1], False),
+        ("same-owner-unbound", 1, incarnations[0], 100, 0),
+        ("inherited-unbound", 1, incarnations[1], 200, 200),
+        ("unreconciled-fallback-after-one-move", 4, incarnations[1], 200, 200),
+        ("acknowledged-fallback-remains-fenced", 4, incarnations[1], 200, 0),
     )
     assert len(accounting) == len(expected_accounting), "missing mixed accounting proof"
-    for value, (name, probe, incarnation, outage) in zip(accounting, expected_accounting):
+    for value, (name, probe, incarnation, want_denied, want_outage) in zip(accounting, expected_accounting):
         assert (value["name"], value["probe"], value["incarnation"]) == (name, probe, incarnation)
         before, after = value["before"], value["after"]
         denied = after["Denied"] - before["Denied"]
         outage_denied = after["OutageDenied"] - before["OutageDenied"]
-        assert denied >= 100
-        assert outage_denied == (denied if outage else 0)
+        assert (denied, outage_denied) == (want_denied, want_outage), f"incorrect counter deltas for {name}"
     boundaries = [e for e in events if e["event"] == "mixed-off-boundary"]
     strict_probes = (0, 1, 4)
     assert [e["value"]["probe"] for e in boundaries] == list(strict_probes), (
@@ -128,6 +159,7 @@ def validate_mixed(root, events):
             assert phase["policies"] == expected[phase["name"]]
             start, end = phase["starts"][i], phase["ends"][i]
             assert last_end <= start and end - start == 200 and end <= len(rows)
+            assert rows[end - 1]["end_ns"] <= event["monotonic_ns"], "mixed phase observed after its event"
             last_end = end
             policy = expected[phase["name"]][i]
             for r in rows[start:end]:
@@ -163,7 +195,7 @@ def validate(root, variant):
         events = [json.loads(line) for line in (guest / case / "lifecycle.jsonl").read_text().splitlines()]
         if case == "mixed-mode":
             total += validate_mixed(guest / case, events)
-            coverage += 18
+            coverage += len(MIXED_TRANSITIONS) * 6
             continue
         retire = next((e["monotonic_ns"] for e in events if e["event"] == "uninstall-retired"), None)
         assert (retire is not None) == (case == "uninstall"), "unexpected retirement"

@@ -14,7 +14,11 @@ by this guard and are counted. No timeout releases the fence.
 2. Register with a one-use kernel challenge. A new incarnation does not
    un-fence existing workloads. Resolve trusted host pod and container
    cgroup-v2 descriptors; PublishCensus publishes the pod mark and known
-   sibling classes in one immutable row.
+   sibling classes in one immutable row. Independently managed container
+   roots must be verified non-overlapping, including while the owner is
+   down. Census validation can reject known overlaps; it cannot prove
+   where the runtime will create an undiscovered root. Ordinary
+   descendants within a verified root keep its classification.
 3. MoveChild releases only an exact Strict or Audit child after its
    committed product generation has been attested. Unknown descendants
    cannot inherit another child's handover. Mixed scopes use a Strict

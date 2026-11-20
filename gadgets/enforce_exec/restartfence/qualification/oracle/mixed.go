@@ -69,7 +69,7 @@ func (f *fixture) mixedState() (*fence.PodState, error) {
 
 // Drive one ordinary probe at a time so pod-wide accounting deltas stay
 // attributable to the exact boundary being tested.
-func (f *fixture) mixedAccounting(name string, i int, outage bool) error {
+func (f *fixture) mixedAccounting(name string, i int, outage bool, expectedDenied uint64) error {
 	p := f.pods[i]
 	before, err := f.counterSnapshot()
 	if err != nil {
@@ -91,15 +91,27 @@ func (f *fixture) mixedAccounting(name string, i int, outage bool) error {
 		return fmt.Errorf("%s: missing or discontinuous accounting samples", name)
 	}
 	denied, outageDenied := now.Denied-old.Denied, now.OutageDenied-old.OutageDenied
-	// The native hook can reject the forbidden member of each pair before
-	// the fence sees it. Every allowed member still reaches the fence.
-	if denied < samples || (outage && outageDenied != denied) || (!outage && outageDenied != 0) {
-		return fmt.Errorf("%s: denied=%d outage=%d wantOutage=%t", name, denied, outageDenied, outage)
+	if err := checkMixedAccounting(denied, outageDenied, expectedDenied, outage); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return f.event("mixed-accounting", map[string]any{
 		"name": name, "probe": i, "incarnation": after.LiveIncarnation,
 		"before": old, "after": now,
 	})
+}
+
+// Only same-owner-unbound retains a native route, intercepting 100 denied
+// targets before the fence. After owner death, or for the unknown fallback
+// child, both targets in all 100 pairs must be counted by the fence.
+func checkMixedAccounting(denied, outageDenied, expectedDenied uint64, outage bool) error {
+	wantOutage := uint64(0)
+	if outage {
+		wantOutage = expectedDenied
+	}
+	if denied != expectedDenied || outageDenied != wantOutage {
+		return fmt.Errorf("denied=%d outage=%d wantDenied=%d wantOutage=%d", denied, outageDenied, expectedDenied, wantOutage)
+	}
+	return nil
 }
 
 func (f *fixture) mixedScenario() error {
@@ -123,7 +135,7 @@ func (f *fixture) mixedScenario() error {
 	if _, err := f.owner.call(f.mixedCommand("refence", 1)); err != nil {
 		return err
 	}
-	if err := f.mixedAccounting("same-owner-unbound", 1, false); err != nil {
+	if err := f.mixedAccounting("same-owner-unbound", 1, false, 100); err != nil {
 		return err
 	}
 	if err := f.transition(f.owner.kill); err != nil {
@@ -138,13 +150,13 @@ func (f *fixture) mixedScenario() error {
 	if err := f.start(); err != nil {
 		return err
 	}
-	if err := f.mixedAccounting("inherited-unbound", 1, true); err != nil {
+	if err := f.mixedAccounting("inherited-unbound", 1, true, 200); err != nil {
 		return err
 	}
 	if err := f.protect(0); err != nil {
 		return err
 	}
-	if err := f.mixedAccounting("unreconciled-fallback-after-one-move", 4, true); err != nil {
+	if err := f.mixedAccounting("unreconciled-fallback-after-one-move", 4, true, 200); err != nil {
 		return err
 	}
 	partial := append([]samplePolicy(nil), down...)
@@ -160,7 +172,7 @@ func (f *fixture) mixedScenario() error {
 	if _, err := f.owner.call(f.mixedCommand("acknowledge-accounting", 0)); err != nil {
 		return err
 	}
-	if err := f.mixedAccounting("acknowledged-fallback-remains-fenced", 4, false); err != nil {
+	if err := f.mixedAccounting("acknowledged-fallback-remains-fenced", 4, false, 200); err != nil {
 		return err
 	}
 	if err := f.mixedObserve("recovered-mixed", live); err != nil {

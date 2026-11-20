@@ -38,3 +38,41 @@ func TestMixedCommandUsesExactChildIdentity(t *testing.T) {
 		t.Fatalf("wrong child command: %+v", got)
 	}
 }
+
+func TestMixedAccountingRequiresExactPhaseDeltas(t *testing.T) {
+	for _, phase := range []struct {
+		name   string
+		want   uint64
+		outage bool
+	}{
+		{"same-owner-unbound", 100, false},
+		{"inherited-unbound", 200, true},
+		{"unreconciled-fallback-after-one-move", 200, true},
+		{"acknowledged-fallback-remains-fenced", 200, false},
+	} {
+		t.Run(phase.name, func(t *testing.T) {
+			wantOutage := uint64(0)
+			if phase.outage {
+				wantOutage = phase.want
+			}
+			if err := checkMixedAccounting(phase.want, wantOutage, phase.want, phase.outage); err != nil {
+				t.Fatal(err)
+			}
+			for _, denied := range []uint64{0, phase.want / 2, phase.want - 1, phase.want + 1} {
+				outage := uint64(0)
+				if phase.outage {
+					outage = denied
+				}
+				if err := checkMixedAccounting(denied, outage, phase.want, phase.outage); err == nil {
+					t.Fatalf("accepted denied=%d outage=%d wantDenied=%d", denied, outage, phase.want)
+				}
+			}
+			if err := checkMixedAccounting(phase.want, wantOutage+1, phase.want, phase.outage); err == nil {
+				t.Fatal("accepted excess outage count")
+			}
+			if phase.outage && checkMixedAccounting(phase.want, wantOutage-1, phase.want, true) == nil {
+				t.Fatal("accepted missing outage count")
+			}
+		})
+	}
+}

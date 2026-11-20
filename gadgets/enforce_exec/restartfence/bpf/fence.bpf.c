@@ -203,8 +203,13 @@ static __always_inline struct fence_totals *infra_counts(void)
 static __always_inline long lookup_fault(void)
 {
 	struct fence_totals *counts = infra_counts();
-	if (counts)
-		__sync_fetch_and_add(&counts->denied, 1);
+	if (counts) {
+		/* There is no trusted classification or epoch. Record loss in
+		 * both views, without attributing a normal or outage denial.
+		 */
+		__sync_fetch_and_add(&counts->lost, 1);
+		__sync_fetch_and_add(&counts->outage_lost, 1);
+	}
 	return -EPERM;
 }
 

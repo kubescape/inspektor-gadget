@@ -5,7 +5,7 @@
 import json
 import unittest
 
-from validate_results import validate_mixed
+from validate_results import validate_mixed, verify_transition_coverage
 
 
 class InMemoryEvidence:
@@ -68,9 +68,22 @@ def mixed_evidence():
 
     inject_at = None
     for phase, (name, modes) in enumerate(phases):
-        if phase == 2:
-            inject_at = len(rows[0])
-            append_batch([0, 0, 3, 3, 1, 3], 200)
+        if phase in (2, 5, 6):
+            t = (2, 5, 6).index(phase)
+            start_idx = len(rows[0]) - 1
+            if t == 0:
+                inject_at = start_idx + 1
+            append_batch([0, 0, 3, 3, 1, 3], 400)
+            end_idx = len(rows[0]) - 1
+            action_start = rows[0][start_idx + 2]["start_ns"]
+            action_end = rows[0][end_idx - 1]["end_ns"]
+            events.append(dict(event="transition-start", value=action_start))
+            for i in range(6):
+                events.append(dict(event="transition-coverage", value=dict(
+                    transition=t, probe=i, start_index=start_idx, end_index=end_idx,
+                    first_ns=rows[i][1 + start_idx]["start_ns"], action_start_ns=action_start,
+                    action_end_ns=action_end, last_ns=rows[i][end_idx]["end_ns"], samples=400)))
+            events.append(dict(event="transition-end", value=action_end))
         start = len(rows[0]) - 1
         boundary_probe = {7: 0, 8: 1, 9: 4}.get(phase)
         if boundary_probe is not None:
@@ -81,22 +94,6 @@ def mixed_evidence():
                            value=dict(name=name, policies=modes, starts=[start] * 6,
                                       ends=[start + 200] * 6)))
 
-    # Add three 400-sample transition intervals matching the raw probe streams.
-    for t in range(3):
-        start_idx = len(rows[0]) - 1
-        append_batch([0, 0, 3, 3, 1, 3], 400)
-        end_idx = len(rows[0]) - 1
-        action_start = rows[0][1 + start_idx]["start_ns"] + 1
-        action_end = rows[0][end_idx]["end_ns"] - 1
-        events.append(dict(event="transition-start", value=action_start))
-        events.append(dict(event="transition-end", value=action_end))
-        for i in range(6):
-            first_ns = rows[i][1 + start_idx]["start_ns"]
-            last_ns = rows[i][end_idx]["end_ns"]
-            events.append(dict(event="transition-coverage", value=dict(
-                transition=t, probe=i, start_index=start_idx, end_index=end_idx,
-                first_ns=first_ns, action_start_ns=action_start,
-                action_end_ns=action_end, last_ns=last_ns, samples=400)))
     events.append(dict(event="mixed-withdrawal-attested"))
     return InMemoryEvidence(streams), events, rows, inject_at
 
@@ -132,6 +129,16 @@ class MixedEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "missing mixed accounting proof"):
             validate_mixed(root, events)
 
+    def test_incorrect_phase_counter_deltas_are_flagged(self):
+        for phase, increment, outage in ((0, 200, 0), (1, 100, 100), (2, 100, 100),
+                                         (3, 100, 0), (3, 201, 0), (3, 200, 1)):
+            with self.subTest(phase=phase, increment=increment, outage=outage):
+                root, events, _, _ = mixed_evidence()
+                accounting = [e["value"] for e in events if e["event"] == "mixed-accounting"][phase]
+                accounting["after"] = dict(Denied=412 + increment, OutageDenied=251 + outage)
+                with self.assertRaisesRegex(AssertionError, "incorrect counter deltas"):
+                    validate_mixed(root, events)
+
     def test_probe4_allowed_success_before_off_is_flagged(self):
         root, events, rows, index = mixed_evidence()
         allowed_row = rows[4][index + 1]
@@ -143,7 +150,7 @@ class MixedEvidenceTest(unittest.TestCase):
     def test_duplicate_or_mismatched_transition_coverage_is_flagged(self):
         root, events, _, _ = mixed_evidence()
         covers = [e for e in events if e["event"] == "transition-coverage"]
-        covers[-1]["value"] = dict(covers[0]["value"])
+        covers[1]["value"] = dict(covers[0]["value"])
         with self.assertRaisesRegex(AssertionError, "duplicate coverage"):
             validate_mixed(root, events)
         root, events, _, _ = mixed_evidence()
@@ -156,6 +163,44 @@ class MixedEvidenceTest(unittest.TestCase):
         cover["value"]["action_start_ns"] += 1
         with self.assertRaisesRegex(AssertionError, "coverage action_start_ns mismatch"):
             validate_mixed(root, events)
+
+    def test_transition_outside_named_lifecycle_pair_is_flagged(self):
+        root, events, _, _ = mixed_evidence()
+        bounds = [e for e in events if e["event"].startswith("transition-")]
+        other = [e for e in events if not e["event"].startswith("transition-")]
+        with self.assertRaisesRegex(AssertionError, "outside its mixed lifecycle phases"):
+            validate_mixed(root, other + bounds)
+        phase = next(e for e in events if e["event"] == "mixed-phase"
+                     and e["value"]["name"] == "owner-down")
+        phase["monotonic_ns"] = next(e["value"] for e in events if e["event"] == "transition-start")
+        with self.assertRaisesRegex(AssertionError, "outside its mixed lifecycle phases"):
+            validate_mixed(root, events)
+
+    def test_mixed_transition_cannot_borrow_another_phases_stream_slice(self):
+        root, events, rows, _ = mixed_evidence()
+        cover = next(e["value"] for e in events if e["event"] == "transition-coverage")
+        cover["start_index"] -= 1
+        cover["first_ns"] = rows[cover["probe"]][cover["start_index"] + 1]["start_ns"]
+        cover["samples"] += 1
+        with self.assertRaisesRegex(AssertionError, "observations outside their mixed lifecycle phases"):
+            validate_mixed(root, events)
+
+    def test_one_nonoverlapping_probe_invalidates_transition_evidence(self):
+        rows = [[dict(start_ns=10 * i, end_ns=10 * i + 1) for i in range(1, 401)] for _ in range(2)]
+        start, end = 1001, 1010
+        rows[0][100]["start_ns"] = 1009  # Only this probe overlaps: probe 1 merely touches both ends.
+        covers = [dict(event="transition-coverage", value=dict(
+            transition=0, probe=i, start_index=0, end_index=400, first_ns=10, last_ns=4001,
+            action_start_ns=start, action_end_ns=end, samples=400)) for i in range(2)]
+        events = [dict(event="transition-start", value=start), *covers,
+                  dict(event="transition-end", value=end)]
+        with self.assertRaisesRegex(AssertionError, "no raw observation overlaps transition 0 for probe 1"):
+            verify_transition_coverage(events, rows, 1, range(2))
+        rows[1][100].update(start_ns=1009, end_ns=1009)
+        with self.assertRaisesRegex(AssertionError, "no raw observation overlaps"):
+            verify_transition_coverage(events, rows, 1, range(2))
+        rows[1][100]["end_ns"] = 1011
+        self.assertEqual(verify_transition_coverage(events, rows, 1, range(2)), 2)
 
 
 if __name__ == "__main__":

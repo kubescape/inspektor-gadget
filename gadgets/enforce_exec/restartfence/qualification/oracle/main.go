@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -258,11 +259,13 @@ func (f *fixture) transition(action func() error) error {
 	type observed struct {
 		probe, pod, startIndex, endIndex, first, last, count uint64
 		err                                                  error
+		overlap                                              transitionObservation
 	}
 	ready := make(chan struct{}, len(f.pods))
 	stop := make(chan struct{})
 	results := make(chan observed, len(f.pods))
 	var wg sync.WaitGroup
+	var actionStart atomic.Uint64
 	for i, p := range f.pods {
 		if p.probe == nil {
 			continue
@@ -279,8 +282,9 @@ func (f *fixture) transition(action func() error) error {
 			before := p.probe.observed
 			result := observed{probe: uint64(probeIndex), pod: p.id, startIndex: before}
 			first := func() error { result.first = p.probe.lastStart; ready <- struct{}{}; return nil }
+			observe := func(r observation) { result.overlap.observe(r, actionStart.Load()) }
 			for {
-				if e := p.probe.batch(100, policy, first); e != nil {
+				if e := p.probe.batchObserved(100, policy, first, observe); e != nil {
 					result.err = e
 					break
 				}
@@ -289,7 +293,7 @@ func (f *fixture) transition(action func() error) error {
 				case <-stop:
 					// A fresh complete batch is guaranteed to begin after the
 					// lifecycle action ends, so post-transition coverage is real.
-					result.err = p.probe.batch(100, policy, nil)
+					result.err = p.probe.batchObserved(100, policy, nil, observe)
 					result.last = p.probe.lastEnd
 					result.endIndex = p.probe.observed
 					result.count = p.probe.observed - before
@@ -324,16 +328,19 @@ func (f *fixture) transition(action func() error) error {
 		}
 	}
 	start := monotonicNS()
-	eventErr := f.event("transition-start", start)
+	actionStart.Store(start)
 	err := action()
 	end := monotonicNS()
 	close(stop)
+	// Log after measuring so JSON/file I/O cannot make an unrelated probe
+	// appear to overlap the action. The event value is the measured bound.
+	eventErr := f.event("transition-start", start)
 	wg.Wait()
 	close(results)
 	for result := range results {
 		err = errors.Join(err, result.err)
-		if result.first >= start || result.last <= end || result.count < 400 {
-			err = errors.Join(err, fmt.Errorf("pod %d lacks proven transition coverage: first=%d start=%d end=%d last=%d count=%d", result.pod, result.first, start, end, result.last, result.count))
+		if result.first >= start || result.last <= end || result.count < 400 || !result.overlap.covers(start, end) {
+			err = errors.Join(err, fmt.Errorf("probe %d pod %d lacks proven transition coverage: first=%d start=%d end=%d last=%d count=%d", result.probe, result.pod, result.first, start, end, result.last, result.count))
 		}
 		err = errors.Join(err, f.event("transition-coverage", map[string]uint64{
 			"transition":      transitionID,
