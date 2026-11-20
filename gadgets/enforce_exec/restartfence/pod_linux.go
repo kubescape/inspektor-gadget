@@ -433,12 +433,20 @@ func publishPod(p *pinnedFence, id uint64, previous, row *podRow) (PodRef, error
 	return row.ref(id), nil
 }
 
-func rejectNestedExisting(row *podRow, podMount int, ancestors map[uint64]struct{}, memberPaths map[uint64]string) error {
-	retained := make(map[uint64]struct{})
+func rejectNestedExisting(row *podRow, ancestors map[uint64]struct{}) error {
 	for _, child := range row.Children[:row.ChildCount] {
 		if _, nested := ancestors[child.CgroupID]; nested {
 			return fmt.Errorf("nested container cgroup under listed child %d is not allowed", child.CgroupID)
 		}
+	}
+	return nil
+}
+
+func rejectAncestorOfRetained(row *podRow, podMount int, memberPaths map[uint64]string) error {
+	retained := make(map[uint64]struct{})
+	existing := make(map[uint64]struct{}, row.ChildCount)
+	for _, child := range row.Children[:row.ChildCount] {
+		existing[child.CgroupID] = struct{}{}
 		if _, listed := memberPaths[child.CgroupID]; !listed {
 			retained[child.CgroupID] = struct{}{}
 		}
@@ -447,6 +455,9 @@ func rejectNestedExisting(row *podRow, podMount int, ancestors map[uint64]struct
 		return nil
 	}
 	for id, memberPath := range memberPaths {
+		if _, alreadyListed := existing[id]; alreadyListed {
+			continue
+		}
 		if err := filepath.WalkDir(memberPath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -499,6 +510,26 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 	if err != nil {
 		return PodRef{}, err
 	}
+	if expectedRevision != 0 {
+		var snapshot podRow
+		var exists bool
+		if err := f.locked(func(p *pinnedFence) error {
+			var lookupErr error
+			snapshot, exists, lookupErr = podLookup(p, id)
+			return lookupErr
+		}); err != nil {
+			return PodRef{}, err
+		}
+		if snapshot.Revision != expectedRevision || (exists && snapshot.UIDHash != uidHash) {
+			return PodRef{}, ErrStalePod
+		}
+		if err := rejectNestedExisting(&snapshot, ancestors); err != nil {
+			return PodRef{}, err
+		}
+		if err := rejectAncestorOfRetained(&snapshot, mount, memberPaths); err != nil {
+			return PodRef{}, err
+		}
+	}
 	var result PodRef
 	err = f.ownerAction(func(p *pinnedFence) error {
 		old, exists, err := podLookup(p, id)
@@ -508,7 +539,7 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 		if old.Revision != expectedRevision || (exists && old.UIDHash != uidHash) {
 			return ErrStalePod
 		}
-		if err := rejectNestedExisting(&old, mount, ancestors, memberPaths); err != nil {
+		if err := rejectNestedExisting(&old, ancestors); err != nil {
 			return err
 		}
 		next := old

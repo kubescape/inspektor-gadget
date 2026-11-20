@@ -218,10 +218,10 @@ func TestCensusAuditToStrictStrengthening(t *testing.T) {
 func TestRejectNestedExisting(t *testing.T) {
 	row := podRow{ChildCount: 1}
 	row.Children[0] = testPodChild(t, 10, Audit)
-	if err := rejectNestedExisting(&row, 1, map[uint64]struct{}{10: {}}, nil); err == nil {
+	if err := rejectNestedExisting(&row, map[uint64]struct{}{10: {}}); err == nil {
 		t.Fatal("accepted nested child under existing listed child")
 	}
-	if err := rejectNestedExisting(&row, 1, map[uint64]struct{}{99: {}}, nil); err != nil {
+	if err := rejectNestedExisting(&row, map[uint64]struct{}{99: {}}); err != nil {
 		t.Fatalf("rejected disjoint ancestor: %v", err)
 	}
 }
