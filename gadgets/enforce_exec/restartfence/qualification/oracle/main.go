@@ -513,15 +513,23 @@ func (f *fixture) checkOutageTotals(before fence.Snapshot) error {
 			return fmt.Errorf("missing pod counters %d", p.id)
 		}
 		prev := before.PerCgroup[p.id]
-		if totals.Audit < prev.Audit || totals.Denied < prev.Denied || totals.Lost < prev.Lost {
+		if totals.Audit < prev.Audit || totals.Denied < prev.Denied || totals.Lost < prev.Lost ||
+			totals.OutageAudit < prev.OutageAudit || totals.OutageDenied < prev.OutageDenied || totals.OutageLost < prev.OutageLost {
 			return fmt.Errorf("outage counters regressed for %d", p.id)
 		}
-		delta := fence.Totals{Denied: totals.Denied - prev.Denied, Audit: totals.Audit - prev.Audit, Lost: totals.Lost - prev.Lost}
+		delta := fence.Totals{
+			Denied:       totals.Denied - prev.Denied,
+			Audit:        totals.Audit - prev.Audit,
+			Lost:         totals.Lost - prev.Lost,
+			OutageDenied: totals.OutageDenied - prev.OutageDenied,
+			OutageAudit:  totals.OutageAudit - prev.OutageAudit,
+			OutageLost:   totals.OutageLost - prev.OutageLost,
+		}
 		if p.mode == 1 || p.mode == 3 {
-			if delta.Audit < 200 || delta.Denied != 0 {
+			if delta.Audit < 200 || delta.Denied != 0 || delta.OutageAudit != delta.Audit || delta.OutageDenied != 0 {
 				return fmt.Errorf("invalid Audit outage counters: %+v", totals)
 			}
-		} else if delta.Denied < 100 || delta.Audit != 0 {
+		} else if delta.Denied < 100 || delta.Audit != 0 || delta.OutageDenied != delta.Denied || delta.OutageAudit != 0 {
 			return fmt.Errorf("invalid Strict outage counters: %+v", totals)
 		}
 	}

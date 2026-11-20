@@ -86,13 +86,17 @@ def mixed_evidence():
         start_idx = len(rows[0]) - 1
         append_batch([0, 0, 3, 3, 1, 3], 400)
         end_idx = len(rows[0]) - 1
+        action_start = rows[0][1 + start_idx]["start_ns"] + 1
+        action_end = rows[0][end_idx]["end_ns"] - 1
+        events.append(dict(event="transition-start", value=action_start))
+        events.append(dict(event="transition-end", value=action_end))
         for i in range(6):
             first_ns = rows[i][1 + start_idx]["start_ns"]
             last_ns = rows[i][end_idx]["end_ns"]
             events.append(dict(event="transition-coverage", value=dict(
                 transition=t, probe=i, start_index=start_idx, end_index=end_idx,
-                first_ns=first_ns, action_start_ns=first_ns + 1,
-                action_end_ns=last_ns - 1, last_ns=last_ns, samples=400)))
+                first_ns=first_ns, action_start_ns=action_start,
+                action_end_ns=action_end, last_ns=last_ns, samples=400)))
     events.append(dict(event="mixed-withdrawal-attested"))
     return InMemoryEvidence(streams), events, rows, inject_at
 
@@ -146,6 +150,11 @@ class MixedEvidenceTest(unittest.TestCase):
         cover = next(e for e in events if e["event"] == "transition-coverage")
         cover["value"]["first_ns"] -= 1
         with self.assertRaisesRegex(AssertionError, "coverage start_ns mismatch"):
+            validate_mixed(root, events)
+        root, events, _, _ = mixed_evidence()
+        cover = next(e for e in events if e["event"] == "transition-coverage")
+        cover["value"]["action_start_ns"] += 1
+        with self.assertRaisesRegex(AssertionError, "coverage action_start_ns mismatch"):
             validate_mixed(root, events)
 
 

@@ -23,7 +23,11 @@ KILLS = {
 }
 
 
-def verify_transition_coverage(covers, probe_rows, expected_transitions, expected_probes):
+def verify_transition_coverage(events, probe_rows, expected_transitions, expected_probes):
+    starts = [e["value"] for e in events if e["event"] == "transition-start"]
+    ends = [e["value"] for e in events if e["event"] == "transition-end"]
+    assert len(starts) == len(ends) == expected_transitions, "missing transition lifecycle bounds"
+    covers = [e["value"] for e in events if e["event"] == "transition-coverage"]
     expected_keys = {(t, p) for t in range(expected_transitions) for p in expected_probes}
     assert len(covers) == len(expected_keys), "missing or extra transition coverage"
     seen = set()
@@ -31,14 +35,18 @@ def verify_transition_coverage(covers, probe_rows, expected_transitions, expecte
         key = (c["transition"], c["probe"])
         assert key in expected_keys and key not in seen, f"unexpected or duplicate coverage {key}"
         seen.add(key)
+        t = c["transition"]
         rows = probe_rows[c["probe"]]
         start_idx, end_idx = c["start_index"], c["end_index"]
         assert 0 <= start_idx < end_idx <= len(rows), "coverage index out of range"
         assert end_idx - start_idx == c["samples"] >= 400, "insufficient transition observations"
         assert rows[start_idx]["start_ns"] == c["first_ns"], "coverage start_ns mismatch"
         assert rows[end_idx - 1]["end_ns"] == c["last_ns"], "coverage last_ns mismatch"
+        assert c["action_start_ns"] == starts[t], "coverage action_start_ns mismatch"
+        assert c["action_end_ns"] == ends[t], "coverage action_end_ns mismatch"
         assert c["first_ns"] < c["action_start_ns"] <= c["action_end_ns"] < c["last_ns"], "no observed overlap"
     assert seen == expected_keys, "missing transition coverage"
+    return len(covers)
 
 
 def validate_mixed(root, events):
@@ -63,8 +71,7 @@ def validate_mixed(root, events):
         raw = [json.loads(line) for line in (root / f"probe-{i}.jsonl").read_text().splitlines()]
         assert raw[0]["ready_pid"] > 0
         probe_rows.append(raw[1:])
-    covers = [e["value"] for e in events if e["event"] == "transition-coverage"]
-    verify_transition_coverage(covers, probe_rows, 3, range(6))
+    verify_transition_coverage(events, probe_rows, 3, range(6))
     incarnations = [e["value"]["incarnation"] for e in events if e["event"] == "owner-start"]
     assert len(incarnations) == 2 and 0 < incarnations[0] < incarnations[1], "missing successor proof"
     accounting = [e["value"] for e in events if e["event"] == "mixed-accounting"]
@@ -166,9 +173,7 @@ def validate(root, variant):
             assert rows[0]["ready_pid"] > 0, "probe never ready"
             assert len(rows) >= 601, "insufficient observations"
             probe_rows.append(rows[1:])
-        covers = [e["value"] for e in events if e["event"] == "transition-coverage"]
-        verify_transition_coverage(covers, probe_rows, 2 if case == "partial-move" else 1, range(4))
-        coverage += len(covers)
+        coverage += verify_transition_coverage(events, probe_rows, 2 if case == "partial-move" else 1, range(4))
         assert sum(e["event"] == "outage-counters-attested" for e in events) == 1, "counter assertion absent"
         for index, rows in enumerate(probe_rows):
             for row in rows:

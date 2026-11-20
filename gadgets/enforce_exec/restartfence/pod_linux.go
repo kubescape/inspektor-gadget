@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -251,58 +252,49 @@ func ancestorCgroupIDs(podPath, childPath string, podMount int, out map[uint64]s
 	return nil
 }
 
-func publishableMembers(podID uint64, podMount int, podPath string, members []PodMember) ([]podChild, map[uint64]struct{}, error) {
+func publishableMembers(podID uint64, podMount int, podPath string, members []PodMember) ([]podChild, map[uint64]struct{}, map[uint64]string, error) {
 	if len(members) > MaxPodMembers {
-		return nil, nil, fmt.Errorf("exec fence pod census exceeds %d members", MaxPodMembers)
+		return nil, nil, nil, fmt.Errorf("exec fence pod census exceeds %d members", MaxPodMembers)
 	}
-	type memberEntry struct {
-		row  podChild
-		path string
-	}
-	entries := make([]memberEntry, 0, len(members))
+	rows := make([]podChild, 0, len(members))
 	ancestors := make(map[uint64]struct{})
+	memberPaths := make(map[uint64]string, len(members))
 	for _, member := range members {
 		id, mount, err := hostCgroupID(member.Cgroup)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if id == podID || mount != podMount {
-			return nil, nil, fmt.Errorf("container %d is not in the pod's host cgroup mount", id)
+			return nil, nil, nil, fmt.Errorf("container %d is not in the pod's host cgroup mount", id)
 		}
 		path, err := cgroupFDPath(member.Cgroup)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		rel, err := filepath.Rel(podPath, path)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-			return nil, nil, fmt.Errorf("container %d is not inside the pod cgroup", id)
+			return nil, nil, nil, fmt.Errorf("container %d is not inside the pod cgroup", id)
 		}
 		if err := ancestorCgroupIDs(podPath, path, podMount, ancestors); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		row, err := newPodChild(id, member.Identity, member.Mode)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		entries = append(entries, memberEntry{row: row, path: path})
-	}
-	slices.SortFunc(entries, func(a, b memberEntry) int { return cmp.Compare(a.path, b.path) })
-	for i := 1; i < len(entries); i++ {
-		if entries[i-1].path == entries[i].path || strings.HasPrefix(entries[i].path, entries[i-1].path+"/") {
-			return nil, nil, fmt.Errorf("nested container cgroup %q under %q is not allowed", entries[i].path, entries[i-1].path)
+		if _, dup := memberPaths[id]; dup {
+			return nil, nil, nil, fmt.Errorf("duplicate container cgroup ID %d", id)
 		}
+		memberPaths[id] = path
+		rows = append(rows, row)
 	}
-	rows := make([]podChild, len(entries))
-	for i, e := range entries {
-		rows[i] = e.row
+	for _, row := range rows {
+		if _, nested := ancestors[row.CgroupID]; nested {
+			return nil, nil, nil, fmt.Errorf("nested container cgroup %d is not allowed", row.CgroupID)
+		}
 	}
 	slices.SortFunc(rows, func(a, b podChild) int { return cmp.Compare(a.CgroupID, b.CgroupID) })
-	for i := 1; i < len(rows); i++ {
-		if rows[i-1].CgroupID == rows[i].CgroupID {
-			return nil, nil, fmt.Errorf("duplicate container cgroup ID %d", rows[i].CgroupID)
-		}
-	}
-	return rows, ancestors, nil
+	return rows, ancestors, memberPaths, nil
 }
 
 func podLookup(p *pinnedFence, id uint64) (podRow, bool, error) {
@@ -441,10 +433,45 @@ func publishPod(p *pinnedFence, id uint64, previous, row *podRow) (PodRef, error
 	return row.ref(id), nil
 }
 
-func rejectNestedExisting(row *podRow, ancestors map[uint64]struct{}) error {
+func rejectNestedExisting(row *podRow, podMount int, ancestors map[uint64]struct{}, memberPaths map[uint64]string) error {
+	retained := make(map[uint64]struct{})
 	for _, child := range row.Children[:row.ChildCount] {
 		if _, nested := ancestors[child.CgroupID]; nested {
 			return fmt.Errorf("nested container cgroup under listed child %d is not allowed", child.CgroupID)
+		}
+		if _, listed := memberPaths[child.CgroupID]; !listed {
+			retained[child.CgroupID] = struct{}{}
+		}
+	}
+	if len(retained) == 0 {
+		return nil
+	}
+	for id, memberPath := range memberPaths {
+		if err := filepath.WalkDir(memberPath, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() || path == memberPath {
+				return nil
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			subID, mount, idErr := hostCgroupID(f)
+			closeErr := f.Close()
+			if err := errors.Join(idErr, closeErr); err != nil {
+				return err
+			}
+			if mount != podMount {
+				return fmt.Errorf("descendant cgroup %d is not in the pod's host cgroup mount", subID)
+			}
+			if _, conflict := retained[subID]; conflict {
+				return fmt.Errorf("container cgroup %d is an ancestor of retained child %d", id, subID)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -468,7 +495,7 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 	if err != nil {
 		return PodRef{}, err
 	}
-	rows, ancestors, err := publishableMembers(id, mount, path, members)
+	rows, ancestors, memberPaths, err := publishableMembers(id, mount, path, members)
 	if err != nil {
 		return PodRef{}, err
 	}
@@ -481,7 +508,7 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 		if old.Revision != expectedRevision || (exists && old.UIDHash != uidHash) {
 			return ErrStalePod
 		}
-		if err := rejectNestedExisting(&old, ancestors); err != nil {
+		if err := rejectNestedExisting(&old, mount, ancestors, memberPaths); err != nil {
 			return err
 		}
 		next := old
