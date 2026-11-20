@@ -81,9 +81,18 @@ def mixed_evidence():
                            value=dict(name=name, policies=modes, starts=[start] * 6,
                                       ends=[start + 200] * 6)))
 
-    for _ in range(18):
-        events.append(dict(event="transition-coverage", value=dict(
-            first_ns=1, action_start_ns=2, action_end_ns=3, last_ns=4, samples=400)))
+    # Add three 400-sample transition intervals matching the raw probe streams.
+    for t in range(3):
+        start_idx = len(rows[0]) - 1
+        append_batch([0, 0, 3, 3, 1, 3], 400)
+        end_idx = len(rows[0]) - 1
+        for i in range(6):
+            first_ns = rows[i][1 + start_idx]["start_ns"]
+            last_ns = rows[i][end_idx]["end_ns"]
+            events.append(dict(event="transition-coverage", value=dict(
+                transition=t, probe=i, start_index=start_idx, end_index=end_idx,
+                first_ns=first_ns, action_start_ns=first_ns + 1,
+                action_end_ns=last_ns - 1, last_ns=last_ns, samples=400)))
     events.append(dict(event="mixed-withdrawal-attested"))
     return InMemoryEvidence(streams), events, rows, inject_at
 
@@ -117,6 +126,26 @@ class MixedEvidenceTest(unittest.TestCase):
         root, events, _, _ = mixed_evidence()
         events = [e for e in events if e["event"] != "mixed-accounting"]
         with self.assertRaisesRegex(AssertionError, "missing mixed accounting proof"):
+            validate_mixed(root, events)
+
+    def test_probe4_allowed_success_before_off_is_flagged(self):
+        root, events, rows, index = mixed_evidence()
+        allowed_row = rows[4][index + 1]
+        self.assertEqual(allowed_row["target"], "allowed")
+        allowed_row.update(errno=0, exit=0)
+        with self.assertRaisesRegex(AssertionError, "before authorized Off"):
+            validate_mixed(root, events)
+
+    def test_duplicate_or_mismatched_transition_coverage_is_flagged(self):
+        root, events, _, _ = mixed_evidence()
+        covers = [e for e in events if e["event"] == "transition-coverage"]
+        covers[-1]["value"] = dict(covers[0]["value"])
+        with self.assertRaisesRegex(AssertionError, "duplicate coverage"):
+            validate_mixed(root, events)
+        root, events, _, _ = mixed_evidence()
+        cover = next(e for e in events if e["event"] == "transition-coverage")
+        cover["value"]["first_ns"] -= 1
+        with self.assertRaisesRegex(AssertionError, "coverage start_ns mismatch"):
             validate_mixed(root, events)
 
 

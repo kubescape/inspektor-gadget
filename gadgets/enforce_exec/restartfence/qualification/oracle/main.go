@@ -140,6 +140,7 @@ type fixture struct {
 	owner                                    *ownerProcess
 	pods                                     []pod
 	sequence                                 int
+	transitions                              uint64
 	events                                   *os.File
 }
 
@@ -250,27 +251,29 @@ func monotonicNS() uint64 {
 // Keep draining every probe while the lifecycle action runs. There is no
 // callback barrier or full pipe that can pause the workload during teardown.
 func (f *fixture) transition(action func() error) error {
+	transitionID := f.transitions
+	f.transitions++
 	type observed struct {
-		pod, first, last, count uint64
-		err                     error
+		probe, pod, startIndex, endIndex, first, last, count uint64
+		err                                                  error
 	}
 	ready := make(chan struct{}, len(f.pods))
 	stop := make(chan struct{})
 	results := make(chan observed, len(f.pods))
 	var wg sync.WaitGroup
-	for _, p := range f.pods {
+	for i, p := range f.pods {
 		if p.probe == nil {
 			continue
 		}
 		wg.Add(1)
-		go func(p pod) {
+		go func(probeIndex int, p pod) {
 			defer wg.Done()
 			policy := transitionStrict
 			if p.mode == 1 || p.mode == 3 {
 				policy = allowAll
 			}
 			before := p.probe.observed
-			result := observed{pod: p.id}
+			result := observed{probe: uint64(probeIndex), pod: p.id, startIndex: before}
 			first := func() error { result.first = p.probe.lastStart; ready <- struct{}{}; return nil }
 			for {
 				if e := p.probe.batch(100, policy, first); e != nil {
@@ -284,6 +287,7 @@ func (f *fixture) transition(action func() error) error {
 					// lifecycle action ends, so post-transition coverage is real.
 					result.err = p.probe.batch(100, policy, nil)
 					result.last = p.probe.lastEnd
+					result.endIndex = p.probe.observed
 					result.count = p.probe.observed - before
 					results <- result
 					return
@@ -291,9 +295,10 @@ func (f *fixture) transition(action func() error) error {
 				}
 			}
 			result.last = p.probe.lastEnd
+			result.endIndex = p.probe.observed
 			result.count = p.probe.observed - before
 			results <- result
-		}(p)
+		}(i, p)
 	}
 	for _, p := range f.pods {
 		if p.probe == nil {
@@ -326,7 +331,18 @@ func (f *fixture) transition(action func() error) error {
 		if result.first >= start || result.last <= end || result.count < 400 {
 			err = errors.Join(err, fmt.Errorf("pod %d lacks proven transition coverage: first=%d start=%d end=%d last=%d count=%d", result.pod, result.first, start, end, result.last, result.count))
 		}
-		err = errors.Join(err, f.event("transition-coverage", map[string]uint64{"pod": result.pod, "first_ns": result.first, "last_ns": result.last, "samples": result.count, "action_start_ns": start, "action_end_ns": end}))
+		err = errors.Join(err, f.event("transition-coverage", map[string]uint64{
+			"transition":      transitionID,
+			"probe":           result.probe,
+			"pod":             result.pod,
+			"start_index":     result.startIndex,
+			"end_index":       result.endIndex,
+			"first_ns":        result.first,
+			"last_ns":         result.last,
+			"samples":         result.count,
+			"action_start_ns": start,
+			"action_end_ns":   end,
+		}))
 	}
 	return errors.Join(eventErr, err, f.event("transition-end", end))
 }

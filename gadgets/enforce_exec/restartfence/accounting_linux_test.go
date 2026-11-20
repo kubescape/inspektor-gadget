@@ -35,11 +35,15 @@ func TestAccountingCensusPreservesInheritedEpochs(t *testing.T) {
 	if err := mergeCensus(&row, []podChild{testPodChild(t, 10, Strict), testPodChild(t, 40, Audit)}, Strict, 4); err != nil {
 		t.Fatal(err)
 	}
-	if row.Children[0] != before.Children[0] || row.Children[3].AccountedIncarnation != 4 || row.FallbackAccountedIncarnation != 3 {
-		t.Fatal("new child acknowledged inherited fallback or sibling")
+	if row.Children[0] != before.Children[0] || row.Children[3].AccountedIncarnation != 3 || row.FallbackAccountedIncarnation != 3 {
+		t.Fatal("new child discovered after restart did not preserve inherited fallback provenance")
 	}
 	if err := verifyPodAccounting(&row, 4); err != nil {
 		t.Fatal(err)
+	}
+	// A newly discovered child remains in outage until explicitly moved/acknowledged.
+	if err := acknowledgePodAccounting(&row, 4); err == nil {
+		t.Fatal("unsettled newly discovered child allowed pod acknowledgment")
 	}
 }
 

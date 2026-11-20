@@ -183,6 +183,49 @@ func TestRemoveExitedOrphanCountersRechecksEachAttempt(t *testing.T) {
 	}
 }
 
+func TestCensusAuditToStrictStrengthening(t *testing.T) {
+	auditChild := testPodChild(t, 20, Audit)
+	auditChild.Owner, auditChild.Generation, auditChild.BoundSections = 3, 5, execSection
+	row := podRow{UIDHash: 2, Revision: 3, AuditSections: execSection, ChildCount: 1, FallbackAccountedIncarnation: 3}
+	row.Children[0] = auditChild
+
+	// Reject strengthening with Audit fallback.
+	next := row
+	if err := mergeCensus(&next, []podChild{testPodChild(t, 20, Strict)}, Audit, 4); err == nil || next != row {
+		t.Fatalf("strengthening allowed with Audit fallback: %v", err)
+	}
+	// Reject strengthening while handover is still bound.
+	next = row
+	if err := mergeCensus(&next, []podChild{testPodChild(t, 20, Strict)}, Strict, 4); err == nil || next != row {
+		t.Fatalf("strengthening allowed with bound handover: %v", err)
+	}
+	// Refence first, then strengthen with Strict fallback.
+	if err := refencePodChild(&row.Children[0]); err != nil {
+		t.Fatal(err)
+	}
+	next = row
+	if err := mergeCensus(&next, []podChild{testPodChild(t, 20, Strict)}, Strict, 4); err != nil {
+		t.Fatalf("strengthening with Strict fallback and cleared handover failed: %v", err)
+	}
+	if childMode(next.Children[0]) != Strict || next.Children[0].BoundSections != 0 || next.Children[0].AccountedIncarnation != 3 {
+		t.Fatalf("unexpected strengthened child state: %+v", next.Children[0])
+	}
+	if err := verifyPodRow(&next); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRejectNestedExisting(t *testing.T) {
+	row := podRow{ChildCount: 1}
+	row.Children[0] = testPodChild(t, 10, Audit)
+	if err := rejectNestedExisting(&row, map[uint64]struct{}{10: {}}); err == nil {
+		t.Fatal("accepted nested child under existing listed child")
+	}
+	if err := rejectNestedExisting(&row, map[uint64]struct{}{99: {}}); err != nil {
+		t.Fatalf("rejected disjoint ancestor: %v", err)
+	}
+}
+
 func TestRemoveExitedOrphanCountersRequiresOpenOwnerHandle(t *testing.T) {
 	f := &Fence{}
 	if err := f.RemoveExitedOrphanCounters(0); err == nil {

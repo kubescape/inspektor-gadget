@@ -224,16 +224,17 @@ static __always_inline void account(__u64 cgid, __u64 pod_uid_hash, __u32 mode,
 		if (unattributed) {
 			__sync_fetch_and_add(&totals->lost, 1);
 			__sync_fetch_and_add(&totals->outage_lost, 1);
-		}
-		if (mode == FENCE_AUDIT)
-			__sync_fetch_and_add(&totals->audit, 1);
-		else
-			__sync_fetch_and_add(&totals->denied, 1);
-		if (outage) {
+		} else {
 			if (mode == FENCE_AUDIT)
-				__sync_fetch_and_add(&totals->outage_audit, 1);
+				__sync_fetch_and_add(&totals->audit, 1);
 			else
-				__sync_fetch_and_add(&totals->outage_denied, 1);
+				__sync_fetch_and_add(&totals->denied, 1);
+			if (outage) {
+				if (mode == FENCE_AUDIT)
+					__sync_fetch_and_add(&totals->outage_audit, 1);
+				else
+					__sync_fetch_and_add(&totals->outage_denied, 1);
+			}
 		}
 	}
 

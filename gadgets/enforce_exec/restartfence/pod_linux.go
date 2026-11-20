@@ -232,40 +232,77 @@ func cgroupFDPath(f *os.File) (string, error) {
 	return path, nil
 }
 
-func publishableMembers(podID uint64, podMount int, podPath string, members []PodMember) ([]podChild, error) {
-	if len(members) > MaxPodMembers {
-		return nil, fmt.Errorf("exec fence pod census exceeds %d members", MaxPodMembers)
+func ancestorCgroupIDs(podPath, childPath string, podMount int, out map[uint64]struct{}) error {
+	for cur := filepath.Dir(childPath); cur != podPath; cur = filepath.Dir(cur) {
+		f, err := os.Open(cur)
+		if err != nil {
+			return err
+		}
+		id, mount, idErr := hostCgroupID(f)
+		closeErr := f.Close()
+		if err := errors.Join(idErr, closeErr); err != nil {
+			return err
+		}
+		if mount != podMount {
+			return fmt.Errorf("ancestor cgroup %d is not in the pod's host cgroup mount", id)
+		}
+		out[id] = struct{}{}
 	}
-	rows := make([]podChild, 0, len(members))
+	return nil
+}
+
+func publishableMembers(podID uint64, podMount int, podPath string, members []PodMember) ([]podChild, map[uint64]struct{}, error) {
+	if len(members) > MaxPodMembers {
+		return nil, nil, fmt.Errorf("exec fence pod census exceeds %d members", MaxPodMembers)
+	}
+	type memberEntry struct {
+		row  podChild
+		path string
+	}
+	entries := make([]memberEntry, 0, len(members))
+	ancestors := make(map[uint64]struct{})
 	for _, member := range members {
 		id, mount, err := hostCgroupID(member.Cgroup)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if id == podID || mount != podMount {
-			return nil, fmt.Errorf("container %d is not in the pod's host cgroup mount", id)
+			return nil, nil, fmt.Errorf("container %d is not in the pod's host cgroup mount", id)
 		}
 		path, err := cgroupFDPath(member.Cgroup)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		rel, err := filepath.Rel(podPath, path)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-			return nil, fmt.Errorf("container %d is not inside the pod cgroup", id)
+			return nil, nil, fmt.Errorf("container %d is not inside the pod cgroup", id)
+		}
+		if err := ancestorCgroupIDs(podPath, path, podMount, ancestors); err != nil {
+			return nil, nil, err
 		}
 		row, err := newPodChild(id, member.Identity, member.Mode)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		rows = append(rows, row)
+		entries = append(entries, memberEntry{row: row, path: path})
+	}
+	slices.SortFunc(entries, func(a, b memberEntry) int { return cmp.Compare(a.path, b.path) })
+	for i := 1; i < len(entries); i++ {
+		if entries[i-1].path == entries[i].path || strings.HasPrefix(entries[i].path, entries[i-1].path+"/") {
+			return nil, nil, fmt.Errorf("nested container cgroup %q under %q is not allowed", entries[i].path, entries[i-1].path)
+		}
+	}
+	rows := make([]podChild, len(entries))
+	for i, e := range entries {
+		rows[i] = e.row
 	}
 	slices.SortFunc(rows, func(a, b podChild) int { return cmp.Compare(a.CgroupID, b.CgroupID) })
 	for i := 1; i < len(rows); i++ {
 		if rows[i-1].CgroupID == rows[i].CgroupID {
-			return nil, fmt.Errorf("duplicate container cgroup ID %d", rows[i].CgroupID)
+			return nil, nil, fmt.Errorf("duplicate container cgroup ID %d", rows[i].CgroupID)
 		}
 	}
-	return rows, nil
+	return rows, ancestors, nil
 }
 
 func podLookup(p *pinnedFence, id uint64) (podRow, bool, error) {
@@ -305,17 +342,16 @@ func mergeCensus(row *podRow, added []podChild, fallback Mode, incarnation uint6
 	if !validAccountingIncarnation(incarnation) {
 		return fmt.Errorf("invalid census accounting incarnation")
 	}
-	// Added candidates are newly classified but not handed over. Existing rows
-	// win the merge and retain their own provenance.
-	added = slices.Clone(added)
-	for i := range added {
-		if childMode(added[i]) != Off {
-			added[i].AccountedIncarnation = incarnation
-		}
-	}
 	if fallback != Strict && fallback != Audit {
 		return fmt.Errorf("unsupported pod fallback mode %d", fallback)
 	}
+	fallbackEpoch := row.FallbackAccountedIncarnation
+	if row.Revision == 0 || row.Flags == podInactive {
+		fallbackEpoch = incarnation
+	}
+	// Added candidates are newly classified but not handed over. Existing rows
+	// win the merge and retain their own provenance.
+	added = slices.Clone(added)
 	old := row.Children[:row.ChildCount]
 	result := make([]podChild, 0, min(MaxPodMembers, len(old)+len(added)))
 	for len(old) != 0 || len(added) != 0 {
@@ -327,7 +363,11 @@ func mergeCensus(row *podRow, added []podChild, fallback Mode, incarnation uint6
 			result = append(result, old[0])
 			old = old[1:]
 		case len(old) == 0 || added[0].CgroupID < old[0].CgroupID:
-			result = append(result, added[0])
+			entry := added[0]
+			if childMode(entry) != Off {
+				entry.AccountedIncarnation = fallbackEpoch
+			}
+			result = append(result, entry)
 			added = added[1:]
 		default:
 			current, wanted := old[0], added[0]
@@ -335,10 +375,24 @@ func mergeCensus(row *podRow, added []podChild, fallback Mode, incarnation uint6
 				return ErrStalePod
 			}
 			if childMode(current) != childMode(wanted) {
-				if childMode(current) != Off {
+				switch {
+				case childMode(current) == Off:
+					if childMode(wanted) != Off {
+						wanted.AccountedIncarnation = incarnation
+					}
+					current = wanted
+				case childMode(current) == Audit && childMode(wanted) == Strict:
+					if fallback != Strict {
+						return fmt.Errorf("strengthening cgroup %d to Strict requires Strict fallback", current.CgroupID)
+					}
+					if current.BoundSections != 0 {
+						return fmt.Errorf("strengthening cgroup %d to Strict requires a refenced child", current.CgroupID)
+					}
+					wanted.AccountedIncarnation = current.AccountedIncarnation
+					current = wanted
+				default:
 					return fmt.Errorf("cgroup %d classification must retain last-good mode until explicit committed withdrawal", current.CgroupID)
 				}
-				current = wanted
 			}
 			result = append(result, current)
 			old, added = old[1:], added[1:]
@@ -387,10 +441,21 @@ func publishPod(p *pinnedFence, id uint64, previous, row *podRow) (PodRef, error
 	return row.ref(id), nil
 }
 
+func rejectNestedExisting(row *podRow, ancestors map[uint64]struct{}) error {
+	for _, child := range row.Children[:row.ChildCount] {
+		if _, nested := ancestors[child.CgroupID]; nested {
+			return fmt.Errorf("nested container cgroup under listed child %d is not allowed", child.CgroupID)
+		}
+	}
+	return nil
+}
+
 // PublishCensus establishes the pod mark and the known classifications in a
 // single hash update, without releasing any newly managed child. An Audit
 // fallback requires authoritative proof that no Strict child can be selected.
-// Omission is never withdrawal authority; previous rows are retained.
+// Omission is never withdrawal authority; previous rows are retained. Listed
+// container cgroups in a pod must be disjoint subtrees (no nested container
+// entries; only container-internal sub-cgroups may exist beneath a listed child).
 func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fallback Mode, members []PodMember) (PodRef, error) {
 	id, mount, err := hostCgroupID(pod)
 	if err != nil {
@@ -403,7 +468,7 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 	if err != nil {
 		return PodRef{}, err
 	}
-	rows, err := publishableMembers(id, mount, path, members)
+	rows, ancestors, err := publishableMembers(id, mount, path, members)
 	if err != nil {
 		return PodRef{}, err
 	}
@@ -415,6 +480,9 @@ func (f *Fence) PublishCensus(pod *os.File, uidHash, expectedRevision uint64, fa
 		}
 		if old.Revision != expectedRevision || (exists && old.UIDHash != uidHash) {
 			return ErrStalePod
+		}
+		if err := rejectNestedExisting(&old, ancestors); err != nil {
+			return err
 		}
 		next := old
 		next.UIDHash = uidHash
