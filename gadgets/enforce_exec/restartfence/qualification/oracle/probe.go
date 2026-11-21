@@ -41,7 +41,7 @@ func checkObservation(r observation, policy samplePolicy) error {
 	if r.Target != "denied" && r.Target != "allowed" {
 		return fmt.Errorf("unknown target %q", r.Target)
 	}
-	if r.End < r.Start || r.Start == 0 {
+	if r.End <= r.Start || r.Start == 0 {
 		return fmt.Errorf("invalid observation timestamps: %+v", r)
 	}
 	if r.Signal != 0 || (r.Errno == 0 && r.Exit != 0) || (r.Errno != 0 && r.Exit != 100) {
@@ -120,6 +120,10 @@ func startWorkload(ctx context.Context, helper, denied, allowed, childCG, logPat
 // batch requires exactly two ordered records for each sample. The first callback
 // runs only after evidence proves a probe has started. No blind startup sleeps.
 func (w *workload) batch(count int, policy samplePolicy, first func() error) error {
+	return w.batchObserved(count, policy, first, nil)
+}
+
+func (w *workload) batchObserved(count int, policy samplePolicy, first func() error, observe func(observation)) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.batchID++
@@ -146,10 +150,16 @@ func (w *workload) batch(count int, policy samplePolicy, first func() error) err
 		if r.Batch != w.batchID || r.Sample != uint64(i/2) || r.Target != target {
 			return fmt.Errorf("missing/reordered observation: %+v", r)
 		}
+		if r.Start < w.lastEnd && verdict == nil {
+			verdict = fmt.Errorf("out-of-order observation: %+v", r)
+		}
 		w.lastStart, w.lastEnd = r.Start, r.End
 		w.observed++
 		if err := checkObservation(r, policy); err != nil && verdict == nil {
 			verdict = err
+		}
+		if observe != nil {
+			observe(r)
 		}
 		if i == 0 && first != nil {
 			if err := first(); err != nil && verdict == nil {

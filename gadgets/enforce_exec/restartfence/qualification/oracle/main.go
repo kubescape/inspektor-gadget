@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -142,6 +143,7 @@ type fixture struct {
 	owner                                    *ownerProcess
 	pods                                     []pod
 	sequence                                 int
+	transitions                              uint64
 	events                                   *os.File
 }
 
@@ -211,6 +213,8 @@ func (f *fixture) expectLive(want uint64) error {
 	return nil
 }
 
+const stableSamples = 100
+
 func (f *fixture) stable(policies []samplePolicy) error {
 	var wg sync.WaitGroup
 	errs := make(chan error, len(f.pods))
@@ -219,7 +223,7 @@ func (f *fixture) stable(policies []samplePolicy) error {
 			continue
 		}
 		wg.Add(1)
-		go func(i int) { defer wg.Done(); errs <- f.pods[i].probe.batch(100, policies[i], nil) }(i)
+		go func(i int) { defer wg.Done(); errs <- f.pods[i].probe.batch(stableSamples, policies[i], nil) }(i)
 	}
 	wg.Wait()
 	close(errs)
@@ -234,7 +238,7 @@ func (f *fixture) policies(strict samplePolicy) []samplePolicy {
 	out := make([]samplePolicy, len(f.pods))
 	for i, p := range f.pods {
 		out[i] = strict
-		if p.mode == 1 {
+		if p.mode == 1 || p.mode == 3 {
 			out[i] = allowAll
 		}
 	}
@@ -252,30 +256,36 @@ func monotonicNS() uint64 {
 // Keep draining every probe while the lifecycle action runs. There is no
 // callback barrier or full pipe that can pause the workload during teardown.
 func (f *fixture) transition(action func() error) error {
+	return f.transitionWithPolicies(action, f.policies(transitionStrict))
+}
+
+func (f *fixture) transitionWithPolicies(action func() error, policies []samplePolicy) error {
+	transitionID := f.transitions
+	f.transitions++
 	type observed struct {
-		pod, first, last, count uint64
-		err                     error
+		probe, pod, startIndex, endIndex, first, last, count uint64
+		err                                                  error
+		contained                                            transitionObservation
 	}
 	ready := make(chan struct{}, len(f.pods))
 	stop := make(chan struct{})
 	results := make(chan observed, len(f.pods))
 	var wg sync.WaitGroup
-	for _, p := range f.pods {
+	var actionStart atomic.Uint64
+	for i, p := range f.pods {
 		if p.probe == nil {
 			continue
 		}
 		wg.Add(1)
-		go func(p pod) {
+		go func(probeIndex int, p pod) {
 			defer wg.Done()
-			policy := transitionStrict
-			if p.mode == 1 {
-				policy = allowAll
-			}
+			policy := policies[probeIndex]
 			before := p.probe.observed
-			result := observed{pod: p.id}
+			result := observed{probe: uint64(probeIndex), pod: p.id, startIndex: before}
 			first := func() error { result.first = p.probe.lastStart; ready <- struct{}{}; return nil }
+			observe := func(r observation) { result.contained.observe(r, actionStart.Load()) }
 			for {
-				if e := p.probe.batch(100, policy, first); e != nil {
+				if e := p.probe.batchObserved(100, policy, first, observe); e != nil {
 					result.err = e
 					break
 				}
@@ -284,8 +294,9 @@ func (f *fixture) transition(action func() error) error {
 				case <-stop:
 					// A fresh complete batch is guaranteed to begin after the
 					// lifecycle action ends, so post-transition coverage is real.
-					result.err = p.probe.batch(100, policy, nil)
+					result.err = p.probe.batchObserved(100, policy, nil, observe)
 					result.last = p.probe.lastEnd
+					result.endIndex = p.probe.observed
 					result.count = p.probe.observed - before
 					results <- result
 					return
@@ -293,9 +304,10 @@ func (f *fixture) transition(action func() error) error {
 				}
 			}
 			result.last = p.probe.lastEnd
+			result.endIndex = p.probe.observed
 			result.count = p.probe.observed - before
 			results <- result
-		}(p)
+		}(i, p)
 	}
 	for _, p := range f.pods {
 		if p.probe == nil {
@@ -317,18 +329,32 @@ func (f *fixture) transition(action func() error) error {
 		}
 	}
 	start := monotonicNS()
-	eventErr := f.event("transition-start", start)
+	actionStart.Store(start)
 	err := action()
 	end := monotonicNS()
 	close(stop)
+	// Log after measuring so JSON/file I/O cannot make an unrelated probe
+	// appear to fall within the action. The event value is the measured bound.
+	eventErr := f.event("transition-start", start)
 	wg.Wait()
 	close(results)
 	for result := range results {
 		err = errors.Join(err, result.err)
-		if result.first >= start || result.last <= end || result.count < 400 {
-			err = errors.Join(err, fmt.Errorf("pod %d lacks proven transition coverage: first=%d start=%d end=%d last=%d count=%d", result.pod, result.first, start, end, result.last, result.count))
+		if result.first >= start || result.last <= end || result.count < 400 || !result.contained.covers(start, end) {
+			err = errors.Join(err, fmt.Errorf("probe %d pod %d lacks proven transition coverage: first=%d start=%d end=%d last=%d count=%d", result.probe, result.pod, result.first, start, end, result.last, result.count))
 		}
-		err = errors.Join(err, f.event("transition-coverage", map[string]uint64{"pod": result.pod, "first_ns": result.first, "last_ns": result.last, "samples": result.count, "action_start_ns": start, "action_end_ns": end}))
+		err = errors.Join(err, f.event("transition-coverage", map[string]uint64{
+			"transition":      transitionID,
+			"probe":           result.probe,
+			"pod":             result.pod,
+			"start_index":     result.startIndex,
+			"end_index":       result.endIndex,
+			"first_ns":        result.first,
+			"last_ns":         result.last,
+			"samples":         result.count,
+			"action_start_ns": start,
+			"action_end_ns":   end,
+		}))
 	}
 	return errors.Join(eventErr, err, f.event("transition-end", end))
 }
@@ -355,7 +381,7 @@ func (f *fixture) cleanup() error {
 	if f.owner != nil {
 		err = errors.Join(err, f.owner.kill())
 	}
-	for i := range f.pods {
+	for i := len(f.pods) - 1; i >= 0; i-- {
 		p := &f.pods[i]
 		if p.probe != nil {
 			err = errors.Join(err, p.probe.close())
@@ -367,6 +393,8 @@ func (f *fixture) cleanup() error {
 		for j := len(p.ancestors) - 1; j >= 0; j-- {
 			err = errors.Join(err, os.Remove(p.ancestors[j]))
 		}
+	}
+	for _, p := range f.pods {
 		if _, e := os.Stat(p.root); e == nil {
 			err = errors.Join(err, os.Remove(p.root))
 		}
@@ -382,6 +410,15 @@ func (f *fixture) cleanup() error {
 	return errors.Join(err, f.events.Close())
 }
 
+func createFixtureCgroups(p pod, reuseRoot bool, mkdir func(string, os.FileMode) error) error {
+	if !reuseRoot {
+		if err := mkdir(p.root, 0o755); err != nil {
+			return err
+		}
+	}
+	return mkdir(p.child, 0o755)
+}
+
 func setup(ctx context.Context, name, out, work, object, backend, helper, mutant string) (*fixture, error) {
 	out = filepath.Join(out, name)
 	work = filepath.Join(work, name)
@@ -395,7 +432,8 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err != nil {
 		return nil, err
 	}
-	f := &fixture{ctx: ctx, out: out, work: work, object: object, backend: backend, mutant: mutant, events: events, root: "/sys/fs/bpf/ig-fence-qualification-" + name + "/fence-v1"}
+	root := filepath.Join("/sys/fs/bpf", "ig-fence-qualification-"+name, filepath.Base(fence.InstallRoot))
+	f := &fixture{ctx: ctx, out: out, work: work, object: object, backend: backend, mutant: mutant, events: events, root: root}
 	raw, err := os.ReadFile(helper)
 	if err != nil {
 		return nil, err
@@ -411,12 +449,24 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < 4; i++ {
+	count := 4
+	if name == "mixed-mode" {
+		count = 6
+	}
+	for i := 0; i < count; i++ {
 		p := pod{root: fmt.Sprintf("/sys/fs/cgroup/ig-fence-qualification-%s-%d", name, i), mode: 2}
 		if i == 3 {
 			p.mode = 1
 		}
 		p.child = p.root + "/container"
+		if name == "mixed-mode" {
+			p.root = "/sys/fs/cgroup/ig-fence-qualification-mixed-mode"
+			p.mode = []uint32{2, 2, 1, 3, 2, 1}[i]
+			p.child = fmt.Sprintf("%s/container-%d", p.root, i)
+			if i == 5 {
+				p.child = p.root + "/container-2/nested"
+			}
+		}
 		if name == "deep-cgroup" {
 			depth := []int{64, 65, 64, 65}[i]
 			if i >= 2 {
@@ -434,13 +484,9 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 			if _, err := createDeepPaths(paths, func(path string) error { return os.Mkdir(path, 0o755) }, os.Remove); err != nil {
 				return f, err
 			}
-		} else {
-			if err := os.Mkdir(p.root, 0o755); err != nil {
-				return nil, err
-			}
-			if err := os.Mkdir(p.child, 0o755); err != nil {
-				return nil, err
-			}
+		} else if err := createFixtureCgroups(p, name == "mixed-mode" && i > 0, os.Mkdir); err != nil {
+			// Only later iterations may reuse the root created by this fixture.
+			return nil, err
 		}
 		if err := func() error {
 			p.id, err = inode(p.root)
@@ -476,8 +522,11 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 	if err := f.start(); err != nil {
 		return f, err
 	}
+	if name == "mixed-mode" {
+		return f, f.bindMixed()
+	}
 	for i, p := range f.pods {
-		if _, err := f.owner.call(command{Op: "bind", Pod: p.id, Mode: p.mode, Hash: uint64(i + 1), Path: p.root}); err != nil {
+		if _, err := f.owner.call(command{Op: "bind", Pod: p.id, Mode: p.mode, Hash: uint64(i + 1), Path: p.root, ChildPath: p.child, Identity: p.childID}); err != nil {
 			return f, err
 		}
 		if err := f.protect(i); err != nil {
@@ -501,41 +550,39 @@ func (f *fixture) counterSnapshot() (fence.Snapshot, error) {
 }
 
 func (f *fixture) checkOutageTotals(before fence.Snapshot) error {
-	raw, err := os.ReadFile(f.object)
+	state, err := f.counterSnapshot()
 	if err != nil {
 		return err
 	}
-	held, err := fence.Open(f.root, raw)
-	if err != nil {
+	if err := attestOutageCounts(before, state, f.pods); err != nil {
 		return err
-	}
-	defer held.Close()
-	state, err := held.Snapshot()
-	if err != nil {
-		return err
-	}
-	for _, p := range f.pods {
-		totals, exists := state.PerCgroup[p.id]
-		if !exists {
-			return fmt.Errorf("missing pod counters %d", p.id)
-		}
-		prev := before.PerCgroup[p.id]
-		if totals.Audit < prev.Audit || totals.Denied < prev.Denied || totals.Lost < prev.Lost {
-			return fmt.Errorf("outage counters regressed for %d", p.id)
-		}
-		delta := fence.Totals{Denied: totals.Denied - prev.Denied, Audit: totals.Audit - prev.Audit, Lost: totals.Lost - prev.Lost}
-		if p.mode == 1 {
-			if delta.Audit < 200 || delta.Denied != 0 {
-				return fmt.Errorf("invalid Audit outage counters: %+v", totals)
-			}
-		} else if delta.Denied < 100 || delta.Audit != 0 {
-			return fmt.Errorf("invalid Strict outage counters: %+v", totals)
-		}
 	}
 	return f.event("outage-counters-attested", state)
 }
 
+// Only the isolated stable batch runs between these samples, with no native
+// backend. Every attempt must be counted in the expected verdict family.
+func attestOutageCounts(before, after fence.Snapshot, pods []pod) error {
+	if before.LiveIncarnation != 0 || after.LiveIncarnation != 0 || before.Retired || after.Retired {
+		return fmt.Errorf("counter snapshots are not from an active fence during an outage")
+	}
+	for _, p := range pods {
+		prev, had := before.PerCgroup[p.id]
+		totals, has := after.PerCgroup[p.id]
+		if !had || !has {
+			return fmt.Errorf("missing pod counters %d", p.id)
+		}
+		if err := checkVerdictCounterDeltas(prev, totals, p.mode == 1, 2*stableSamples, true); err != nil {
+			return fmt.Errorf("invalid outage counters for pod %d: %w", p.id, err)
+		}
+	}
+	return nil
+}
+
 func (f *fixture) scenario(name string) error {
+	if name == "mixed-mode" {
+		return f.mixedScenario()
+	}
 	if name == "deep-cgroup" {
 		if err := f.attestDeepCgroups(); err != nil {
 			return err
@@ -575,6 +622,23 @@ func (f *fixture) scenario(name string) error {
 	}
 	if name == "deep-cgroup" {
 		if err := f.attestDeepCgroups(); err != nil {
+			return err
+		}
+	}
+	if name == "failed-selfexec" {
+		// A failed exec leaves the original process and its native backend
+		// intact. Attest continued fencing and refusal before withdrawing only
+		// that test backend to isolate the exact accounting batch below.
+		if err := f.stable(f.policies(fencedStrict)); err != nil {
+			return err
+		}
+		if _, err := f.owner.call(command{Op: "reregister-refused"}); err != nil {
+			return err
+		}
+		if err := f.expectLive(0); err != nil {
+			return err
+		}
+		if _, err := f.owner.call(command{Op: "withdraw"}); err != nil {
 			return err
 		}
 	}
@@ -744,14 +808,6 @@ func (f *fixture) scenario(name string) error {
 		}
 		return f.stable(f.policies(allowAll))
 	case "selfexec", "thread-selfexec", "failed-selfexec":
-		if name == "failed-selfexec" {
-			if _, err := f.owner.call(command{Op: "reregister-refused"}); err != nil {
-				return err
-			}
-			if err := f.expectLive(0); err != nil {
-				return err
-			}
-		}
 		if err := f.owner.kill(); err != nil {
 			return err
 		}
@@ -786,7 +842,7 @@ func run() error {
 		if name == "load-failure" {
 			// Refusal before any fence/engine publication, distinct from the
 			// successor's refusal while old bindings already exist below.
-			initialRoot := "/sys/fs/bpf/ig-fence-initial-load-refusal/fence-v1"
+			initialRoot := filepath.Join("/sys/fs/bpf/ig-fence-initial-load-refusal", filepath.Base(fence.InstallRoot))
 			held, loadErr := fence.Open(initialRoot, []byte("not an ELF"))
 			if held != nil {
 				held.Close()

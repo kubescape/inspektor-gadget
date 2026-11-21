@@ -13,7 +13,7 @@ import (
 )
 
 func selectedCases(selected string) ([]string, error) {
-	cases := []string{"graceful", "sigkill", "partial-move", "abi-skew", "cgroup-exit", "selfexec", "thread-selfexec", "failed-selfexec", "uninstall", "load-failure", "nonce"}
+	cases := []string{"graceful", "sigkill", "partial-move", "abi-skew", "cgroup-exit", "selfexec", "thread-selfexec", "failed-selfexec", "uninstall", "load-failure", "nonce", "mixed-mode"}
 	if selected == "" {
 		return cases, nil
 	}

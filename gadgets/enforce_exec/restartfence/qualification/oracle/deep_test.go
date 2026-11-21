@@ -56,13 +56,17 @@ func TestDeepRequiresRootCgroupMount(t *testing.T) {
 
 func TestDeepScenarioSelection(t *testing.T) {
 	cases, err := selectedCases("")
-	if err != nil || len(cases) != 11 {
-		t.Fatalf("historic cases changed: %v, %v", cases, err)
+	if err != nil || len(cases) != 12 || cases[11] != "mixed-mode" {
+		t.Fatalf("v3 baseline cases changed: %v, %v", cases, err)
 	}
 	for _, name := range cases {
 		if name == "deep-cgroup" {
 			t.Fatal("deep case must be opt-in")
 		}
+	}
+	cases, err = selectedCases("mixed-mode")
+	if err != nil || len(cases) != 1 || cases[0] != "mixed-mode" {
+		t.Fatalf("mixed-mode selection: %v, %v", cases, err)
 	}
 	cases, err = selectedCases("deep-cgroup")
 	if err != nil || len(cases) != 1 || cases[0] != "deep-cgroup" {

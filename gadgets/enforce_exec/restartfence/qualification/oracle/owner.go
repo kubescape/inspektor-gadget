@@ -24,21 +24,32 @@ import (
 // originate on a different task and exercise de_thread explicitly.
 func init() { runtime.LockOSThread() }
 
+type memberCommand struct {
+	Path     string `json:"path"`
+	Identity uint64 `json:"identity"`
+	Mode     uint32 `json:"mode"`
+}
+
 type command struct {
-	Op    string `json:"op"`
-	Pod   uint64 `json:"pod"`
-	Child uint64 `json:"child"`
-	Mode  uint32 `json:"mode"`
-	Hash  uint64 `json:"hash"`
-	Inc   uint64 `json:"inc"`
-	Path  string `json:"path"`
+	Op        string          `json:"op"`
+	Pod       uint64          `json:"pod"`
+	Child     uint64          `json:"child"`
+	Mode      uint32          `json:"mode"`
+	Hash      uint64          `json:"hash"`
+	Inc       uint64          `json:"inc"`
+	Path      string          `json:"path"`
+	ChildPath string          `json:"child_path"`
+	Identity  uint64          `json:"identity"`
+	Revision  uint64          `json:"revision"`
+	Members   []memberCommand `json:"members"`
 }
 type reply struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
-	Inc   uint64 `json:"incarnation,omitempty"`
-	Live  uint64 `json:"live_incarnation"`
-	State any    `json:"state,omitempty"`
+	OK    bool            `json:"ok"`
+	Error string          `json:"error,omitempty"`
+	Inc   uint64          `json:"incarnation,omitempty"`
+	Live  uint64          `json:"live_incarnation"`
+	State any             `json:"state,omitempty"`
+	Pod   *fence.PodState `json:"pod,omitempty"`
 }
 type backendEntry struct {
 	Inode uint64
@@ -112,6 +123,55 @@ func (b *selectiveBackend) close() error {
 	return err
 }
 
+func fixtureMode(mode uint32) (fence.Mode, error) {
+	switch mode {
+	case 1:
+		return fence.Audit, nil
+	case 2:
+		return fence.Strict, nil
+	case 3:
+		return fence.Off, nil
+	default:
+		return 0, fmt.Errorf("unknown fixture mode %d", mode)
+	}
+}
+
+func publishCensus(f *fence.Fence, c command, revision uint64) (fence.PodRef, error) {
+	mode, err := fixtureMode(c.Mode)
+	if err != nil {
+		return fence.PodRef{}, err
+	}
+	podDir, err := os.Open(c.Path)
+	if err != nil {
+		return fence.PodRef{}, err
+	}
+	defer podDir.Close()
+	members := c.Members
+	if len(members) == 0 && c.ChildPath != "" {
+		members = []memberCommand{{Path: c.ChildPath, Identity: c.Identity, Mode: c.Mode}}
+	}
+	var opened []*os.File
+	defer func() {
+		for _, fd := range opened {
+			fd.Close()
+		}
+	}()
+	var rows []fence.PodMember
+	for _, m := range members {
+		fd, e := os.Open(m.Path)
+		if e != nil {
+			return fence.PodRef{}, e
+		}
+		opened = append(opened, fd)
+		class, e := fixtureMode(m.Mode)
+		if e != nil {
+			return fence.PodRef{}, e
+		}
+		rows = append(rows, fence.PodMember{Cgroup: fd, Identity: m.Identity, Mode: class})
+	}
+	return f.PublishCensus(podDir, c.Hash, revision, mode, rows)
+}
+
 func runOwner(root, object, backend string, inode uint64, mutant string) error {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return err
@@ -138,6 +198,7 @@ func runOwner(root, object, backend string, inode uint64, mutant string) error {
 	if err := out.Encode(reply{OK: true, Inc: inc}); err != nil {
 		return err
 	}
+	refs := make(map[uint64]fence.PodRef)
 	in := bufio.NewScanner(os.Stdin)
 	for in.Scan() {
 		var c command
@@ -147,31 +208,89 @@ func runOwner(root, object, backend string, inode uint64, mutant string) error {
 		r := reply{OK: true, Inc: inc}
 		var opErr error
 		switch c.Op {
-		case "bind":
-			mode := fence.Strict
-			if c.Mode == 1 {
-				mode = fence.Audit
-			} else if c.Mode != 2 {
-				opErr = fmt.Errorf("unknown fixture mode %d", c.Mode)
-				break
+		case "bind", "census":
+			ref, exists := refs[c.Pod]
+			if !exists {
+				state, found, e := f.ReadPod(c.Pod)
+				if e != nil {
+					opErr = e
+					break
+				}
+				if found {
+					ref = state.PodRef
+				}
 			}
-			podDir, e := os.Open(c.Path)
-			if e != nil {
-				opErr = e
-				break
+			revision := ref.Revision
+			if c.Revision != 0 {
+				revision = c.Revision
 			}
-			opErr = errors.Join(f.Bind(podDir, mode, c.Hash), podDir.Close())
-		case "protect":
-			opErr = b.protect(c.Child, c.Mode)
-			if opErr == nil && mutant != "never-move" {
-				opErr = f.Move(c.Pod)
+			next, e := publishCensus(f, c, revision)
+			opErr = e
+			if e == nil {
+				refs[c.Pod] = next
+			}
+		case "readpod":
+			state, found, e := f.ReadPod(c.Pod)
+			opErr = e
+			if e == nil && !found {
+				opErr = fmt.Errorf("pod absent")
+			}
+			if opErr == nil {
+				r.Pod = &state
+			}
+		case "protect", "refence", "commit-withdrawal", "acknowledge-accounting", "deactivate", "remove":
+			ref, found := refs[c.Pod]
+			if !found {
+				state, exists, e := f.ReadPod(c.Pod)
+				if e != nil {
+					opErr = e
+					break
+				}
+				if !exists {
+					opErr = fmt.Errorf("pod absent")
+					break
+				}
+				ref = state.PodRef
+				refs[c.Pod] = ref
+			}
+			if c.Revision != 0 {
+				ref.Revision = c.Revision
+			}
+			identity := c.Identity
+			if identity == 0 {
+				identity = c.Child
+			}
+			child := fence.ChildRef{ID: c.Child, Identity: identity}
+			var next fence.PodRef
+			switch c.Op {
+			case "protect":
+				opErr = b.protect(c.Child, c.Mode)
+				if opErr == nil && mutant != "never-move" {
+					next, opErr = f.MoveChild(ref, child, 1)
+				}
+			case "refence":
+				next, opErr = f.RefenceChild(ref, child)
+			case "commit-withdrawal":
+				next, opErr = f.CommitPolicyWithdrawal(ref, child)
+			case "acknowledge-accounting":
+				next, opErr = f.AcknowledgePodAccounting(ref)
+			case "deactivate":
+				next, opErr = f.DeactivateExecScope(ref)
+			case "remove":
+				opErr = f.RemoveExited(ref)
+			}
+			if opErr == nil && next.ID != 0 {
+				refs[c.Pod] = next
+			}
+		case "backend-withdraw":
+			opErr = b.coll.Maps["backend_bind"].Delete(c.Child)
+			if errors.Is(opErr, ebpf.ErrKeyNotExist) {
+				opErr = nil
 			}
 		case "arm":
 			opErr = f.Arm()
 		case "withdraw":
 			opErr = b.close()
-		case "remove":
-			opErr = f.RemoveExited(c.Pod)
 		case "snapshot":
 			state, e := f.Snapshot()
 			opErr = e

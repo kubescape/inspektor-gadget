@@ -11,29 +11,27 @@ by this guard and are counted. No timeout releases the fence.
    embedded ELF from `Object` on a supported target. An unavailable object,
    missing/unsupported hook, pin mismatch, or failed registration is a
    readiness refusal, not a signal to continue without the fence.
-2. Register the agent with a one-use kernel challenge. A new incarnation
-   does not un-fence existing pods. Resolve the real host pod cgroup
-   directory; `Bind` derives its kernel ID from the cgroup-v2 descriptor
-   instead of accepting a numeric ID from the caller.
-3. Move each bound pod only after the product backend has attested
-   protection for that exact pod and committed generation. The caller
-   serializes engine publication/withdrawal with this handover. A snapshot
-   of the live incarnation alone does not attest product protection.
-4. On agent teardown, Arm and verify the fence **before** withdrawing any
-   product route, not just before closing its links. The product hook must
-   attach after the fence hook so that it evaluates first on the supported
-   kernels. Close agent descriptors after teardown; close is not an uninstall.
-5. Report cumulative per-pod outage counters and ring-buffer loss; reading
-   them does not clear counters. Remove an exec-only row only after proving
-   the pod cgroup ceased to exist. A stale container is not that proof.
-
-This v1 component does not support ordinary live binding withdrawal.
-`Arm` ends the global live incarnation and is reserved for agent teardown;
-it is not a per-binding operation, and the same process cannot register
-again to undo it. Do not withdraw live product routes without first fencing
-them. Live reconciliation requires the F2/v2 exact-child refence and
-authoritative withdrawal implementation, not an extension or bypass of
-the v1 API. This component alone does not qualify that integration.
+2. Register with a one-use kernel challenge. A new incarnation does not
+   un-fence existing workloads. Resolve trusted host pod and container
+   cgroup-v2 descriptors; PublishCensus publishes the pod mark and known
+   sibling classes in one immutable row. Independently managed container
+   roots must be verified non-overlapping, including while the owner is
+   down. Census validation can reject known overlaps; it cannot prove
+   where the runtime will create an undiscovered root. Ordinary
+   descendants within a verified root keep its classification.
+3. MoveChild releases only an exact Strict or Audit child after its
+   committed product generation has been attested. Unknown descendants
+   cannot inherit another child's handover. Mixed scopes use a Strict
+   fallback; Audit fallback requires evidence that Strict is impossible.
+4. RefenceChild before potentially destructive live product operations.
+   CommitPolicyWithdrawal may set a child Off only after authoritative
+   policy removal and native route withdrawal. Discovery loss does not
+   authorize Off. Serialize attestation with native mutation.
+5. Arm and verify before withdrawing any product route on shutdown. The
+   product hook attaches after this guard so it evaluates first on the
+   supported kernels. Close is not an uninstall.
+6. Report cumulative outage separately from same-owner reconciliation.
+   Remove a child or pod only after proving the physical cgroup is gone.
 
 The pinned exit hook arms on the authenticated process's last thread
 (`signal->live == 0`), ahead of descriptor release. The LSM hook also
@@ -46,12 +44,16 @@ threads must not unshare their FD table.
 
 ## Pins and uninstall
 
-The standard path is `/sys/fs/bpf/kubescape/fence-v1/` (owner-only 0700
+The standard path is `/sys/fs/bpf/kubescape/fence-v3/` (owner-only 0700
 directories; use the host bpffs mount). The frozen manifest is published
 last, and load verifies current boot, expected object, attached
 links/programs and map identities. Pending or incompatible pins remain
 in place; do not infer that an unknown set protects anything, or detach
-it on an adoption refusal.
+it on an adoption refusal. V1 and v2 are refused and retained, not
+replaced or run alongside v3. Hot version migration is not implemented.
+The loader checks the named v3 BTF accounting layout before any attach,
+not only the same-sized map geometry, and scans pinned rows against the
+last issued incarnation before adoption.
 
 `Lift` is reserved for an explicitly authorized Helm pre-delete hook.
 It latches retirement in the pinned state even if the running agent still
@@ -59,6 +61,42 @@ has open link FDs; the normal start/restart path cannot undo that decision.
 The retired graph stays pinned as a tombstone. A subsequent installation
 needs an explicit, separate retired-graph recovery procedure; normal
 `Open` never treats retirement as permission to replace a pin set.
+
+## V3 accounting provenance
+
+V3 keeps the 8,256-byte pod snapshot and 64-byte child slots, but assigns
+one formerly reserved header word to the fallback accounting incarnation
+(offset 32) and one child word to its accounting incarnation (offset 48).
+All remaining reserved words stay zero. The new pin format, path, BTF
+field schema, and exact object digest are incompatible with v2. There is
+no automatic migration, pin replacement, or change to the native product ELF.
+
+Registration and ordinary census publication preserve inherited provenance;
+refencing clears native readiness but keeps its accounting epoch. A fresh
+exact Move updates only that child. Thus same-owner reconciliation is
+distinguished from successor recovery even while the child is unbound.
+Authorized Off and inactive-scope publication clear the corresponding epoch.
+Cumulative counters are not reset.
+
+After a complete authoritative census and policy snapshot, with no
+ambiguous identities and all retained managed children freshly handed over
+or authoritatively removed, the caller may invoke
+`AcknowledgePodAccounting`. Serialize the proof with native mutations and
+use its returned PodRef. The API verifies the current exact revision and
+all retained managed child handovers before acknowledging fallback
+accounting. Neither registration, a partial census, nor one child's Move
+acknowledges other children or the fallback. An empty child list alone is
+not caller authority. This API changes telemetry only: unknown descendants
+still have no native readiness and retain the same fallback verdict.
+
+Accounting fields never authorize an exec or establish protection.
+Missing/incoherent attribution is reported as lost/unattributed observation,
+not an invented normal/outage count; malformed classification still fails
+closed. Loss counters count observation/attribution failures and need not
+equal distinct execs. Userspace refuses malformed or future provenance
+without rewriting it. While fenced, the retained last issued incarnation
+still bounds attribution; a missing, zero, retired, or future epoch does
+not earn a normal or outage verdict count.
 
 ## Build and qualification
 

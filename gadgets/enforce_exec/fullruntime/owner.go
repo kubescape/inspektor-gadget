@@ -525,16 +525,24 @@ func (o *Owner) Epochs() map[string]uint64 {
 }
 
 func (o *Owner) Check(ctx context.Context) error {
+	_, err := o.AttestGeneration(ctx)
+	return err
+}
+
+// AttestGeneration returns the exact nonzero generation whose native identity,
+// publication and kernel protection were checked under the owner lock. Callers
+// must serialize their use of this receipt with subsequent owner mutation.
+func (o *Owner) AttestGeneration(ctx context.Context) (uint64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.current == nil || o.closing || o.closed {
-		return fmt.Errorf("owner is not activated")
+		return 0, fmt.Errorf("owner is not activated")
 	}
 	if o.pending != nil {
-		return fmt.Errorf("owner publication is not finalized: %w", ErrGateBusy)
+		return 0, fmt.Errorf("owner publication is not finalized: %w", ErrGateBusy)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	// Finish may have reopened admission and consumed its publication handle
 	// before deleting the auxiliary staging reference failed. Same-revision
@@ -542,17 +550,24 @@ func (o *Owner) Check(ctx context.Context) error {
 	// Cleanup refuses any slot update still in flight and never changes the
 	// active program, successful epochs or admission state.
 	if err := o.slot.Cleanup(); err != nil {
-		return fmt.Errorf("owner finalized publication cleanup: %w", err)
+		return 0, fmt.Errorf("owner finalized publication cleanup: %w", err)
 	}
 	if err := o.verify(ctx); err != nil {
-		return err
+		return 0, err
 	}
 	if usesFilesystem(o.current) {
 		if err := o.tracker.Check(); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return checkProtection(ctx, o.control, o.gate, o.slot.Generation())
+	generation := o.slot.Generation()
+	if generation == 0 {
+		return 0, fmt.Errorf("owner has no active native generation")
+	}
+	if err := checkProtection(ctx, o.control, o.gate, generation); err != nil {
+		return 0, err
+	}
+	return generation, nil
 }
 
 // checkProtection is the read-only heartbeat behind Owner.Check. It never
