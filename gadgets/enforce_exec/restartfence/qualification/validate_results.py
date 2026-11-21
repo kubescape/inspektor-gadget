@@ -78,6 +78,22 @@ def verify_transition_coverage(events, probe_rows, expected_transitions, expecte
     return len(covers)
 
 
+def validate_batch_sequence(rows, start, end, label):
+    batch = rows[start:end]
+    assert len(batch) == 200, f"{label} batch size"
+    batch_id = batch[0]["batch"]
+    assert type(batch_id) is int and batch_id > 0, f"{label} batch identity"
+    if start:
+        assert rows[start - 1]["batch"] < batch_id, f"{label} batch ordering"
+    if end < len(rows):
+        assert batch_id < rows[end]["batch"], f"{label} batch ordering"
+    for j, row in enumerate(batch):
+        assert (type(row["batch"]) is int and row["batch"] == batch_id
+                and type(row["sample"]) is int and row["sample"] == j // 2
+                and 0 < row["start_ns"] < row["end_ns"]), f"{label} batch identity"
+        assert row["target"] == ("denied" if j % 2 == 0 else "allowed"), f"{label} targets"
+
+
 def validate_mixed_accounting(events, probe_rows, phases):
     owners = [(i, e) for i, e in enumerate(events) if e["event"] == "owner-start"]
     incarnations = [e["value"]["incarnation"] for _, e in owners]
@@ -130,12 +146,8 @@ def validate_mixed_accounting(events, probe_rows, phases):
                 and end <= phases[after_phase][1]["value"]["starts"][probe]), f"accounting probe bounds for {name}"
         batch = rows[start:end]
         assert be <= batch[0]["start_ns"] < batch[-1]["end_ns"] <= a_s, f"accounting snapshot bounds for {name}"
-        batch_id = batch[0]["batch"]
-        assert type(batch_id) is int and batch_id > 0, f"invalid accounting batch identity for {name}"
-        for j, row in enumerate(batch):
-            assert (row["batch"] == batch_id and type(row["sample"]) is int and row["sample"] == j // 2
-                    and 0 < row["start_ns"] < row["end_ns"]), f"accounting batch identity for {name}"
-            assert row["target"] == ("denied" if j % 2 == 0 else "allowed"), f"accounting targets for {name}"
+        validate_batch_sequence(rows, start, end, f"accounting {name}")
+        for row in batch:
             assert row["errno"] == (0 if audit else 1), f"accounting verdict for {name}"
         for other, stream in enumerate(probe_rows):
             outside = stream[:start] + stream[end:] if other == probe else stream
@@ -176,6 +188,15 @@ def validate_mixed(root, events):
     phase_pairs = [(phase_index[before], phase_index[after]) for before, after in MIXED_TRANSITIONS]
     verify_transition_coverage(events, probe_rows, len(MIXED_TRANSITIONS), range(6), phase_pairs)
     validate_mixed_accounting(events, probe_rows, phase_index)
+    for event in events:
+        if event["event"] != "transition-coverage":
+            continue
+        coverage = event["value"]
+        if (coverage["transition"], coverage["probe"]) in ((0, 1), (2, 0)):
+            rows = probe_rows[coverage["probe"]]
+            assert all(row["errno"] == 1 for row in rows[coverage["start_index"]:coverage["end_index"]]), (
+                "already-fenced transition allowed an exec"
+            )
     boundaries = [e for e in events if e["event"] == "mixed-off-boundary"]
     strict_probes = (0, 1, 4)
     assert [e["value"]["probe"] for e in boundaries] == list(strict_probes), (
@@ -217,6 +238,7 @@ def validate_mixed(root, events):
             assert last_end <= start and end - start == 200 and end <= len(rows)
             assert rows[end - 1]["end_ns"] <= event["monotonic_ns"], "mixed phase observed after its event"
             last_end = end
+            validate_batch_sequence(rows, start, end, f"mixed {phase['name']} child {i}")
             policy = expected[phase["name"]][i]
             for r in rows[start:end]:
                 want = int(policy == 1 or (policy == 0 and r["target"] == "denied"))

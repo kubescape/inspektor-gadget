@@ -14,6 +14,15 @@ func (f *fixture) mixedCommand(op string, i int) command {
 	return command{Op: op, Pod: p.id, Child: p.childID, Identity: p.childID, Mode: p.mode}
 }
 
+func (f *fixture) mixedTransitionPolicies(alreadyFenced ...int) []samplePolicy {
+	policies := f.policies(transitionStrict)
+	policies[4] = fencedStrict // Unreconciled fallback has no native route.
+	for _, i := range alreadyFenced {
+		policies[i] = fencedStrict
+	}
+	return policies
+}
+
 func (f *fixture) bindMixed() error {
 	p := f.pods[0]
 	c := command{Op: "census", Pod: p.id, Path: p.root, Hash: 91, Mode: 2}
@@ -101,7 +110,7 @@ func (f *fixture) mixedAccountingBatch(name string, i int, policy samplePolicy, 
 		before.Retired || after.Retired || endIndex-startIndex != 2*samples {
 		return fmt.Errorf("%s: missing or discontinuous accounting samples", name)
 	}
-	if err := checkMixedCounterDeltas(old, now, policy == allowAll, expected, outage); err != nil {
+	if err := checkVerdictCounterDeltas(old, now, policy == allowAll, expected, outage); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return f.event("mixed-accounting", map[string]any{
@@ -116,7 +125,7 @@ func (f *fixture) mixedAccountingBatch(name string, i int, policy samplePolicy, 
 
 // Isolated batches must increment only the expected verdict family. Lost or
 // unrelated deltas cannot stand in for positively classified Audit observations.
-func checkMixedCounterDeltas(before, after fence.Totals, audit bool, expected uint64, outage bool) error {
+func checkVerdictCounterDeltas(before, after fence.Totals, audit bool, expected uint64, outage bool) error {
 	want := fence.Totals{}
 	if audit {
 		want.Audit = expected
@@ -171,7 +180,7 @@ func (f *fixture) mixedScenario() error {
 	if err := f.mixedAccounting("same-owner-unbound", 1, false, 100); err != nil {
 		return err
 	}
-	if err := f.transition(f.owner.kill); err != nil {
+	if err := f.transitionWithPolicies(f.owner.kill, f.mixedTransitionPolicies(1)); err != nil {
 		return err
 	}
 	if err := f.expectLive(0); err != nil {
@@ -235,7 +244,10 @@ func (f *fixture) mixedScenario() error {
 	if err != nil {
 		return err
 	}
-	if err := f.transition(func() error { _, e := f.owner.call(f.mixedCommand("refence", 0)); return e }); err != nil {
+	if err := f.transitionWithPolicies(func() error {
+		_, err := f.owner.call(f.mixedCommand("refence", 0))
+		return err
+	}, f.mixedTransitionPolicies()); err != nil {
 		return err
 	}
 	stale := f.mixedCommand("protect", 0)
@@ -248,7 +260,10 @@ func (f *fixture) mixedScenario() error {
 	if err := f.mixedObserve("refenced-before-backend-withdraw", withdrawal); err != nil {
 		return err
 	}
-	if err := f.transition(func() error { _, e := f.owner.call(f.mixedCommand("backend-withdraw", 0)); return e }); err != nil {
+	if err := f.transitionWithPolicies(func() error {
+		_, err := f.owner.call(f.mixedCommand("backend-withdraw", 0))
+		return err
+	}, f.mixedTransitionPolicies(0)); err != nil {
 		return err
 	}
 	if err := f.mixedObserve("backend-withdrawn-still-fenced", withdrawal); err != nil {

@@ -103,7 +103,12 @@ def mixed_evidence():
             if t == 0:
                 inject_at = starts[0] + 1
             action_start, action_end = clock + 20, clock + 3981
-            append_batch([0, 0, 3, 3, 1, 3], 400)
+            transition_modes = [0, 0, 3, 3, 1, 3]
+            if t == 0:
+                transition_modes[1] = 1
+            elif t == 2:
+                transition_modes[0] = 1
+            append_batch(transition_modes, 400)
             event("transition-start", action_start)
             for i in range(6):
                 event("transition-coverage", dict(
@@ -132,6 +137,55 @@ class MixedEvidenceTest(unittest.TestCase):
         self.assertEqual(rows[0][index]["target"], "denied")
         rows[0][index].update(errno=0, exit=0)
         with self.assertRaisesRegex(AssertionError, "before authorized Off"):
+            validate_mixed(root, events)
+
+    def test_already_fenced_transitions_reject_allowed_target_success(self):
+        for transition, probe in ((0, 1), (2, 0)):
+            with self.subTest(transition=transition, probe=probe):
+                root, events, rows, _ = mixed_evidence()
+                coverage = next(e["value"] for e in events if e["event"] == "transition-coverage"
+                                and (e["value"]["transition"], e["value"]["probe"]) == (transition, probe))
+                row = rows[probe][coverage["start_index"] + 2]
+                self.assertEqual(row["target"], "allowed")
+                row.update(errno=0, exit=0)
+                with self.assertRaisesRegex(AssertionError, "already-fenced transition"):
+                    validate_mixed(root, events)
+
+    def test_every_stable_phase_requires_ordered_target_pairs(self):
+        for phase_index in range(10):
+            with self.subTest(phase=phase_index):
+                root, events, rows, _ = mixed_evidence()
+                phase = [e["value"] for e in events if e["event"] == "mixed-phase"][phase_index]
+                # Audit is always permissive, so verdict checks alone cannot
+                # distinguish 200 denied targets from 100 complete pairs.
+                row = rows[2][phase["starts"][2] + 2]
+                self.assertEqual(row["target"], "allowed")
+                row["target"] = "denied"
+                with self.assertRaisesRegex(AssertionError, "mixed .* targets"):
+                    validate_mixed(root, events)
+
+    def test_live_phase_requires_allowed_target_evidence(self):
+        root, events, rows, _ = mixed_evidence()
+        for row in rows[0][1:201]:
+            row.update(target="denied", errno=1, exit=100)
+        with self.assertRaisesRegex(AssertionError, "mixed live-mixed child 0 targets"):
+            validate_mixed(root, events)
+
+    def test_stable_phase_rejects_spliced_and_reordered_samples(self):
+        for field, value in (("batch", 0), ("batch", 999999), ("batch", True),
+                             ("sample", 99), ("sample", True)):
+            with self.subTest(field=field, value=value):
+                root, events, rows, _ = mixed_evidence()
+                rows[0][2][field] = value
+                with self.assertRaisesRegex(AssertionError, "mixed .*batch identity"):
+                    validate_mixed(root, events)
+
+    def test_stable_phase_rejects_reused_batch_identity(self):
+        root, events, rows, _ = mixed_evidence()
+        first = rows[0][1]["batch"]
+        for row in rows[0][201:401]:
+            row["batch"] = first
+        with self.assertRaisesRegex(AssertionError, "mixed .*batch ordering"):
             validate_mixed(root, events)
 
     def test_missing_off_authorization_boundary_is_flagged(self):
@@ -246,7 +300,7 @@ class MixedEvidenceTest(unittest.TestCase):
                 root, events, rows, _ = mixed_evidence()
                 batch = next(e["value"] for e in events if e["event"] == "mixed-accounting")
                 rows[batch["probe"]][batch["start_index"] + 2][field] = value
-                with self.assertRaisesRegex(AssertionError, "accounting batch identity"):
+                with self.assertRaisesRegex(AssertionError, "accounting .*batch identity"):
                     validate_mixed(root, events)
 
     def test_audit_cannot_be_off_or_unattributed(self):

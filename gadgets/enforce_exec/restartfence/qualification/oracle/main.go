@@ -213,6 +213,8 @@ func (f *fixture) expectLive(want uint64) error {
 	return nil
 }
 
+const stableSamples = 100
+
 func (f *fixture) stable(policies []samplePolicy) error {
 	var wg sync.WaitGroup
 	errs := make(chan error, len(f.pods))
@@ -221,7 +223,7 @@ func (f *fixture) stable(policies []samplePolicy) error {
 			continue
 		}
 		wg.Add(1)
-		go func(i int) { defer wg.Done(); errs <- f.pods[i].probe.batch(100, policies[i], nil) }(i)
+		go func(i int) { defer wg.Done(); errs <- f.pods[i].probe.batch(stableSamples, policies[i], nil) }(i)
 	}
 	wg.Wait()
 	close(errs)
@@ -254,6 +256,10 @@ func monotonicNS() uint64 {
 // Keep draining every probe while the lifecycle action runs. There is no
 // callback barrier or full pipe that can pause the workload during teardown.
 func (f *fixture) transition(action func() error) error {
+	return f.transitionWithPolicies(action, f.policies(transitionStrict))
+}
+
+func (f *fixture) transitionWithPolicies(action func() error, policies []samplePolicy) error {
 	transitionID := f.transitions
 	f.transitions++
 	type observed struct {
@@ -273,12 +279,7 @@ func (f *fixture) transition(action func() error) error {
 		wg.Add(1)
 		go func(probeIndex int, p pod) {
 			defer wg.Done()
-			policy := transitionStrict
-			if p.mode == 1 || p.mode == 3 {
-				policy = allowAll
-			} else if len(f.pods) == 6 && probeIndex == 4 {
-				policy = fencedStrict
-			}
+			policy := policies[probeIndex]
 			before := p.probe.observed
 			result := observed{probe: uint64(probeIndex), pod: p.id, startIndex: before}
 			first := func() error { result.first = p.probe.lastStart; ready <- struct{}{}; return nil }
@@ -409,6 +410,15 @@ func (f *fixture) cleanup() error {
 	return errors.Join(err, f.events.Close())
 }
 
+func createFixtureCgroups(p pod, reuseRoot bool, mkdir func(string, os.FileMode) error) error {
+	if !reuseRoot {
+		if err := mkdir(p.root, 0o755); err != nil {
+			return err
+		}
+	}
+	return mkdir(p.child, 0o755)
+}
+
 func setup(ctx context.Context, name, out, work, object, backend, helper, mutant string) (*fixture, error) {
 	out = filepath.Join(out, name)
 	work = filepath.Join(work, name)
@@ -474,13 +484,9 @@ func setup(ctx context.Context, name, out, work, object, backend, helper, mutant
 			if _, err := createDeepPaths(paths, func(path string) error { return os.Mkdir(path, 0o755) }, os.Remove); err != nil {
 				return f, err
 			}
-		} else {
-			if err := os.Mkdir(p.root, 0o755); err != nil && (name != "mixed-mode" || !os.IsExist(err)) {
-				return nil, err
-			}
-			if err := os.Mkdir(p.child, 0o755); err != nil {
-				return nil, err
-			}
+		} else if err := createFixtureCgroups(p, name == "mixed-mode" && i > 0, os.Mkdir); err != nil {
+			// Only later iterations may reuse the root created by this fixture.
+			return nil, err
 		}
 		if err := func() error {
 			p.id, err = inode(p.root)
@@ -544,46 +550,33 @@ func (f *fixture) counterSnapshot() (fence.Snapshot, error) {
 }
 
 func (f *fixture) checkOutageTotals(before fence.Snapshot) error {
-	raw, err := os.ReadFile(f.object)
+	state, err := f.counterSnapshot()
 	if err != nil {
 		return err
 	}
-	held, err := fence.Open(f.root, raw)
-	if err != nil {
+	if err := attestOutageCounts(before, state, f.pods); err != nil {
 		return err
-	}
-	defer held.Close()
-	state, err := held.Snapshot()
-	if err != nil {
-		return err
-	}
-	for _, p := range f.pods {
-		totals, exists := state.PerCgroup[p.id]
-		if !exists {
-			return fmt.Errorf("missing pod counters %d", p.id)
-		}
-		prev := before.PerCgroup[p.id]
-		if totals.Audit < prev.Audit || totals.Denied < prev.Denied || totals.Lost < prev.Lost ||
-			totals.OutageAudit < prev.OutageAudit || totals.OutageDenied < prev.OutageDenied || totals.OutageLost < prev.OutageLost {
-			return fmt.Errorf("outage counters regressed for %d", p.id)
-		}
-		delta := fence.Totals{
-			Denied:       totals.Denied - prev.Denied,
-			Audit:        totals.Audit - prev.Audit,
-			Lost:         totals.Lost - prev.Lost,
-			OutageDenied: totals.OutageDenied - prev.OutageDenied,
-			OutageAudit:  totals.OutageAudit - prev.OutageAudit,
-			OutageLost:   totals.OutageLost - prev.OutageLost,
-		}
-		if p.mode == 1 || p.mode == 3 {
-			if delta.Audit < 200 || delta.Denied != 0 || delta.OutageAudit != delta.Audit || delta.OutageDenied != 0 {
-				return fmt.Errorf("invalid Audit outage counters: %+v", totals)
-			}
-		} else if delta.Denied < 100 || delta.Audit != 0 || delta.OutageDenied != delta.Denied || delta.OutageAudit != 0 {
-			return fmt.Errorf("invalid Strict outage counters: %+v", totals)
-		}
 	}
 	return f.event("outage-counters-attested", state)
+}
+
+// Only the isolated stable batch runs between these samples, with no native
+// backend. Every attempt must be counted in the expected verdict family.
+func attestOutageCounts(before, after fence.Snapshot, pods []pod) error {
+	if before.LiveIncarnation != 0 || after.LiveIncarnation != 0 || before.Retired || after.Retired {
+		return fmt.Errorf("counter snapshots are not from an active fence during an outage")
+	}
+	for _, p := range pods {
+		prev, had := before.PerCgroup[p.id]
+		totals, has := after.PerCgroup[p.id]
+		if !had || !has {
+			return fmt.Errorf("missing pod counters %d", p.id)
+		}
+		if err := checkVerdictCounterDeltas(prev, totals, p.mode == 1, 2*stableSamples, true); err != nil {
+			return fmt.Errorf("invalid outage counters for pod %d: %w", p.id, err)
+		}
+	}
+	return nil
 }
 
 func (f *fixture) scenario(name string) error {
@@ -629,6 +622,23 @@ func (f *fixture) scenario(name string) error {
 	}
 	if name == "deep-cgroup" {
 		if err := f.attestDeepCgroups(); err != nil {
+			return err
+		}
+	}
+	if name == "failed-selfexec" {
+		// A failed exec leaves the original process and its native backend
+		// intact. Attest continued fencing and refusal before withdrawing only
+		// that test backend to isolate the exact accounting batch below.
+		if err := f.stable(f.policies(fencedStrict)); err != nil {
+			return err
+		}
+		if _, err := f.owner.call(command{Op: "reregister-refused"}); err != nil {
+			return err
+		}
+		if err := f.expectLive(0); err != nil {
+			return err
+		}
+		if _, err := f.owner.call(command{Op: "withdraw"}); err != nil {
 			return err
 		}
 	}
@@ -798,14 +808,6 @@ func (f *fixture) scenario(name string) error {
 		}
 		return f.stable(f.policies(allowAll))
 	case "selfexec", "thread-selfexec", "failed-selfexec":
-		if name == "failed-selfexec" {
-			if _, err := f.owner.call(command{Op: "reregister-refused"}); err != nil {
-				return err
-			}
-			if err := f.expectLive(0); err != nil {
-				return err
-			}
-		}
 		if err := f.owner.kill(); err != nil {
 			return err
 		}

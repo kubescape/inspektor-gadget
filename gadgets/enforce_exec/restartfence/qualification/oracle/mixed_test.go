@@ -4,10 +4,62 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"slices"
 	"testing"
 
 	fence "github.com/inspektor-gadget/inspektor-gadget/gadgets/enforce_exec/restartfence"
 )
+
+func TestMixedPoliciesKeepRefencedChildrenFencedThroughoutAction(t *testing.T) {
+	f := fixture{pods: []pod{{mode: 2}, {mode: 2}, {mode: 1}, {mode: 3}, {mode: 2}, {mode: 1}}}
+	for _, action := range []struct {
+		name          string
+		alreadyFenced []int
+		want          []samplePolicy
+	}{
+		{"owner-kill", []int{1}, []samplePolicy{transitionStrict, fencedStrict, allowAll, allowAll, fencedStrict, allowAll}},
+		{"refence", nil, []samplePolicy{transitionStrict, transitionStrict, allowAll, allowAll, fencedStrict, allowAll}},
+		{"backend-withdrawal", []int{0}, []samplePolicy{fencedStrict, transitionStrict, allowAll, allowAll, fencedStrict, allowAll}},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			if got := f.mixedTransitionPolicies(action.alreadyFenced...); !slices.Equal(got, action.want) {
+				t.Fatalf("policies=%v want=%v", got, action.want)
+			}
+		})
+	}
+}
+
+func TestFixtureCgroupsOnlyReuseRootAlreadyCreated(t *testing.T) {
+	p := pod{root: "root", child: "root/child"}
+	for _, tc := range []struct {
+		name      string
+		reuseRoot bool
+		blocked   string
+		wantPaths []string
+	}{
+		{"first", false, "", []string{p.root, p.child}},
+		{"existing-root", false, p.root, []string{p.root}},
+		{"later", true, p.root, []string{p.child}},
+		{"existing-child", true, p.child, []string{p.child}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			err := createFixtureCgroups(p, tc.reuseRoot, func(path string, _ os.FileMode) error {
+				paths = append(paths, path)
+				if tc.blocked == path {
+					return os.ErrExist
+				}
+				return nil
+			})
+			wantExists := tc.name == "existing-root" || tc.name == "existing-child"
+			if !slices.Equal(paths, tc.wantPaths) || (wantExists && !errors.Is(err, os.ErrExist)) || (!wantExists && err != nil) {
+				t.Fatalf("created %v, err %v; want %v with EEXIST=%v", paths, err, tc.wantPaths, wantExists)
+			}
+		})
+	}
+}
 
 func TestFixtureModeTranslation(t *testing.T) {
 	for _, tt := range []struct {
@@ -67,7 +119,7 @@ func TestMixedAccountingRequiresExactPhaseDeltas(t *testing.T) {
 				}
 			}
 			check := func(got fence.Totals) error {
-				return checkMixedCounterDeltas(before, got, phase.audit, phase.want, phase.outage)
+				return checkVerdictCounterDeltas(before, got, phase.audit, phase.want, phase.outage)
 			}
 			if err := check(after); err != nil {
 				t.Fatal(err)
