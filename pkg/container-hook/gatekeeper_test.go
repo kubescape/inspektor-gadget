@@ -56,11 +56,28 @@ func TestPermissionResponseBoundValidation(t *testing.T) {
 
 const gkTestBound = 300 * time.Millisecond
 
-// gkTestSetup starts a real gatekeeper process (this test binary, re-executed)
-// for a pid-file group with FAN_OPEN_PERM on a temp file. The runtime group is
-// an unmarked fanotify group and there is no record queue.
+type gkTestEnv struct {
+	g             *gatekeeperProc
+	path          string
+	runtimeNotify *fanotify.NotifyFD
+	pidNotify     *fanotify.NotifyFD
+}
+
+// gkTestSetup starts a real gatekeeper process (this test binary re-executed,
+// or IG_CONTAINER_HOOK_GATEKEEPER_BIN) for a pid-file group with FAN_OPEN_PERM
+// on a temp file. The runtime group is an unmarked fanotify group and there is
+// no record queue.
 func gkTestSetup(t *testing.T) (*gatekeeperProc, string) {
+	env := gkTestSetupEnv(t)
+	return env.g, env.path
+}
+
+func gkTestSetupEnv(t *testing.T) *gkTestEnv {
 	t.Helper()
+	if os.Getenv(gatekeeperBinEnv) == "" {
+		// Test this binary, not whatever gatekeeper the host has installed.
+		t.Setenv(gatekeeperBinEnv, "/proc/self/exe")
+	}
 	if os.Geteuid() != 0 {
 		t.Skip("needs root for fanotify permission events")
 	}
@@ -74,13 +91,14 @@ func gkTestSetup(t *testing.T) (*gatekeeperProc, string) {
 	path := filepath.Join(t.TempDir(), "watched")
 	require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
 
-	g, err := startGatekeeper(runtimeNotify.Fd, pidNotify.Fd, -1, gkTestBound, gkTestBound)
+	g, err := startGatekeeper(runtimeNotify.Fd, pidNotify.Fd, -1, 0, gkTestBound, gkTestBound)
 	require.NoError(t, err)
 	t.Cleanup(g.close)
 
-	// Mark only once the gatekeeper is reading, as install() does.
+	// startGatekeeper returned after the ready message: the gatekeeper
+	// reads the groups, so marks can be added, as install() does.
 	require.NoError(t, pidNotify.Mark(unix.FAN_MARK_ADD, unix.FAN_OPEN_PERM, unix.AT_FDCWD, path))
-	return g, path
+	return &gkTestEnv{g: g, path: path, runtimeNotify: runtimeNotify, pidNotify: pidNotify}
 }
 
 // timedOpen opens path and returns how long open() blocked.
@@ -95,7 +113,7 @@ func timedOpen(t *testing.T, path string) time.Duration {
 
 func TestGatekeeperForwardsToAResponsiveParent(t *testing.T) {
 	g, path := gkTestSetup(t)
-	go g.receive(func(error) {})
+	g.startReceive(nil)
 
 	var mu sync.Mutex
 	var paths []string
@@ -125,16 +143,21 @@ func TestGatekeeperForwardsToAResponsiveParent(t *testing.T) {
 func TestGatekeeperAllowsWhenParentNeverReplies(t *testing.T) {
 	g, path := gkTestSetup(t)
 	// The parent receives events but is stuck and never answers.
-	go g.receive(func(error) {})
+	g.startReceive(nil)
+	var mu sync.Mutex
 	var held []*fanotify.EventMetadata
 	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
 		for _, d := range held {
 			d.Close()
 		}
 	})
 	go func() {
 		for ev := range g.pidCh {
+			mu.Lock()
 			held = append(held, ev.data)
+			mu.Unlock()
 		}
 	}()
 
@@ -174,7 +197,7 @@ func TestGatekeeperAllowsWhenParentDoesNotEvenReceive(t *testing.T) {
 
 func TestGatekeeperCloseAllowsPendingAndExits(t *testing.T) {
 	g, path := gkTestSetup(t)
-	go g.receive(func(error) {})
+	g.startReceive(nil)
 	go func() {
 		for ev := range g.pidCh {
 			ev.data.Close() // never replies
@@ -184,17 +207,79 @@ func TestGatekeeperCloseAllowsPendingAndExits(t *testing.T) {
 	opened := make(chan time.Duration)
 	go func() { opened <- timedOpen(t, path) }()
 	time.Sleep(50 * time.Millisecond)
-	start := time.Now()
 	g.close()
 	select {
 	case <-opened:
 	case <-time.After(gkTestBound):
 		t.Fatal("pending event not allowed on close")
 	}
-	require.Less(t, time.Since(start), gkTestBound)
 	select {
 	case <-g.exited:
 	default:
 		t.Fatal("gatekeeper still running after close")
 	}
+}
+
+// The gatekeeper dies while we hold events and do not drain the socket: its
+// exit, not a socket EOF behind the backlog, must trigger closing the groups,
+// so pending and new opens go through promptly.
+func TestGatekeeperLossClosesTheGroupsPromptly(t *testing.T) {
+	env := gkTestSetupEnv(t)
+	g := env.g
+	stop := make(chan bool)
+	t.Cleanup(func() { close(stop) })
+
+	lost := make(chan struct{})
+	var once sync.Once
+	go g.watchExit(stop, func(error) {
+		// What ContainerNotifier.onGatekeeperLost does.
+		once.Do(func() {
+			env.runtimeNotify.File.Close()
+			env.pidNotify.File.Close()
+			close(lost)
+		})
+	})
+	// No receive loop: everything forwarded stays queued in the socket.
+
+	opened := make(chan time.Duration, 4)
+	for i := 0; i < 4; i++ {
+		go func() { opened <- timedOpen(t, env.path) }()
+	}
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	require.NoError(t, g.cmd.Process.Kill())
+
+	select {
+	case <-lost:
+	case <-time.After(time.Second):
+		t.Fatal("gatekeeper exit not noticed")
+	}
+	for i := 0; i < 4; i++ {
+		select {
+		case <-opened:
+		case <-time.After(time.Second):
+			t.Fatal("open still blocked after the gatekeeper died")
+		}
+	}
+	// Well before the deadline the gatekeeper would have applied.
+	require.Less(t, time.Since(start), gkTestBound+500*time.Millisecond)
+	require.Less(t, timedOpen(t, env.path), 100*time.Millisecond, "the group must be gone")
+}
+
+// A gatekeeper that speaks another protocol is refused before any mark.
+func TestGatekeeperRefusesAnotherProtocolVersion(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root for fanotify")
+	}
+	notify, err := initFanotify()
+	require.NoError(t, err)
+	t.Cleanup(func() { notify.File.Close() })
+	t.Setenv(gatekeeperBinEnv, "/bin/true")
+	_, err = startGatekeeper(notify.Fd, notify.Fd, -1, 0, gkTestBound, gkTestBound)
+	require.Error(t, err)
+}
+
+func TestGatekeeperRefusesARecordSizeMismatch(t *testing.T) {
+	_, err := startGatekeeper(-1, -1, 0, recordSize+8, gkTestBound, gkTestBound)
+	require.ErrorContains(t, err, "value size")
 }

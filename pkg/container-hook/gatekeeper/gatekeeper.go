@@ -15,9 +15,9 @@
 // Package gatekeeper is the process that reads the container hook's fanotify
 // groups and answers their permission events with a deadline, so a stalled
 // container hook cannot freeze container lifecycle on the host. See
-// pkg/container-hook/gatekeeper.go for the design; this package holds only the
-// process side and the wire protocol, and imports nothing heavy, so the
-// dedicated binary (cmd/container-hook-gatekeeper) stays small.
+// docs/devel/container-hook-gatekeeper.md for the design; this package holds
+// only the process side and the wire protocol, and imports nothing heavy, so
+// the dedicated binary (cmd/container-hook-gatekeeper) stays small.
 package gatekeeper
 
 import (
@@ -34,20 +34,28 @@ import (
 )
 
 const (
+	// ProtocolVersion is sent in the ready message. The parent refuses a
+	// gatekeeper speaking another version (a separately shipped binary out
+	// of step with the library).
+	ProtocolVersion = 1
+
 	// Env marks a process started as the gatekeeper.
 	Env = "IG_CONTAINER_HOOK_GATEKEEPER"
 	// BoundRuntimeEnv and BoundPidFileEnv are the response bounds, in
 	// nanoseconds, for the runtime-binary and pid-file groups.
 	BoundRuntimeEnv = "IG_CONTAINER_HOOK_GATEKEEPER_BOUND_RUNTIME_NS"
 	BoundPidFileEnv = "IG_CONTAINER_HOOK_GATEKEEPER_BOUND_PIDFILE_NS"
-	// RecordSizeEnv is the size of an ig_fa_records value; 0 when there is
-	// no record queue.
+	// RecordSizeEnv is the value size of ig_fa_records; 0 when there is no
+	// record queue.
 	RecordSizeEnv = "IG_CONTAINER_HOOK_GATEKEEPER_RECORD_SIZE"
-	// CgroupEnv is the cgroup v2 directory the gatekeeper moves itself into
-	// (see joinCgroup). Empty: stay in the inherited cgroup.
+	// CgroupEnv is the cgroup v2 directory under which the gatekeeper creates
+	// its own child and moves itself into it (see joinCgroup). Empty: stay in
+	// the inherited cgroup.
 	CgroupEnv = "IG_CONTAINER_HOOK_GATEKEEPER_CGROUP"
 
 	// File descriptors in the gatekeeper (exec.Cmd ExtraFiles start at 3).
+	// Stdout and stderr (1, 2) are a pipe of their own, drained by the
+	// parent.
 	FdRuntime = 3
 	FdPidFile = 4
 	FdSock    = 5
@@ -55,13 +63,18 @@ const (
 
 	GroupRuntime uint8 = 0
 	GroupPidFile uint8 = 1
+	// GroupReady marks the ready message, the first one the gatekeeper
+	// sends: seq carries ProtocolVersion, flags FlagCgroupMoved, and the
+	// payload the cgroup directory or why it was not used.
+	GroupReady uint8 = 0xff
 
-	FlagHasFd     uint8 = 1 << 0
-	FlagRecordOK  uint8 = 1 << 1
-	FlagHasRecord uint8 = 1 << 2
+	FlagHasFd       uint8 = 1 << 0
+	FlagRecordOK    uint8 = 1 << 1
+	FlagHasRecord   uint8 = 1 << 2
+	FlagCgroupMoved uint8 = 1 << 3
 
 	// HeaderLen is the header of a gatekeeper→parent message, followed by
-	// the eBPF record for runtime events:
+	// the eBPF record for runtime events (native byte order):
 	//   0  u32 seq
 	//   4  u8  group
 	//   5  u8  flags
@@ -73,16 +86,26 @@ const (
 	// DoneLen is a parent→gatekeeper message: u32 seq of a processed event.
 	DoneLen = 4
 
-	// Pending permission events tracked. A slot reused before its event was
-	// answered is allowed first (fail-open).
-	slots = 4096
+	// Slots is how many pending permission events are tracked. A slot reused
+	// before its event was answered is allowed first (fail-open). Each one
+	// holds an fd, see raiseNofile.
+	Slots = 4096
 	// Socket send buffer, see Run.
 	sndBuf = 8 << 20
 
 	defaultBound = time.Second
-
-	bpfMapLookupAndDeleteElem = 21
 )
+
+// Limits of each gatekeeper's cgroup. The gatekeeper needs ~2 MiB and a
+// handful of threads; the limits only bound a misbehaving one and are
+// generous on purpose. A permission event whose fd the kernel cannot create
+// for the reader (memcg charge or fd limit) is answered FAN_DENY by the
+// kernel, so the reader must never run near these.
+var cgroupLimits = []struct{ file, value string }{
+	{"memory.max", strconv.Itoa(256 << 20)},
+	{"pids.max", "512"},
+	{"cpu.max", "100000 100000"},
+}
 
 var metadataSize = int(unsafe.Sizeof(unix.FanotifyEventMetadata{}))
 
@@ -90,6 +113,17 @@ var metadataSize = int(unsafe.Sizeof(unix.FanotifyEventMetadata{}))
 func IsPermMask(mask uint64) bool {
 	return mask&(unix.FAN_OPEN_PERM|unix.FAN_ACCESS_PERM|unix.FAN_OPEN_EXEC_PERM) != 0
 }
+
+// bpfMapElemAttr is the BPF_MAP_*_ELEM variant of union bpf_attr.
+type bpfMapElemAttr struct {
+	mapFd uint32
+	_     uint32
+	key   unsafe.Pointer
+	value unsafe.Pointer
+	flags uint64
+}
+
+const bpfMapLookupAndDeleteElem = 21
 
 type pendingEvent struct {
 	active   bool
@@ -106,7 +140,7 @@ type state struct {
 	records    int // -1 when there is no record queue
 
 	seq     uint32
-	pending [slots]pendingEvent
+	pending [Slots]pendingEvent
 	nActive int
 
 	// Preallocated I/O buffers: nothing is allocated per event.
@@ -115,10 +149,10 @@ type state struct {
 	oob     []byte
 	done    [DoneLen * 64]byte
 	resp    [8]byte
-	bpfAttr [32]byte
+	bpfAttr bpfMapElemAttr
 	pollFds [3]unix.PollFd
 
-	// Counters, reported periodically on stderr.
+	// Counters, reported periodically.
 	forwarded, answered, expired, dropped, evicted uint64
 	lastReport                                     int64
 	reported                                       [4]uint64
@@ -127,6 +161,13 @@ type state struct {
 var monoBase = time.Now()
 
 func now() int64 { return int64(time.Since(monoBase)) }
+
+// logf writes one line to stderr, a pipe the parent drains. Stderr is
+// non-blocking (see Run): when the pipe is full the line is dropped, because
+// a gatekeeper blocked on logging answers nothing.
+func logf(format string, args ...any) {
+	_, _ = unix.Write(2, []byte("container-hook gatekeeper: "+fmt.Sprintf(format, args...)+"\n"))
+}
 
 // closeInheritedFanotifyGroups closes fanotify group fds other than ours that
 // leaked in from the parent (fds without O_CLOEXEC). Holding one would keep
@@ -149,26 +190,42 @@ func closeInheritedFanotifyGroups() {
 	}
 }
 
-// Limits of the gatekeeper cgroup. The gatekeeper itself needs ~2 MiB; the
-// limits only bound a misbehaving one.
-var cgroupLimits = []struct{ file, value string }{
-	{"memory.max", strconv.Itoa(64 << 20)},
-	{"pids.max", "32"},
-	{"cpu.max", "50000 100000"},
+// raiseNofile makes room for Slots pending event fds. If the kernel cannot
+// create the fd of a permission event for us, it answers FAN_DENY.
+func raiseNofile() {
+	var lim unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &lim); err != nil {
+		return
+	}
+	if lim.Cur < lim.Max {
+		lim.Cur = lim.Max
+		_ = unix.Setrlimit(unix.RLIMIT_NOFILE, &lim)
+	}
+	if lim.Cur < Slots+64 {
+		logf("RLIMIT_NOFILE is %d, below %d: a burst of pending events can make the kernel deny one", lim.Cur, Slots+64)
+	}
 }
 
-// joinCgroup moves this process into its own cgroup v2 directory, out of the
-// parent's cgroup. Answering an event charges kernel memory (the event's
-// struct file) to the reader's memcg, so a gatekeeper left in the parent's
-// memcg is throttled in mem_cgroup_handle_over_high exactly when the parent
-// is, and stops answering. The parent usually runs in a private cgroup
+// CgroupDir is the cgroup a gatekeeper with the given pid runs in under base.
+func CgroupDir(base string, pid int) string {
+	return filepath.Join(base, strconv.Itoa(pid))
+}
+
+// joinCgroup moves this process into base/<pid>, out of the parent's cgroup.
+// Answering an event charges kernel memory (the event's struct file) to the
+// reader's memcg, so a gatekeeper left in the parent's memcg is throttled in
+// mem_cgroup_handle_over_high exactly when the parent is, and stops answering.
+// Each gatekeeper gets its own child so instances (a rolling update, several
+// embedders on one node) never share limits; stale children of gatekeepers
+// that are gone are removed. The parent usually runs in a private cgroup
 // namespace, which forbids migrating outside it, so the move happens from a
-// thread that first joins the host cgroup namespace (/proc/1 is the host
-// init with hostPID). That thread is locked and discarded afterwards.
-func joinCgroup(dir string) error {
-	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "cgroup.controllers")); err != nil {
-		return fmt.Errorf("not a cgroup v2 hierarchy: %w", err)
+// thread that first joins the host cgroup namespace (/proc/1 is the host init
+// with hostPID). That thread is locked and discarded afterwards.
+func joinCgroup(base string) (string, error) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(base), "cgroup.controllers")); err != nil {
+		return "", fmt.Errorf("not a cgroup v2 hierarchy: %w", err)
 	}
+	dir := CgroupDir(base, os.Getpid())
 	errc := make(chan error, 1)
 	go func() {
 		// No UnlockOSThread: the runtime discards this thread, and its
@@ -189,25 +246,40 @@ func joinCgroup(dir string) error {
 				return
 			}
 		}
+		if err := os.Mkdir(base, 0o755); err != nil && !os.IsExist(err) {
+			errc <- fmt.Errorf("creating %s: %w", base, err)
+			return
+		}
+		// Children need the controllers delegated to set their limits.
+		// Best effort: the base holds no processes, so this is allowed.
+		_ = os.WriteFile(filepath.Join(base, "cgroup.subtree_control"), []byte("+memory +pids +cpu"), 0o644)
+		// Remove children left by gatekeepers that are gone; rmdir fails
+		// on a cgroup that still has processes, which is what we want.
+		if entries, err := os.ReadDir(base); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					_ = unix.Rmdir(filepath.Join(base, e.Name()))
+				}
+			}
+		}
 		if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
 			errc <- fmt.Errorf("creating %s: %w", dir, err)
 			return
 		}
 		for _, l := range cgroupLimits {
-			// Best effort: a controller may not be enabled for this
-			// subtree.
 			if err := os.WriteFile(filepath.Join(dir, l.file), []byte(l.value), 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "container-hook gatekeeper: setting %s: %s\n", l.file, err)
+				logf("setting %s: %s", l.file, err)
 			}
 		}
 		// "0" is the writing process; cgroup.procs moves all its threads.
 		if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte("0"), 0o644); err != nil {
+			_ = unix.Rmdir(dir)
 			errc <- fmt.Errorf("moving into %s: %w", dir, err)
 			return
 		}
 		errc <- nil
 	}()
-	return <-errc
+	return dir, <-errc
 }
 
 // Run is the gatekeeper process main loop. It returns the exit code.
@@ -215,6 +287,7 @@ func Run() int {
 	// Keep this process small and independent of the parent's runtime
 	// settings.
 	runtime.GOMAXPROCS(1)
+	_ = unix.SetNonblock(2, true)
 
 	var bounds [2]int64
 	for group, env := range [2]string{BoundRuntimeEnv, BoundPidFileEnv} {
@@ -229,25 +302,21 @@ func Run() int {
 		recordSize = 0
 	}
 	closeInheritedFanotifyGroups()
-
-	if dir := os.Getenv(CgroupEnv); dir != "" {
-		if err := joinCgroup(dir); err != nil {
-			fmt.Fprintf(os.Stderr, "container-hook gatekeeper: staying in the parent's cgroup, so it can be throttled with it: %s\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "container-hook gatekeeper: running in cgroup %s\n", dir)
-		}
-	}
+	raiseNofile()
 
 	s := &state{
 		bounds:     bounds,
 		sock:       FdSock,
 		records:    -1,
 		recordSize: recordSize,
-		msg:        make([]byte, HeaderLen+recordSize),
+		msg:        make([]byte, HeaderLen+recordSize+256),
 		oob:        unix.UnixRights(0),
 	}
-	if _, err := unix.FcntlInt(FdRecords, unix.F_GETFD, 0); err == nil {
+	if _, err := unix.FcntlInt(FdRecords, unix.F_GETFD, 0); err == nil && recordSize > 0 {
 		s.records = FdRecords
+		// The kernel copies the map's value_size bytes here; the parent
+		// checked it equals recordSize.
+		s.bpfAttr = bpfMapElemAttr{mapFd: uint32(FdRecords), value: unsafe.Pointer(&s.msg[HeaderLen])}
 	}
 	// Room for bursts (each runtime event carries its ~5 KiB eBPF record):
 	// with the default buffer a busy-but-healthy parent would hit the
@@ -256,26 +325,47 @@ func Run() int {
 	if err := unix.SetsockoptInt(FdSock, unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, sndBuf); err != nil {
 		_ = unix.SetsockoptInt(FdSock, unix.SOL_SOCKET, unix.SO_SNDBUF, sndBuf)
 	}
-	binary.LittleEndian.PutUint32(s.resp[4:], unix.FAN_ALLOW)
-	// The record buffer and the attr live as long as the process.
-	binary.LittleEndian.PutUint32(s.bpfAttr[0:], uint32(s.records))
-	if s.recordSize > 0 {
-		binary.LittleEndian.PutUint64(s.bpfAttr[16:], uint64(uintptr(unsafe.Pointer(&s.msg[HeaderLen]))))
-	} else {
-		s.records = -1
+	binary.NativeEndian.PutUint32(s.resp[4:], unix.FAN_ALLOW)
+
+	readyFlags := uint8(0)
+	readyInfo := ""
+	if base := os.Getenv(CgroupEnv); base != "" {
+		dir, err := joinCgroup(base)
+		if err != nil {
+			readyInfo = err.Error()
+		} else {
+			readyFlags |= FlagCgroupMoved
+			readyInfo = dir
+		}
+	}
+	if !s.sendReady(readyFlags, readyInfo) {
+		return 1
 	}
 
 	s.pollFds[0] = unix.PollFd{Fd: FdRuntime, Events: unix.POLLIN}
 	s.pollFds[1] = unix.PollFd{Fd: FdPidFile, Events: unix.POLLIN}
 	s.pollFds[2] = unix.PollFd{Fd: FdSock, Events: unix.POLLIN}
 
-	fmt.Fprintf(os.Stderr, "container-hook gatekeeper: started (pid %d, bounds: runtime-binary %s, pid-file %s)\n",
+	logf("started (pid %d, bounds: runtime-binary %s, pid-file %s)",
 		os.Getpid(), time.Duration(bounds[GroupRuntime]), time.Duration(bounds[GroupPidFile]))
 	s.loop()
 	s.allowAll()
 	s.report(true)
 	runtime.KeepAlive(s)
 	return 0
+}
+
+func (s *state) sendReady(flags uint8, info string) bool {
+	clear(s.msg[:HeaderLen])
+	binary.NativeEndian.PutUint32(s.msg[0:], ProtocolVersion)
+	s.msg[4] = GroupReady
+	s.msg[5] = flags
+	n := copy(s.msg[HeaderLen:], info)
+	if err := unix.Sendmsg(s.sock, s.msg[:HeaderLen+n], nil, nil, unix.MSG_NOSIGNAL); err != nil {
+		logf("sending ready: %s", err)
+		return false
+	}
+	return true
 }
 
 func (s *state) loop() {
@@ -292,13 +382,13 @@ func (s *state) loop() {
 			s.pollFds[i].Revents = 0
 		}
 		if _, err := unix.Poll(s.pollFds[:], timeout); err != nil && err != unix.EINTR {
-			fmt.Fprintf(os.Stderr, "container-hook gatekeeper: poll: %s\n", err)
+			logf("poll: %s", err)
 			return
 		}
 		// Parent gone or socket closed: answer everything and exit. Our
 		// fanotify fds close with us; once the parent's copies are closed
 		// too, the kernel drops the marks.
-		if s.pollFds[2].Revents&(unix.POLLHUP|unix.POLLERR) != 0 {
+		if s.pollFds[2].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
 			return
 		}
 		if s.pollFds[2].Revents&unix.POLLIN != 0 {
@@ -312,8 +402,10 @@ func (s *state) loop() {
 		if s.pollFds[1].Revents&unix.POLLIN != 0 {
 			s.readEvent(FdPidFile, GroupPidFile)
 		}
-		if s.pollFds[0].Revents&(unix.POLLERR|unix.POLLNVAL) != 0 &&
-			s.pollFds[1].Revents&(unix.POLLERR|unix.POLLNVAL) != 0 {
+		// A broken group fd would make poll return at once forever. Exit:
+		// the parent sees us go and closes the groups.
+		if (s.pollFds[0].Revents|s.pollFds[1].Revents)&(unix.POLLERR|unix.POLLNVAL) != 0 {
+			logf("fanotify fd error, exiting")
 			return
 		}
 		s.expire(now())
@@ -339,7 +431,7 @@ func (s *state) release(slot *pendingEvent) {
 	if slot.group == GroupPidFile {
 		groupFd = FdPidFile
 	}
-	binary.LittleEndian.PutUint32(s.resp[0:], uint32(slot.fd))
+	binary.NativeEndian.PutUint32(s.resp[0:], uint32(slot.fd))
 	// ENOENT: the waiting process went away; nothing to answer.
 	_, _ = unix.Write(groupFd, s.resp[:])
 	unix.Close(int(slot.fd))
@@ -352,9 +444,9 @@ func (s *state) readEvent(fd int, group uint8) {
 	if err != nil || n < metadataSize {
 		return
 	}
-	mask := binary.LittleEndian.Uint64(s.meta[8:16])
-	efd := int32(binary.LittleEndian.Uint32(s.meta[16:20]))
-	pid := int32(binary.LittleEndian.Uint32(s.meta[20:24]))
+	mask := binary.NativeEndian.Uint64(s.meta[8:16])
+	efd := int32(binary.NativeEndian.Uint32(s.meta[16:20]))
+	pid := int32(binary.NativeEndian.Uint32(s.meta[20:24]))
 
 	flags := uint8(0)
 	msgLen := HeaderLen
@@ -372,8 +464,7 @@ func (s *state) readEvent(fd int, group uint8) {
 	seq := s.seq
 	perm := efd >= 0 && IsPermMask(mask)
 	if perm {
-		idx := int(seq % slots)
-		slot := &s.pending[idx]
+		slot := &s.pending[seq%Slots]
 		if slot.active {
 			// Wrapped around a still-pending event: allow it first.
 			s.release(slot)
@@ -383,19 +474,19 @@ func (s *state) readEvent(fd int, group uint8) {
 		s.nActive++
 	}
 
-	binary.LittleEndian.PutUint32(s.msg[0:], seq)
+	binary.NativeEndian.PutUint32(s.msg[0:], seq)
 	s.msg[4] = group
 	if efd >= 0 {
 		flags |= FlagHasFd
 	}
 	s.msg[5] = flags
-	binary.LittleEndian.PutUint64(s.msg[8:], mask)
-	binary.LittleEndian.PutUint32(s.msg[16:], uint32(pid))
+	binary.NativeEndian.PutUint64(s.msg[8:], mask)
+	binary.NativeEndian.PutUint32(s.msg[16:], uint32(pid))
 
 	var oob []byte
 	if efd >= 0 {
 		// Patch the fd into the preallocated SCM_RIGHTS message.
-		binary.LittleEndian.PutUint32(s.oob[unix.CmsgLen(0):], uint32(efd))
+		binary.NativeEndian.PutUint32(s.oob[unix.CmsgLen(0):], uint32(efd))
 		oob = s.oob
 	}
 	// Never block on the parent: if it is not draining the socket, fail open.
@@ -403,8 +494,7 @@ func (s *state) readEvent(fd int, group uint8) {
 	if err != nil {
 		s.dropped++
 		if perm {
-			idx := int(seq % slots)
-			s.release(&s.pending[idx])
+			s.release(&s.pending[seq%Slots])
 		} else if efd >= 0 {
 			unix.Close(int(efd))
 		}
@@ -419,7 +509,7 @@ func (s *state) readEvent(fd int, group uint8) {
 
 func (s *state) lookupAndDeleteRecord() bool {
 	_, _, errno := unix.Syscall(unix.SYS_BPF, bpfMapLookupAndDeleteElem,
-		uintptr(unsafe.Pointer(&s.bpfAttr[0])), uintptr(len(s.bpfAttr)))
+		uintptr(unsafe.Pointer(&s.bpfAttr)), unsafe.Sizeof(s.bpfAttr))
 	return errno == 0
 }
 
@@ -434,9 +524,8 @@ func (s *state) recvDone() bool {
 			return false
 		}
 		for off := 0; off+DoneLen <= n; off += DoneLen {
-			seq := binary.LittleEndian.Uint32(s.done[off:])
-			idx := int(seq % slots)
-			slot := &s.pending[idx]
+			seq := binary.NativeEndian.Uint32(s.done[off:])
+			slot := &s.pending[seq%Slots]
 			if slot.active && slot.seq == seq {
 				s.release(slot)
 				s.answered++
@@ -466,7 +555,7 @@ func (s *state) allowAll() {
 	}
 }
 
-// report prints counters when the fail-open ones changed, at most every 10s.
+// report logs counters when the fail-open ones changed, at most every 10s.
 func (s *state) report(force bool) {
 	now := now()
 	if !force && time.Duration(now-s.lastReport) < 10*time.Second {
@@ -477,7 +566,7 @@ func (s *state) report(force bool) {
 		return
 	}
 	s.lastReport = now
-	fmt.Fprintf(os.Stderr, "container-hook gatekeeper: fail-open: expired=%d dropped=%d evicted=%d (forwarded=%d answered=%d)\n",
+	logf("fail-open: expired=%d dropped=%d evicted=%d (forwarded=%d answered=%d)",
 		s.expired-s.reported[0], s.dropped-s.reported[1], s.evicted-s.reported[2], s.forwarded, s.answered)
 	s.reported = cur
 }

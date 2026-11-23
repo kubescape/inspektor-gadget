@@ -17,7 +17,10 @@ done with it, or when the bound expires, whichever comes first.
 
 1. `install()` loads the eBPF program, then starts the gatekeeper before adding
    any mark. It passes the two fanotify fds, the `ig_fa_records` map fd and one
-   end of a `SOCK_SEQPACKET` socket pair.
+   end of a `SOCK_SEQPACKET` socket pair, and waits (up to 30s) for the
+   gatekeeper's ready message: protocol version, and the cgroup it moved to or
+   why it could not. On a version mismatch, a timeout or an early exit, the
+   hook stops the gatekeeper and answers in-process instead.
 2. The gatekeeper reads an event. For the runtime group it dequeues the
    matching `ig_fa_records` entry right away, which keeps the events and
    records in lockstep.
@@ -49,28 +52,37 @@ runs.
   the gatekeeper before `main`. That works for any embedder, but the process
   pays for the embedder's package initialization (about 120 MB for
   node-agent), so images should ship the binary.
-- Cgroup: the gatekeeper moves itself into
-  `<host root>/sys/fs/cgroup/ig-container-hook-gatekeeper` with `memory.max`
-  64Mi, `pids.max` 32 and `cpu.max` 0.5 CPU. Reading an event charges its
-  `struct file` to the reader's memcg, so a gatekeeper left in the hook's
-  memcg is throttled with it. The hook usually runs in a private cgroup
-  namespace, which forbids migrating out of it, so the move is done from a
-  locked thread that first joins the host cgroup namespace through
-  `/proc/1/ns/cgroup` (requires hostPID). If the move fails, the gatekeeper
-  logs it and stays. `IG_CONTAINER_HOOK_GATEKEEPER_CGROUP_DIR` overrides the
-  directory; `none` disables the move. The directory is reused across restarts
-  and stays on the host after uninstall.
+- Cgroup: each gatekeeper moves itself into its own child,
+  `<host root>/sys/fs/cgroup/ig-container-hook-gatekeeper/<pid>`, with
+  generous limits (`memory.max` 256Mi, `pids.max` 512, `cpu.max` 1 CPU) that
+  only bound a misbehaving one. Reading an event charges its `struct file` to
+  the reader's memcg, so a gatekeeper left in the hook's memcg is throttled
+  with it. The limits stay far above what it uses because the kernel answers
+  `FAN_DENY` when it cannot create a permission event's fd for the reader.
+  - The hook usually runs in a private cgroup namespace, which forbids
+    migrating out of it, so the move is done from a locked thread that first
+    joins the host cgroup namespace through `/proc/1/ns/cgroup` (requires
+    hostPID).
+  - If the move fails (cgroup v1, no hostPID), the gatekeeper stays and the
+    hook logs a warning from the ready message.
+  - The hook removes the child after the gatekeeper exits; a gatekeeper
+    removes children left by gatekeepers that are gone when it starts. The
+    empty `ig-container-hook-gatekeeper` directory stays on the host after
+    uninstall.
+  - `IG_CONTAINER_HOOK_GATEKEEPER_CGROUP_DIR` overrides the base directory;
+    `none` disables the move.
 - The gatekeeper closes any other fanotify group fd it inherited, so it never
-  keeps a group alive that the hook closed.
+  keeps a group alive that the hook closed, and raises its `RLIMIT_NOFILE` soft
+  limit for the up to 4096 pending event fds it holds.
 
 ## Failure behavior
 
 | What fails | Result |
 |---|---|
-| Hook stuck or slow | Events allowed at the bound; those containers may be missed |
+| Hook stuck or slow | Events allowed at the bound; those containers may be missed. If a watcher falls 1024 events behind, the hook drops further forwarded events and the gatekeeper allows them at the bound |
 | Hook exits | Socket closes; the gatekeeper allows everything pending and exits |
-| Gatekeeper exits | The hook closes its fanotify fds; the kernel drops the marks. Detection stops, container lifecycle keeps working |
-| Gatekeeper cannot start | The hook answers in-process, without a deadline, and logs a warning |
+| Gatekeeper exits | The hook notices the process exit (not a socket EOF, which would only come after every queued message) and closes its fanotify fds; the kernel drops the marks and allows pending events. Detection stops, container lifecycle keeps working |
+| Gatekeeper cannot start, or is not ready within 30s, or speaks another protocol version | The hook answers in-process, without a deadline, and logs a warning |
 
 The gatekeeper only ever allows. It never denies an event.
 
@@ -79,7 +91,9 @@ in-process answering.
 
 ## Logs
 
-The gatekeeper writes to the hook's stderr:
+The gatekeeper writes to a pipe of its own, without blocking (a line is
+dropped rather than stall the gatekeeper), and the hook relays each line to its
+log:
 
 - `container-hook gatekeeper: running in cgroup ...`, or why it stayed
 - `container-hook gatekeeper: started (pid ..., bounds: ...)`

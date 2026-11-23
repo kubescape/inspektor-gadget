@@ -206,7 +206,13 @@ type ContainerNotifier struct {
 	// gk, when set, is the separate process that reads both fanotify groups
 	// and answers their permission events, with a deadline. See
 	// gatekeeper.go. When nil, this process reads and answers them itself.
-	gk *gatekeeperProc
+	gk             *gatekeeperProc
+	withGatekeeper bool
+	// lostOnce makes onGatekeeperLost run once.
+	lostOnce sync.Once
+	// runtimeMarkMu keeps onGatekeeperLost from closing runtimeBinaryNotify
+	// while install() still marks runtime binaries on its raw fd number.
+	runtimeMarkMu sync.Mutex
 
 	// pidMarkMu serializes fanotify_mark(2) on pidFileDirNotify with the
 	// close of its fd. It must be held (via pidMark / pidClose) around every
@@ -397,7 +403,9 @@ func initFanotify() (*fanotify.NotifyFD, error) {
 
 // Supported detects if RuncNotifier is supported in the current environment
 func Supported() bool {
-	notifier, err := NewContainerNotifier(func(notif ContainerEvent) {})
+	// No gatekeeper: the probe adds marks only briefly and must not start
+	// and stop a process.
+	notifier, err := newContainerNotifier(func(notif ContainerEvent) {}, false)
 	if notifier != nil {
 		notifier.Close()
 	}
@@ -413,7 +421,12 @@ func Supported() bool {
 // Limitations:
 // - the container runtime must be installed in one of the paths listed by runtimePaths
 func NewContainerNotifier(callback ContainerNotifyFunc) (*ContainerNotifier, error) {
+	return newContainerNotifier(callback, !gatekeeperDisabled())
+}
+
+func newContainerNotifier(callback ContainerNotifyFunc, withGatekeeper bool) (*ContainerNotifier, error) {
 	n := &ContainerNotifier{
+		withGatekeeper:    withGatekeeper,
 		callback:          callback,
 		containers:        make(map[string]*watchedContainer),
 		futureContainers:  make(map[string]*futureContainer),
@@ -533,24 +546,31 @@ func (n *ContainerNotifier) install() error {
 	// Hand reading and answering the fanotify groups to the gatekeeper
 	// before any mark exists: from the first mark on, runc execs wait on
 	// whoever reads them.
-	if gatekeeperDisabled() {
-		log.Warnf("container-hook: gatekeeper disabled by %s; fanotify permission events are answered in-process, without a deadline", gatekeeperDisableEnv)
+	if !n.withGatekeeper {
+		if gatekeeperDisabled() {
+			log.Warnf("container-hook: gatekeeper disabled by %s; fanotify permission events are answered in-process, without a deadline", gatekeeperDisableEnv)
+		}
 	} else {
-		gk, err := startGatekeeper(runtimeBinaryNotify.Fd, pidFileDirNotify.Fd, n.objs.IgFaRecords.FD(), PermissionResponseBound(), PidFileResponseBound())
+		gk, err := startGatekeeper(runtimeBinaryNotify.Fd, pidFileDirNotify.Fd,
+			n.objs.IgFaRecords.FD(), int(n.objs.IgFaRecords.ValueSize()),
+			PermissionResponseBound(), PidFileResponseBound())
 		if err != nil {
 			log.Warnf("container-hook: could not start the gatekeeper, answering fanotify permission events in-process, without a deadline: %s", err)
 		} else {
 			n.gk = gk
 			log.Infof("container-hook: %s answers fanotify permission events (bounds: runtime-binary %s, pid-file %s)", gk, PermissionResponseBound(), PidFileResponseBound())
+			gk.startReceive(&n.wg)
 			n.wg.Add(1)
 			go func() {
 				defer n.wg.Done()
-				gk.receive(n.onGatekeeperLost)
+				gk.watchExit(n.done, n.onGatekeeperLost)
 			}()
 		}
 	}
 
 	// Attach fanotify to various runtime binaries
+	n.runtimeMarkMu.Lock()
+	defer n.runtimeMarkMu.Unlock()
 	runtimeFound := false
 
 	runtimePath := os.Getenv("RUNTIME_PATH")
@@ -809,12 +829,16 @@ func (n *ContainerNotifier) onGatekeeperLost(err error) {
 	if n.closed.Load() {
 		return
 	}
-	log.Errorf("container-hook: gatekeeper lost (%s); closing the fanotify groups so container lifecycle is not blocked, container detection is disabled", err)
-	if p := n.gk.cmd.Process; p != nil {
-		_ = p.Kill()
-	}
-	n.runtimeBinaryNotify.File.Close()
-	n.pidClose()
+	n.lostOnce.Do(func() {
+		log.Errorf("container-hook: gatekeeper lost (%s); closing the fanotify groups so container lifecycle is not blocked, container detection is disabled", err)
+		n.runtimeMarkMu.Lock()
+		n.runtimeBinaryNotify.File.Close()
+		n.runtimeMarkMu.Unlock()
+		n.pidClose()
+		// Unblocks receive, which closes the event channels and so stops
+		// the watchers.
+		_ = unix.Shutdown(n.gk.sock, unix.SHUT_RDWR)
+	})
 }
 
 // hookEvent is one fanotify event, read in-process or forwarded by the
@@ -1509,8 +1533,8 @@ func (n *ContainerNotifier) Close() {
 	n.closed.Store(true)
 	close(n.done)
 	if n.gk != nil {
-		// Makes the gatekeeper allow everything pending and exit; unblocks
-		// the receive loop, which closes the event channels and stops both
+		// Makes the gatekeeper allow everything pending and exit; makes
+		// receive return, which closes the event channels and stops both
 		// watchers.
 		n.gk.close()
 	}
@@ -1525,6 +1549,9 @@ func (n *ContainerNotifier) Close() {
 		n.execReader.Close()
 	}
 	n.wg.Wait()
+	if n.gk != nil {
+		n.gk.drain()
+	}
 
 	for _, l := range n.links {
 		gadgets.CloseLink(l)
