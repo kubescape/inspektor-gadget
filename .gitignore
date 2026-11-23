@@ -54,3 +54,6 @@ pkg/btfgen/btfs/arm64/*
 
 # AL2023 product object-load run directories (make enforce-exec-al2023-product-load)
 /enforce-exec-al2023-product-load/
+
+# Container-hook gatekeeper embedded at build time (-tags gatekeeper_embed)
+/pkg/container-hook/gatekeeper/embedded/gatekeeper.bin
