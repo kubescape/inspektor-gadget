@@ -56,6 +56,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/btfgen"
+	"github.com/inspektor-gadget/inspektor-gadget/pkg/container-hook/gatekeeper"
 	runtimefinder "github.com/inspektor-gadget/inspektor-gadget/pkg/container-hook/runtime-finder"
 	containerutils "github.com/inspektor-gadget/inspektor-gadget/pkg/container-utils"
 	"github.com/inspektor-gadget/inspektor-gadget/pkg/gadgets"
@@ -201,6 +202,11 @@ type ContainerNotifier struct {
 	runtimeBinaryNotify *fanotify.NotifyFD
 	pidFileDirNotify    *fanotify.NotifyFD
 	callback            ContainerNotifyFunc
+
+	// gk, when set, is the separate process that reads both fanotify groups
+	// and answers their permission events, with a deadline. See
+	// gatekeeper.go. When nil, this process reads and answers them itself.
+	gk *gatekeeperProc
 
 	// pidMarkMu serializes fanotify_mark(2) on pidFileDirNotify with the
 	// close of its fd. It must be held (via pidMark / pidClose) around every
@@ -524,6 +530,26 @@ func (n *ContainerNotifier) install() error {
 		return err
 	}
 
+	// Hand reading and answering the fanotify groups to the gatekeeper
+	// before any mark exists: from the first mark on, runc execs wait on
+	// whoever reads them.
+	if gatekeeperDisabled() {
+		log.Warnf("container-hook: gatekeeper disabled by %s; fanotify permission events are answered in-process, without a deadline", gatekeeperDisableEnv)
+	} else {
+		gk, err := startGatekeeper(runtimeBinaryNotify.Fd, pidFileDirNotify.Fd, n.objs.IgFaRecords.FD(), PermissionResponseBound(), PidFileResponseBound())
+		if err != nil {
+			log.Warnf("container-hook: could not start the gatekeeper, answering fanotify permission events in-process, without a deadline: %s", err)
+		} else {
+			n.gk = gk
+			log.Infof("container-hook: %s answers fanotify permission events (bounds: runtime-binary %s, pid-file %s)", gk, PermissionResponseBound(), PidFileResponseBound())
+			n.wg.Add(1)
+			go func() {
+				defer n.wg.Done()
+				gk.receive(n.onGatekeeperLost)
+			}()
+		}
+	}
+
 	// Attach fanotify to various runtime binaries
 	runtimeFound := false
 
@@ -775,28 +801,109 @@ func (n *ContainerNotifier) callbackAddContainerBounded(event ContainerEvent) {
 	}
 }
 
-func (n *ContainerNotifier) watchPidFileIterate() error {
-	// Get the next event from fanotify.
+// onGatekeeperLost runs when the gatekeeper exits or its socket fails while
+// the notifier is open. Nobody reads the fanotify groups any more, so close
+// our copies: the kernel drops the marks and allows pending events. Container
+// detection stops; the node keeps working.
+func (n *ContainerNotifier) onGatekeeperLost(err error) {
+	if n.closed.Load() {
+		return
+	}
+	log.Errorf("container-hook: gatekeeper lost (%s); closing the fanotify groups so container lifecycle is not blocked, container detection is disabled", err)
+	if p := n.gk.cmd.Process; p != nil {
+		_ = p.Kill()
+	}
+	n.runtimeBinaryNotify.File.Close()
+	n.pidClose()
+}
+
+// hookEvent is one fanotify event, read in-process or forwarded by the
+// gatekeeper.
+type hookEvent struct {
+	data *fanotify.EventMetadata
+	// gk is set when the gatekeeper forwarded the event; it answers it.
+	gk *gkEvent
+	// record/recordErr: the eBPF record of a runtime-binary event.
+	record    execruntimeRecord
+	recordErr error
+}
+
+func (n *ContainerNotifier) nextEvent(group uint8) (*hookEvent, error) {
+	if n.gk != nil {
+		ch := n.gk.runtimeCh
+		if group == gatekeeper.GroupPidFile {
+			ch = n.gk.pidCh
+		}
+		ev, ok := <-ch
+		if !ok {
+			return nil, errors.New("gatekeeper channel closed")
+		}
+		return &hookEvent{data: ev.data, gk: ev, record: ev.record, recordErr: ev.recordErr}, nil
+	}
+
+	notify := n.runtimeBinaryNotify
+	if group == gatekeeper.GroupPidFile {
+		notify = n.pidFileDirNotify
+	}
 	// Even though the API allows to pass skipPIDs, we cannot use
 	// it here because ResponseAllow would not be called.
-	data, err := n.pidFileDirNotify.GetEvent()
+	data, err := notify.GetEvent()
+	if err != nil || data == nil {
+		// data can be nil if the event received is from a process in
+		// skipPIDs. In that case, skip and get the next event.
+		return nil, err
+	}
+	ev := &hookEvent{data: data}
+	if group == gatekeeper.GroupRuntime {
+		// The ebpf program pushed exactly one record for this event, so
+		// drain it before any early return. This includes FAN_Q_OVERFLOW:
+		// it is dequeued by fsnotify_remove_first_event() like any other
+		// event, so the eBPF program pushes a record for it too.
+		ev.recordErr = n.objs.IgFaRecords.LookupAndDelete(nil, &ev.record)
+	}
+	return ev, nil
+}
+
+// respond allows a permission event: directly in-process, or by telling the
+// gatekeeper we are done with it (it may already have allowed it).
+func (n *ContainerNotifier) respond(group uint8, ev *hookEvent) {
+	if ev.gk != nil {
+		n.gk.done(ev.gk.seq)
+		return
+	}
+	notify := n.runtimeBinaryNotify
+	if group == gatekeeper.GroupPidFile {
+		notify = n.pidFileDirNotify
+	}
+	if err := notify.ResponseAllow(ev.data); err != nil {
+		log.Errorf("fanotify: allow: %s", err)
+	}
+}
+
+// closeEventFd closes our copy of the event fd, if any.
+func closeEventFd(data *fanotify.EventMetadata) {
+	if data.Fd >= 0 {
+		data.Close()
+	}
+}
+
+func (n *ContainerNotifier) watchPidFileIterate() error {
+	ev, err := n.nextEvent(gatekeeper.GroupPidFile)
 	if err != nil {
 		return err
 	}
-
-	// data can be nil if the event received is from a process in skipPIDs.
-	// In that case, skip and get the next event.
-	if data == nil {
+	if ev == nil {
 		return nil
 	}
+	data := ev.data
 
-	// Don't leak the fd received by GetEvent
-	defer data.Close()
+	// Don't leak the event fd
+	defer closeEventFd(data)
 
 	// Answer any permission event before anything else can return early.
-	if data.Mask&(unix.FAN_OPEN_PERM|unix.FAN_ACCESS_PERM|unix.FAN_OPEN_EXEC_PERM) != 0 {
+	if gatekeeper.IsPermMask(data.Mask) {
 		// This unblocks whoever is accessing the pidfile
-		defer n.pidFileDirNotify.ResponseAllow(data)
+		defer n.respond(gatekeeper.GroupPidFile, ev)
 	}
 
 	if !data.MatchMask(unix.FAN_ACCESS_PERM) {
@@ -1279,36 +1386,26 @@ func (n *ContainerNotifier) parseOCIRuntime(mntnsId uint64, cmdlineArr []string)
 }
 
 func (n *ContainerNotifier) watchRuntimeIterate() error {
-	// Get the next event from fanotify.
-	// Even though the API allows to pass skipPIDs, we cannot use it here
-	// because ResponseAllow would not be called.
-	data, err := n.runtimeBinaryNotify.GetEvent()
+	// nextEvent also dequeues the event's record from ig_fa_records (here or
+	// in the gatekeeper), keeping the two in lockstep.
+	ev, err := n.nextEvent(gatekeeper.GroupRuntime)
 	if err != nil {
 		return err
 	}
-
-	// data can be nil if the event received is from a process in skipPIDs.
-	// In that case, skip and get the next event.
-	if data == nil {
+	if ev == nil {
 		return nil
 	}
+	data := ev.data
+	record, recordErr := ev.record, ev.recordErr
 
-	// Don't leak the fd received by GetEvent
-	defer data.Close()
+	// Don't leak the event fd
+	defer closeEventFd(data)
 
 	// Answer any permission event before anything else can return early.
-	if data.Mask&(unix.FAN_OPEN_PERM|unix.FAN_ACCESS_PERM|unix.FAN_OPEN_EXEC_PERM) != 0 {
+	if gatekeeper.IsPermMask(data.Mask) {
 		// This unblocks the execution
-		defer n.runtimeBinaryNotify.ResponseAllow(data)
+		defer n.respond(gatekeeper.GroupRuntime, ev)
 	}
-
-	// Lookup entry in ebpf map ig_fa_records. The ebpf program pushed exactly
-	// one record for this event, so drain it before any early return below.
-	// This includes FAN_Q_OVERFLOW: it is dequeued by
-	// fsnotify_remove_first_event() like any other event, so the eBPF program
-	// pushes a record for it too.
-	var record execruntimeRecord
-	recordErr := n.objs.IgFaRecords.LookupAndDelete(nil, &record)
 
 	if data.Mask&unix.FAN_Q_OVERFLOW != 0 {
 		log.Errorf("fanotify: event queue overflow")
@@ -1411,6 +1508,12 @@ func (n *ContainerNotifier) watchRuntimeIterate() error {
 func (n *ContainerNotifier) Close() {
 	n.closed.Store(true)
 	close(n.done)
+	if n.gk != nil {
+		// Makes the gatekeeper allow everything pending and exit; unblocks
+		// the receive loop, which closes the event channels and stops both
+		// watchers.
+		n.gk.close()
+	}
 	if n.runtimeBinaryNotify != nil {
 		n.runtimeBinaryNotify.File.Close()
 	}
