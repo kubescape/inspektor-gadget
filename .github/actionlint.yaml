@@ -1,0 +1,7 @@
+# actionlint v1.7.12 predates GitHub's concurrency queue support.
+# Keep this exception limited to the policy caller and the unsupported key.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency#example-queueing-multiple-pending-runs
+paths:
+  .github/workflows/contribution-policy.yaml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\.'
