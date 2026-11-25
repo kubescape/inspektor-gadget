@@ -6544,6 +6544,15 @@ real_owner_prepare_image(struct se_ol_payload_handle *owner,
 }
 #endif
 
+/* The executable-mapping gate, lsm/mmap_file and lsm/file_mprotect
+ * (full/shared_exec_map.h). Product objects only: it needs the image
+ * classifier and the route. */
+#if defined(ENFORCE_EXEC_D1_LSM_ONLY) &&                          \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_PASS_FACTS_CANDIDATE) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE)
+#include "shared_exec_map.h"
+#endif
+
 /* Prepare program body: reopen the exact receipt TASK, resume the stage-1
  * WORK, snapshot history/catalogue/roles, suspend to the evaluation stage.
  * Returns 1 only when the WORK is suspended at REAL_OWNER_EVAL_STAGE. */
@@ -8020,6 +8029,10 @@ int BPF_PROG(opaque_real_owner_reader_success_probe, struct linux_binprm *bprm)
 {
 	d1_witness_count(D1_WIT_LSM_COMMIT);
 	d1_exec_mark();
+#ifdef ENFORCE_EXEC_SHARED_EXEC_MAP_H
+	/* The executable-mapping gate's exec record (program-file exemption). */
+	em_exec_record(bprm);
+#endif
 	__u64 key = (__u64)bpf_get_current_task_btf();
 #else
 SEC("tp_btf/sched_process_exec")

@@ -35,10 +35,10 @@ import (
 // pinned toolchain at the neutral paths; testdata/shared_product_objects.tsv
 // mirrors them.
 var sharedProductObjects = map[string]string{
-	"g19pkg64":  "f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba",
-	"g19pkg128": "fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d",
-	"g19pkg256": "a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e",
-	"g19pkg512": "3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31",
+	"g19pkg64":  "ac2fe32a7cbed887a7c83b0068cb39acceacc75146373a26ed3251f2c5518ff9",
+	"g19pkg128": "1a8afd68e7400fdc80a09233acf9bf301e538415d9b94324e6dd15e3e24f59f5",
+	"g19pkg256": "276892aee2a544e8325b839c958e4d0ebe9ba2ee3e604b933e7ce01f912d2284",
+	"g19pkg512": "d9272d7b91ef619b5f21fdf5edb77f55a4de23d448ce052cd6705d5a38bca055",
 }
 
 // sharedProductObject reports whether digest is a product object of this
