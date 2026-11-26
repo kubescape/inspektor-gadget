@@ -12,10 +12,10 @@ package fullruntime
 // sharedProductManifestMaps and sharedProductManifestPrograms are the exact
 // map and program name sets of the shared product object, generated from
 // the product objects with sha256:
-//   - 3aab281652d4a15533c03e697823244b21a0a5ae07648bd96af9e991d9ee6b31
-//   - a1e7f41b2f83059faab7d87de06dbb77f40168c1e79007db5617234075f4bb0e
-//   - f1191bac13e4ced00c110500a994c9aa572551452f619026ba19b875a322f4ba
-//   - fe92706bbbb9c8de6c112ba5922ef80ddcd3b7ed96023fc5961bd83f680ed70d
+//   - 6e3ee7b2d020ddeaacfe465db3a69cdafcd26736ee1d002695c7d186fecaa77b
+//   - 744878fd91a48efc5a51c295d7d6c0fe0b0fafcdb5092b2f1ea361f7d75ac0a2
+//   - 6b2a53adb8fc7f638ad8c33b6d1442ec46d7b3c892e5ed0a3725ebab03bbec85
+//   - 923e3d374aff18f188b7af9ecc620d1489520281fe9ab39c3c37fdaef0f09e78
 //
 // Product admission refuses any other name set (validateSharedProductManifest).
 var sharedProductManifestMaps = []string{
