@@ -140,7 +140,17 @@ byte up to `error`, then `exec_class`, `scope`, `exec_id`, `pass`,
   informational only (pids are reused). `generation` and `scope` name the
   route publication (`SharedCompiled.Generation`); bit i of `matched_rules`
   is `SharedCompiled.Program.Rules[i]`. A fault event carries the exec's
-  identity when its receipt is still present, 0 otherwise.
+  identity when its receipt is still present, 0 otherwise. An owned exec
+  pass that never reaches a policy program (ENTRY, a failed open or reader
+  begin, a pending or terminal fault, a failed transfer) emits its one fault
+  event from the `bprm_check_security` program; it usually has no receipt,
+  so its `generation` and `scope` are 0 and the consumer attributes it by
+  `cgroup` to the binding's committed publication (SUB-10297). It carries
+  the exec file's path when known (best effort, for the report only:
+  `bpf_path_d_path` of `bprm->file`, absolute, at most 255 bytes, not
+  anchored or walked to the root like the pass facts; a deleted file keeps
+  the " (deleted)" suffix), else `path_result` -1. A fork refusal emits no
+  event.
 - **Verdict.** `deny && mode == 2` is exactly the LSM denial. `error` is
   0..3: an Audit UNKNOWN fact is `error 0` with `uncertain 1`; a Strict
   UNKNOWN fact (`error 2`) or role conflict (`error 3`) reports the class
@@ -364,10 +374,10 @@ image runs on every kernel the product gate admits.
 
 | Profile | Image (local reference) | Manifest digest | Index digest |
 |---|---|---|---|
-| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:6e74512e72cc37e8d33633aad94219b457d69700fffcee3a9c0861230357ae43` | `sha256:55a4c3c70f45711b9db23738a5c9d7ce996e557b9c6111a9df1b7f88d3fc5571` |
-| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:48b5584528ce98f2b05463470a64ae994a73134f7d1ccf9434c2110e3bf5a182` | `sha256:dce925ec18ddf01d74bf299a0ec1d8e23097f7ce3259bcd0832dde8b55b782c9` |
-| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:d8a936ca27bb3f82abcbd09c3dc1841d31026c59d14b7612e88b5d759a4cc399` | `sha256:77866cfbafc68b6ccba44d0d03bd843e01675fbb175c7c8455bfb09c0b03e44f` |
-| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:a0e166fa8405bc4acd2caef50b05031fc035f40cc5009cfd82dd6e1ddef0384b` | `sha256:ec6d35126c0ddb6bc46a020ae7bd06cf795f41a053c66bb830ed2a363f8dd7d6` |
+| `g19pkg64` | `enforce-exec-shared:g19pkg64` | `sha256:c81ec63b28c6ae895ce67fe64254d5fee2ba67b3fed500d7e6e44278d1d52c95` | `sha256:501be35185c1882713093c18d6c72f008166843046c32e407ef661849c361c0f` |
+| `g19pkg128` | `enforce-exec-shared:g19pkg128` | `sha256:746c11ace33245d2357ebb216b5eb7ce6115cdcec8687a4d4ae573dd7db20e6e` | `sha256:1b8adc5e586849d2d6e00270c4597afee0afd91f3d51513b4760360c017383a0` |
+| `g19pkg256` | `enforce-exec-shared:g19pkg256` | `sha256:1e243b0328c7f087aec1b6ee1655cdbd8016aec4e6ff93b71c58fbac8b12dfe9` | `sha256:83b18f853c55b25a448134191c4fb5d441d75f79dc2e3696dab7d694fb9a77e3` |
+| `g19pkg512` | `enforce-exec-shared:g19pkg512` | `sha256:31a7a4f852ed2db88065edef0408ee4d618db5b158ecf8d8dee64e8dcc474fa0` | `sha256:411432979608b026451e0d08b162592e2f7985cef1b19dd288fd383e9ad32d09` |
 
 The reference (tag) is not part of either digest.
 
@@ -1145,11 +1155,14 @@ thresholds in `fail_closed_rate.go`):
 - An unreadable or missing witness, or a counter that moved backwards, is
   **unknown**, never a zero rate.
 - Product-publisher objects (G019 M4) have a 13-cell witness:
-  - cell 11 is **ENTRY**: an exec on an OWNED route by a task that has no
-    TASK at all, such as a runtime exec entry or a migration into the cgroup.
-    It is reported apart, like the WORK retry subset, and is never added to
-    Total. A failed open while a TASK exists stays class 8 (open-parent) and
-    counts in Total.
+  - cell 11 is **ENTRY**: an exec or a fork on an OWNED route by a task
+    that has no TASK at all, such as a runtime exec entry (`kubectl exec`)
+    or a migration into the cgroup. It is reported apart, like the WORK
+    retry subset, and is never added to Total: such a task is refused by
+    design (Strict denies, Audit leaves it unevaluated), which is not an
+    enforcement fault of a managed task (SUB-10297). A failed open while a
+    TASK exists stays class 8 (open-parent, exec) or class 1 (source
+    refusal, fork) and counts in Total.
   - cell 12 is **ADMISSION**: every exec admission fault of the exec reader
     (a latched, adopting or reserved route, a degraded exec-capsule
     admission, a frozen-class mismatch). Strict and invariant faults deny,

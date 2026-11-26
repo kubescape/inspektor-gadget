@@ -3505,8 +3505,20 @@ real_owner_child_prepare(const struct se_route_claim *claim,
 		return -1;
 	*parent_cookie_out = 0;
 	struct se_ol_payload_handle parent = {};
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* SUB-10297: a fork whose parent has no TASK at all (no se_opaque_keys
+	 * entry: a task that entered the route after its birth, such as a
+	 * runtime exec entry) is ENTRY, as on the exec reader (-3, refused like
+	 * -1). A failed open with a TASK present stays a source refusal. */
+	if (real_owner_child_open_parent(&parent) != SE_OL_OK) {
+		__u64 parent_key = (__u64)bpf_get_current_task_btf();
+		return bpf_map_lookup_elem(&se_opaque_keys, &parent_key) ? -1 :
+									   -3;
+	}
+#else
 	if (real_owner_child_open_parent(&parent) != SE_OL_OK)
 		return -1;
+#endif
 	struct se_owk_ticket ticket = {};
 	if (real_owner_child_start_work(&parent, &ticket)) {
 #ifdef ENFORCE_EXEC_POOL_OPAQUE_SUCCESSFUL_BIRTH_DIAGNOSTIC
@@ -3926,6 +3938,15 @@ real_owner_child_prepare_claimed(struct task_struct *child,
 	int result = clone_flags & (1ULL << 33) ?
 			     -1 :
 			     real_owner_child_prepare(&claim, &parent_cookie);
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_PRODUCT_PUBLISHER_CANDIDATE
+	/* SUB-10297: ENTRY (no TASK at all) is counted against the birth
+	 * attempt above and kept outside Total; the fork is refused as -1. */
+	if (result == -3) {
+		SE_FAIL_CLOSED_RATE(REAL_OWNER_RATE_ENTRY);
+		(void)real_owner_child_release_claim(&claim);
+		return -1;
+	}
+#endif
 #ifdef SE_REAL_OWNER_BIRTH_QUALIFY
 	if (!result &&
 	    real_owner_child_birth_issue(child, &claim, parent_cookie))
@@ -5791,6 +5812,46 @@ se_verdict_emit(void *ctx __attribute__((btf_decl_tag("arg:ctx"))),
 	se_verdict_count(SE_VERDICT_SUBMITTED);
 	return 0;
 }
+#ifdef ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE
+/* SUB-10297: the one fault event of an owned exec pass that no policy
+ * program evaluated (begin_core bit 64), with the exec file's path. The path
+ * is best effort, for the report only: bpf_path_d_path of bprm->file from the
+ * exec'ing task's root, kept only when absolute and at most 255 bytes. It is
+ * not anchored or walked to the root like the pass facts (shared_pass_facts.h
+ * H1), and a deleted file keeps d_path's " (deleted)" suffix. Otherwise
+ * path_result stays -1. bprm is the bprm_check argument (trusted, as for
+ * real_owner_pass_facts). */
+__attribute__((noinline)) int
+se_verdict_emit_unevaluated(void *ctx __attribute__((btf_decl_tag("arg:ctx"))),
+			    struct linux_binprm *bprm __arg_trusted, __u32 info)
+{
+	struct se_verdict_meta meta;
+	se_verdict_meta_of(ctx, info, &meta);
+	struct shared_verdict_event *event = bpf_ringbuf_reserve(
+		&opaque_real_verdict_events, sizeof(*event), 0);
+	if (!event) {
+		se_verdict_count(SE_VERDICT_LOST);
+		return 0;
+	}
+	if (se_verdict_event_fill(event, 0, 0, &meta))
+		se_verdict_count(SE_VERDICT_OBSERVATION_ERRORS);
+	struct file *file = bprm->file;
+	if (file) {
+		int n = bpf_path_d_path(&file->f_path, event->path,
+					sizeof(event->path));
+		if (n > 1 && n <= (int)sizeof(event->path) &&
+		    event->path[0] == '/') {
+			event->path_result = n;
+		} else {
+			event->path_result = -1;
+			event->path[0] = 0;
+		}
+	}
+	bpf_ringbuf_submit(event, 0);
+	se_verdict_count(SE_VERDICT_SUBMITTED);
+	return 0;
+}
+#endif
 /* A decision event whose verdict is not final yet (a clean proposal: the
  * WORK suspension, its release and the TASK close can still fail and turn
  * it into the class failure). It is staged in the exec'ing task's own
@@ -7862,6 +7923,15 @@ real_owner_reader_begin_core(struct linux_binprm *bprm, int terminal_fault)
 		result |= 2 | (good && mode == 1 ? 4 : 0);
 #endif
 #endif
+#if defined(SE_VERDICT_EVENTS) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE)
+	/* SUB-10297: an owned pass that never reaches a policy program (ENTRY,
+	 * a failed open or reader begin, a pending or terminal fault, a failed
+	 * transfer) still gets its one fault event (64), emitted by the LSM
+	 * program: Strict denies it and Audit leaves it unevaluated. */
+	if ((result & 6) != 6)
+		result |= 64;
+#endif
 	return result;
 }
 
@@ -7983,6 +8053,16 @@ long BPF_PROG(opaque_real_owner_reader_begin_probe, struct linux_binprm *bprm,
 		(void)real_owner_policy_abort_handoff(
 			(__u64)bpf_get_current_task_btf(), (__u64)bprm);
 	}
+#endif
+#if defined(SE_VERDICT_EVENTS) && \
+	defined(ENFORCE_EXEC_POOL_OPAQUE_REAL_POLICY_VERDICT_CANDIDATE)
+	/* SUB-10297: the pass's one fault event (D1) when no policy program
+	 * ran for it (begin_core bit 64), with the exec file's path. */
+	if (result & 64)
+		(void)se_verdict_emit_unevaluated(
+			ctx, bprm,
+			SE_VERDICT_INFO(result & 1 ? 2 : 1, SE_VERDICT_FAULT,
+					SE_VERDICT_INFO_PASS_UNKNOWN));
 #endif
 	if (result & 1) {
 		/* Do not fold the two constant verdicts into a 32-bit negation. */
