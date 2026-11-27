@@ -1341,18 +1341,11 @@ jobs:
               include/**
               Dockerfiles/gadget-builder.Dockerfile
               cmd/common/image/Makefile.build
-            # By default docker cache layers which are already built in order to
-            # reduce the build time. This can impedes the freshness of the
-            # packages in docker images, particularly for the gadget-builder
-            # which relies on debian as base image.
-            # So, this variables controls whether the last layer of
-            # gadget-builder, i.e. the one upgrading the packages to be run
-            # without cache.
-            # Changing this value in the repository will force this behavior,
-            # this is particularly useful if trivy reports a CVE in the image
-            # and fixed versions exist in debian repository.
+            # Refresh Debian security packages on every run and retry. Only the
+            # final upgrade layer consumes this argument; compiler/toolchain
+            # layers remain cached. Keep the repository override for manual builds.
             build-args: |
-              WITHOUT_CACHE=${{ vars.WITHOUT_CACHE }}
+              WITHOUT_CACHE=${{ vars.WITHOUT_CACHE }}-${{ github.run_id }}-${{ github.run_attempt }}
           - name: "benchmark"
             context: "tools/bench"
             dockerfile: "tools/bench/Dockerfile"
