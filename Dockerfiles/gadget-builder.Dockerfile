@@ -100,7 +100,7 @@ ADD include /usr/include
 
 ARG WITHOUT_CACHE
 # Keep the final refresh after all package installs, and fail if a cached or
-# incomplete refresh leaves the vulnerable bookworm apt packages in the image.
+# incomplete refresh leaves vulnerable bookworm apt or PAM packages in the image.
 RUN set -eu; \
 	apt-get -y update; \
 	apt-get upgrade -y --with-new-pkgs; \
@@ -108,6 +108,13 @@ RUN set -eu; \
 		version="$(dpkg-query -W -f='${Version}' "$package")"; \
 		if ! dpkg --compare-versions "$version" ge 2.6.2; then \
 			echo >&2 "$package $version is older than the CVE-2026-109518 fix (2.6.2)"; \
+			exit 1; \
+		fi; \
+	done; \
+	for package in libpam-modules libpam-modules-bin libpam-runtime libpam0g; do \
+		version="$(dpkg-query -W -f='${Version}' "$package")"; \
+		if ! dpkg --compare-versions "$version" ge '1.5.2-6+deb12u3'; then \
+			echo >&2 "$package $version is older than the CVE-2025-6020 fix (1.5.2-6+deb12u3)"; \
 			exit 1; \
 		fi; \
 	done
